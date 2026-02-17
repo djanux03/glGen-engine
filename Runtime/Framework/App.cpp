@@ -3,6 +3,10 @@
 #include <glad/glad.h>
 
 #include "App.h"
+#include "ECS/Components.h"
+#include "ECS/Systems/CameraSystem.h"
+#include "ECS/Systems/MovementSystem.h"
+#include "ECS/Systems/RenderSystem.h"
 #include "EditorUI.h"
 #include "FBXModel.h"
 #include "FireFX.h"
@@ -82,45 +86,25 @@ struct AppState {
   FireFX fire;
   EditorUI editor;
   ProjectileSystem projectiles;
-  FBXModel myModel;
-  // Scene ids
-  Scene::EntityId treeId = 0;
-  Scene::EntityId carId = 0;
-  Scene::EntityId starwarsId = 0;
+
+  // ECS Systems
+  RenderSystem renderSystem;
+  MovementSystem movementSystem;
+  CameraSystem cameraSystem;
+
+  // Player ID
+  uint32_t playerId = 0;
 
   // Terrain/editor vars
   int terrainSize = 10;
   float terrainSpacing = 1.0f;
 
-  // Fire anchor
-  glm::vec3 fireLocal = glm::vec3(0.0f);
-  bool hasFireAnchor = false;
+  // Fire
   bool hasFire = false;
-
-  // Fire turret
-  glm::vec3 turretLocal = glm::vec3(0.0f);
-  bool hasTurretAnchor = false;
-  float turretYawDeg = 0.0f;
-  glm::vec3 turretPivotLocal = glm::vec3(0);
-  bool hasTurretPivot = false;
 
   // Sub-object selection
   std::string selectedObjPartName;
   bool editObjPart = false;
-
-  // Camera/player
-  float x = 0.0f, y = 0.0f, z = 3.0f;
-  float yaw = -90.0f;
-  float pitch = 0.0f;
-
-  glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
-  glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
-
-  // Jump/physics
-  float groundY = 0.0f;
-  float yVel = 0.0f;
-  bool onGround = true;
-  bool spaceWasDown = false;
 
   // Tuning
   float mixVal = 0.5f;
@@ -138,12 +122,12 @@ struct AppState {
 
   // Outliner & Selection
   char outlinerFilter[128] = "";
-  std::vector<int> selectedEntities;
-  int lastClickedEntity = -1;
+  std::vector<uint32_t> selectedEntities;
+  uint32_t lastClickedEntity = 0;
   bool renaming = false;
   char renameBuf[128] = "";
   float focusDistance = 12.0f;
-  int selectedEntityIndex = 0;
+  uint32_t selectedEntityId = 0;
 
   ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE;
   ImGuizmo::MODE gizmoMode = ImGuizmo::WORLD;
@@ -184,213 +168,11 @@ void endImGuiFrame() {
 #include <fstream>
 
 void saveConfig(const AppState &s, const char *filename) {
-  std::ofstream out(filename, std::ios::binary);
-  if (!out.is_open()) {
-    std::cerr << "Failed to save config to " << filename << "\n";
-    return;
-  }
-
-  // --- 1. Save Globals (Sun, Fire, Player, etc.) ---
-  AppConfig cfg;
-  cfg.sunPos = s.sun.sunPos;
-  cfg.sunDir = s.sun.sunDir;
-  cfg.sunColor = s.sun.sunColor;
-  cfg.sunSize = s.sun.sunSize;
-  cfg.ambientStrength = s.sun.ambientStrength;
-
-  cfg.fireEnabled = s.fire.params().enabled;
-  cfg.fireOffset = s.fire.params().offset;
-  cfg.fireSize = s.fire.params().size;
-  cfg.fireIntensity = s.fire.params().intensity;
-
-  cfg.x = s.x;
-  cfg.y = s.y;
-  cfg.z = s.z;
-  cfg.yaw = s.yaw;
-  cfg.pitch = s.pitch;
-
-  cfg.terrainSize = s.terrainSize;
-  cfg.terrainSpacing = s.terrainSpacing;
-  cfg.turretYaw = s.turretYawDeg;
-
-  // Write global config header
-  out.write(reinterpret_cast<const char *>(&cfg), sizeof(AppConfig));
-
-  // --- 2. Save Entities ---
-  const auto &entities = s.scene.entities();
-  size_t count = entities.size();
-
-  // Write count first
-  out.write(reinterpret_cast<const char *>(&count), sizeof(count));
-
-  for (const auto &e : entities) {
-    EntitySaveData eData;
-
-    // Safely copy name
-    std::strncpy(eData.name, e.name.c_str(), sizeof(eData.name) - 1);
-    eData.name[sizeof(eData.name) - 1] = '\0';
-
-    eData.pos = e.tr.pos;
-    eData.rot = e.tr.rotDeg;
-    eData.scale = e.tr.scale;
-
-    out.write(reinterpret_cast<const char *>(&eData), sizeof(EntitySaveData));
-  }
-
-  out.close();
-  std::cout << "Saved " << count << " entities to " << filename << "\n";
+  // TODO: Port to ECS
 }
 
 void loadConfig(AppState &s, const char *filename) {
-  std::ifstream in(filename, std::ios::binary);
-  if (!in.is_open()) {
-    std::cerr << "No config file found at " << filename << "\n";
-    return;
-  }
-
-  // --- 1. Load Globals ---
-  AppConfig cfg;
-  in.read(reinterpret_cast<char *>(&cfg), sizeof(AppConfig));
-
-  s.sun.sunPos = cfg.sunPos;
-  s.sun.sunDir = cfg.sunDir;
-  s.sun.sunColor = cfg.sunColor;
-  s.sun.sunSize = cfg.sunSize;
-  s.sun.ambientStrength = cfg.ambientStrength;
-
-  s.fire.params().enabled = cfg.fireEnabled;
-  s.fire.params().offset = cfg.fireOffset;
-  s.fire.params().size = cfg.fireSize;
-  s.fire.params().intensity = cfg.fireIntensity;
-
-  s.x = cfg.x;
-  s.y = cfg.y;
-  s.z = cfg.z;
-  s.yaw = cfg.yaw;
-  s.pitch = cfg.pitch;
-
-  // Recalc camera front
-  glm::vec3 front;
-  front.x = cos(glm::radians(s.yaw)) * cos(glm::radians(s.pitch));
-  front.y = sin(glm::radians(s.pitch));
-  front.z = sin(glm::radians(s.yaw)) * cos(glm::radians(s.pitch));
-  s.cameraFront = glm::normalize(front);
-
-  s.terrainSize = cfg.terrainSize;
-  s.terrainSpacing = cfg.terrainSpacing;
-  s.turretYawDeg = cfg.turretYaw;
-
-  // --- 2. Load Entities ---
-  size_t count = 0;
-  if (in.read(reinterpret_cast<char *>(&count), sizeof(count))) {
-    for (size_t i = 0; i < count; ++i) {
-      EntitySaveData eData;
-      in.read(reinterpret_cast<char *>(&eData), sizeof(EntitySaveData));
-
-      // Find entity by Name in the existing scene
-      // (Assuming entities are already created by App setup)
-      auto &allEnts = s.scene.entities();
-
-      bool found = false;
-      for (auto &existingEnt : allEnts) {
-        if (existingEnt.name == eData.name) {
-          existingEnt.tr.pos = eData.pos;
-          existingEnt.tr.rotDeg = eData.rot;
-          existingEnt.tr.scale = eData.scale;
-          found = true;
-          break;
-        }
-      }
-
-      if (!found) {
-        // Optional: Create new entity if it doesn't exist?
-        // For now, just warn.
-        // std::cout << "Warning: Saved entity '" << eData.name << "' not found
-        // in current scene.\n";
-      }
-    }
-  }
-
-  in.close();
-  std::cout << "Loaded config (" << count << " entities) from " << filename
-            << "\n";
-}
-
-void applyMouseLook(AppState &s, bool allowMouseLook) {
-  if (allowMouseLook) {
-    float xoff = (float)Mouse::getDX() * s.mouseSensitivity;
-    float yoff = (float)Mouse::getDY() * s.mouseSensitivity;
-
-    s.yaw += xoff;
-    s.pitch += yoff;
-
-    if (s.pitch > 89.0f)
-      s.pitch = 89.0f;
-    if (s.pitch < -89.0f)
-      s.pitch = -89.0f;
-
-    glm::vec3 front;
-    front.x = cos(glm::radians(s.yaw)) * cos(glm::radians(s.pitch));
-    front.y = sin(glm::radians(s.pitch));
-    front.z = sin(glm::radians(s.yaw)) * cos(glm::radians(s.pitch));
-    s.cameraFront = glm::normalize(front);
-  } else {
-    Mouse::getDX();
-    Mouse::getDY();
-  }
-}
-
-void processMovement(AppState &s) {
-  bool shiftDown =
-      Keyboard::key(GLFW_KEY_LEFT_SHIFT) || Keyboard::key(GLFW_KEY_RIGHT_SHIFT);
-  float step = shiftDown ? (s.walkStep * s.runMult) : s.walkStep;
-
-  glm::vec3 forward =
-      glm::normalize(glm::vec3(s.cameraFront.x, 0.0f, s.cameraFront.z));
-  glm::vec3 right = glm::normalize(glm::cross(forward, s.cameraUp));
-
-  if (Keyboard::key(GLFW_KEY_W)) {
-    s.x += forward.x * step;
-    s.z += forward.z * step;
-  }
-  if (Keyboard::key(GLFW_KEY_S)) {
-    s.x -= forward.x * step;
-    s.z -= forward.z * step;
-  }
-  if (Keyboard::key(GLFW_KEY_D)) {
-    s.x += right.x * step;
-    s.z += right.z * step;
-  }
-  if (Keyboard::key(GLFW_KEY_A)) {
-    s.x -= right.x * step;
-    s.z -= right.z * step;
-  }
-
-  if (Keyboard::key(GLFW_KEY_UP))
-    s.y += step;
-  if (Keyboard::key(GLFW_KEY_DOWN))
-    s.y -= step;
-
-  bool spaceDown = Keyboard::key(GLFW_KEY_SPACE);
-  if (spaceDown && !s.spaceWasDown && s.onGround) {
-    s.yVel = s.jumpStrength;
-    s.onGround = false;
-  }
-  s.spaceWasDown = spaceDown;
-}
-
-void updateJumpPhysics(AppState &s) {
-  if (!s.onGround) {
-    s.y += s.yVel;
-    if (!s.freezePhysics)
-      s.yVel -= s.gravity;
-
-    if (s.y <= s.groundY) {
-      s.y = s.groundY;
-      s.yVel = 0.0f;
-      s.onGround = true;
-    }
-  }
+  // TODO: Port to ECS
 }
 
 void drawSkyUI(AppState &s) {
@@ -443,7 +225,8 @@ void renderShadowPass(AppState &s, const glm::vec3 &lightPos, float nearPlane,
     depthSh.setVec3("lightPos", lightPos);
     depthSh.setFloat("far_plane", farPlane);
 
-    s.scene.drawAllDepth(depthSh);
+    // Legacy drawAllDepth removed — RenderSystem handles all ECS entities
+    s.renderSystem.update(s.scene.registry(), depthSh, true);
   }
 
   s.renderer.endShadowPass();
@@ -451,6 +234,7 @@ void renderShadowPass(AppState &s, const glm::vec3 &lightPos, float nearPlane,
 
 void renderMainPass(AppState &s, const glm::mat4 &view,
                     const glm::mat4 &projection, const glm::vec3 &cameraPos,
+                    const glm::vec3 &cameraFront, const glm::vec3 &cameraUp,
                     float nowT) {
   glm::vec3 lightPos = s.sun.sunPos;
   float far_plane = 250.0f;
@@ -477,18 +261,13 @@ void renderMainPass(AppState &s, const glm::mat4 &view,
   // ... (fire code) ...
   s.renderer.shader().setBool("uHasFire", false);
 
-  s.scene.drawAll(s.renderer.shader());
-
-  // 4. Draw FBX Model (Revert scale to 1.0f)
-  s.myModel.draw(s.renderer.shader(), glm::vec3(5.0f, 0.0f, 5.0f),
-                 glm::vec3(0.0f),
-                 glm::vec3(1.0f) // REVERTED SCALE
-  );
+  // ECS Rendering
+  s.renderSystem.update(s.scene.registry(), s.renderer.shader(), false);
 
   s.projectiles.draw(view, projection, 0.25f);
 
   s.renderer.shader().activate();
-  s.sun.draw(s.renderer.shader(), s.cameraFront, s.cameraUp);
+  s.sun.draw(s.renderer.shader(), cameraFront, cameraUp);
 }
 
 } // namespace
@@ -578,51 +357,41 @@ int App::run() {
       "/Users/edjan03/Downloads/glGen-main/shaders/glsl/projectile.vert",
       "/Users/edjan03/Downloads/glGen-main/shaders/glsl/projectile.frag");
 
-  // ---- Scene setup ----
-  m->treeId = m->scene.createEntityOBJ(
-      "Tree", "/Users/edjan03/Downloads/glGen-main/assets/fbxmodels/test19/"
-              "guard post in the middle of the forest.obj");
-  m->carId =
-      m->scene.createEntityOBJ("Car", "/Users/edjan03/Downloads/glGen-main/"
-                                      "assets/tiger2/textures/sUntitled.obj");
-  m->starwarsId = m->scene.createEntityOBJ(
-      "StarWars",
-      "/Users/edjan03/Downloads/star-wars-imperial-ii-star-destroyer/source/"
-      "ImperialIIStarDetroyer.blend.obj");
+  // ---- Scene setup (ECS Migration) ----
 
-  m->myModel.loadFromFile("/Users/edjan03/Downloads/glGen-main/assets/"
-                          "adjustable wrench 3d model.glb");
+  // 1. Town (New Map)
+  uint32_t townId = m->scene.registry().create();
+  {
+    auto &reg = m->scene.registry();
+    reg.emplace<TransformComponent>(townId);
+    reg.emplace<NameComponent>(townId, "Town");
+    auto &tr = reg.get<TransformComponent>(townId);
+    tr.position = glm::vec3(0.0f, 0.0f, 0.0f);
+    tr.scale = glm::vec3(1.0f);
 
-  if (auto *sw = m->scene.get(m->starwarsId)) {
-    sw->tr.pos = glm::vec3(8.0f, 0.0f, 8.0f);
-    sw->tr.scale = glm::vec3(0.01f);
+    OBJModel *model = m->scene.getOrLoadOBJ(
+        "/Users/edjan03/Downloads/glGen-main/assets/mctown/Mineways2Skfb.obj");
+    reg.emplace<MeshComponent>(townId, model);
   }
 
-  if (auto *tree = m->scene.get(m->treeId)) {
-    tree->tr.pos = glm::vec3(5.0f, 0.0f, 5.0f);
-    tree->tr.scale = glm::vec3(1.0f);
-    if (tree->model)
-      m->hasFireAnchor =
-          tree->model->getSubmeshCenterLocal("Fire", m->fireLocal);
+  // --- Initialize ECS Player ---
+  {
+    m->playerId = m->scene.registry().create();
+    auto &reg = m->scene.registry();
+
+    // Transform
+    reg.emplace<TransformComponent>(m->playerId);
+    auto &tr = reg.get<TransformComponent>(m->playerId);
+    tr.position = glm::vec3(0.0f, 0.0f, 3.0f);
+
+    // Physics
+    reg.emplace<PhysicsComponent>(m->playerId);
+
+    // Camera
+    reg.emplace<CameraComponent>(m->playerId);
   }
 
-  if (auto *car = m->scene.get(m->carId)) {
-    car->tr.pos = glm::vec3(5.0f, 0.0f, 0.0f);
-    car->tr.scale = glm::vec3(1.0f);
-
-    if (car->model) {
-      m->hasTurretAnchor = car->model->getSubmeshCenterLocal(
-          "tank_guns_skinned", m->turretLocal);
-
-      m->hasTurretPivot = car->model->getSubmeshCenterLocal(
-          "tank_turret_02", m->turretPivotLocal);
-      if (!m->hasTurretPivot)
-        m->hasTurretPivot = car->model->getSubmeshCenterLocal(
-            "tank_guns_skinned", m->turretPivotLocal);
-    }
-  }
-
-  m->hasFire = m->hasFireAnchor;
+  m->hasFire = false; // No fire anchor in current scene
   m->lastT = (float)glfwGetTime();
 
   // NEW: Auto-load
@@ -649,20 +418,12 @@ int App::run() {
 
     beginImGuiFrame();
 
-    // Bridge EditorUI tree controls
+    // EditorUI draw (treePos/treeScale are legacy placeholders)
     glm::vec3 dummyPos(0.0f), dummyScale(1.0f);
-    glm::vec3 *treePosRef = &dummyPos;
-    glm::vec3 *treeScaleRef = &dummyScale;
-
-    if (auto *tree = m->scene.get(m->treeId)) {
-      treePosRef = &tree->tr.pos;
-      treeScaleRef = &tree->tr.scale;
-    }
-
     EditorUIOutput uiOut = m->editor.draw(
         m->uiMode, m->walkStep, m->runMult, m->jumpStrength, m->gravity,
         m->freezePhysics, m->mouseSensitivity, m->fov, m->sun, m->fire,
-        m->terrainSize, m->terrainSpacing, *treePosRef, *treeScaleRef);
+        m->terrainSize, m->terrainSpacing, dummyPos, dummyScale);
     if (uiOut.saveRequested) {
       saveConfig(*m, "editor_state.bin");
     }
@@ -674,108 +435,74 @@ int App::run() {
     drawSkyUI(*m);
 
     bool allowGameInput = (!m->uiMode && !uiOut.wantCaptureKeyboard);
-    if (allowGameInput) {
-      processMovement(*m);
 
-      // Turret yaw (Q/E)
-      float turretSpeed = 90.0f; // deg/sec
-      if (Keyboard::key(GLFW_KEY_Q))
-        m->turretYawDeg += turretSpeed * dt;
-      if (Keyboard::key(GLFW_KEY_E))
-        m->turretYawDeg -= turretSpeed * dt;
+    // --- ECS Systems Update ---
+    if (allowGameInput) {
+      m->movementSystem.update(m->scene.registry(), dt);
     }
 
-    // Apply turret yaw
-    if (auto *car = m->scene.get(m->carId)) {
-      if (car->model) {
-        car->model->setObjectYawDegPivot("Turret_02", m->turretYawDeg,
-                                         m->turretPivotLocal);
-        car->model->setObjectYawDegPivot("gun_05Shape5", m->turretYawDeg,
-                                         m->turretPivotLocal);
+    // Camera System (Mouse Look)
+    bool allowMouseLook =
+        (!m->uiMode && !uiOut.wantCaptureMouse && !ImGuizmo::IsUsing());
+    if (allowMouseLook) {
+      m->cameraSystem.update(m->scene.registry(), m->mouseSensitivity);
+    } else {
+      Mouse::getDX(); // Consume delta
+      Mouse::getDY();
+    }
+
+    // (Turret logic removed — legacy tank entity no longer exists)
+
+    // Recover Player Position for View Matrix
+    glm::vec3 cameraPos(0, 0, 3);
+    glm::vec3 cameraFront(0, 0, -1);
+    glm::vec3 cameraUp(0, 1, 0);
+
+    if (m->playerId != 0) {
+      if (m->scene.registry().has<TransformComponent>(m->playerId)) {
+        cameraPos =
+            m->scene.registry().get<TransformComponent>(m->playerId).position;
+      }
+      if (m->scene.registry().has<CameraComponent>(m->playerId)) {
+        const auto &cam = m->scene.registry().get<CameraComponent>(m->playerId);
+        cameraFront = cam.front;
+        cameraUp = cam.up;
       }
     }
 
-    updateJumpPhysics(*m);
-
-    glm::vec3 cameraPos(m->x, m->y, m->z);
-    glm::mat4 view =
-        glm::lookAt(cameraPos, cameraPos + m->cameraFront, m->cameraUp);
+    glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
 
     int fbW, fbH;
     glfwGetFramebufferSize(m->window, &fbW, &fbH);
     glm::mat4 projection = glm::perspective(
         glm::radians(m->fov), (float)fbW / (float)fbH, 0.1f, 500.0f);
 
-    bool allowMouseLook =
-        (!m->uiMode && !uiOut.wantCaptureMouse && !ImGuizmo::IsUsing());
-    applyMouseLook(*m, allowMouseLook);
+    // (Turret projectile spawning removed — legacy tank entity no longer
+    // exists)
 
-    if (!m->uiMode && Mouse::buttonWentDown(GLFW_MOUSE_BUTTON_1) &&
-        m->hasTurretAnchor) {
-      if (auto *car = m->scene.get(m->carId)) {
-        glm::mat4 TR(1.0f);
-        TR = glm::translate(TR, car->tr.pos);
-        TR =
-            glm::rotate(TR, glm::radians(car->tr.rotDeg.y), glm::vec3(0, 1, 0));
-        TR =
-            glm::rotate(TR, glm::radians(car->tr.rotDeg.x), glm::vec3(1, 0, 0));
-        TR =
-            glm::rotate(TR, glm::radians(car->tr.rotDeg.z), glm::vec3(0, 0, 1));
-
-        glm::mat4 S = glm::scale(glm::mat4(1.0f), car->tr.scale);
-
-        glm::mat4 turretExtra(1.0f);
-        if (m->hasTurretPivot) {
-          turretExtra =
-              glm::translate(glm::mat4(1.0f), m->turretPivotLocal) *
-              glm::rotate(glm::mat4(1.0f), glm::radians(m->turretYawDeg),
-                          glm::vec3(0, 1, 0)) *
-              glm::translate(glm::mat4(1.0f), -m->turretPivotLocal);
-        }
-
-        glm::mat4 Mfire = TR * turretExtra * S;
-
-        glm::vec3 muzzlePos =
-            glm::vec3(Mfire * glm::vec4(m->turretLocal, 1.0f));
-        glm::vec3 forward = glm::normalize(glm::vec3(Mfire[2]));
-        glm::vec3 spawnPos = muzzlePos + forward * 1.2f;
-        float smokeOffset = 2.35f;
-        glm::vec3 smokePos = muzzlePos + forward * smokeOffset;
-
-        m->projectiles.add(spawnPos, forward * 40.0f, 2.0f,
-                           glm::vec3(1.0f, 0.8f, 0.2f));
-        m->projectiles.addSmokeBurst(smokePos, forward);
-      }
-    }
-
-    // NEW: Draw Gizmo / Outliner via EditorUI class
+    // Draw Gizmo / Outliner via EditorUI class
     {
-      EditorSelectionState selState{m->selectedEntityIndex, m->selectedEntities,
+      EditorSelectionState selState{m->selectedEntityId,    m->selectedEntities,
                                     m->lastClickedEntity,   m->editObjPart,
                                     m->selectedObjPartName, (int &)m->gizmoOp,
                                     (int &)m->gizmoMode,    m->renaming,
                                     m->renameBuf,           m->outlinerFilter,
                                     m->focusDistance};
 
-      glm::vec3 camPos(m->x, m->y, m->z);
       m->editor.drawGizmo(m->uiMode, view, projection, m->scene, m->sun,
-                          selState, camPos);
-
-      // Sync camera back (in case Focus was used)
-      m->x = camPos.x;
-      m->y = camPos.y;
-      m->z = camPos.z;
+                          selState, cameraPos);
     }
 
     bool editingSun =
-        (m->uiMode && m->selectedEntityIndex == -1 && ImGuizmo::IsUsing());
+        (m->uiMode && m->selectedEntityId == 0 && ImGuizmo::IsUsing());
     if (!editingSun)
       m->sun.update(dt, nowT);
 
     m->projectiles.update(dt);
 
     renderShadowPass(*m, m->sun.sunPos, 1.0f, 250.0f);
-    renderMainPass(*m, view, projection, cameraPos, nowT);
+    renderMainPass(*m, view, projection, cameraPos, cameraFront, cameraUp,
+                   nowT);
 
     endImGuiFrame();
     glfwSwapBuffers(m->window);

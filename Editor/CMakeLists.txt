@@ -12,7 +12,7 @@ file(GLOB EDITOR_SOURCES "*.cpp")
 
 if(EDITOR_SOURCES)
     add_library(Editor STATIC ${EDITOR_SOURCES})
-    target_include_directories(Editor PUBLIC .)
+    target_include_directories(Editor PUBLIC . ../Engine)
     target_link_libraries(Editor PUBLIC Engine)
 else()
     add_library(Editor INTERFACE)

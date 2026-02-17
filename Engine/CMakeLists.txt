@@ -6,6 +6,7 @@ file(GLOB_RECURSE ENGINE_SOURCES
     "Input/*.cpp"
     "Scene/*.cpp"
     "Assets/*.cpp"
+    "ECS/*.cpp"
 )
 
 add_library(Engine STATIC ${ENGINE_SOURCES})
@@ -17,6 +18,7 @@ target_include_directories(Engine PUBLIC
     Input 
     Scene 
     Assets
+    ECS
 )
 
 # Link ThirdParty dependencies
