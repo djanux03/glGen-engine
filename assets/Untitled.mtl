@@ -1,0 +1,38 @@
+# Blender 5.0.1 MTL File: 'None'
+# www.blender.org
+
+newmtl PBR_Wood_Dark_Ash
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd ashwooddark_diffuse.jpg
+map_Ns purewhite.jpg
+map_refl pureblack.jpg
+map_Bump -bm 1.000000 ashwood_normal.jpg
+
+newmtl PBR_Wood_Green_Ash
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd ashdarkgreen.jpg
+map_Ns purewhite.jpg
+map_refl pureblack.jpg
+map_Bump -bm 1.000000 ashwood_normal.jpg
+
+newmtl PBR_Wood_Red_Ash
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd ashdarkred.jpg
+map_Ns purewhite.jpg
+map_refl pureblack.jpg
+map_Bump -bm 1.000000 ashwood_normal.jpg

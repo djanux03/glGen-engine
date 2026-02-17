@@ -1,0 +1,175 @@
+# Blender 5.0.1 MTL File: 'Sherman.blend'
+
+newmtl Cloth
+Ns 387.789276
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_Cloth_BaseColor.png
+map_refl /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_Cloth_Metallic.png
+map_Bump -bm 0.400000 /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_Cloth_Normal.png
+
+newmtl Front_Svetla
+Ns 856.609314
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.773233 0.662586
+Ks 0.500000 0.500000 0.500000
+Ke 2.000000 1.188728 0.257338
+Ni 1.450000
+d 1.000000
+illum 2
+
+newmtl Gas_Can_CaP
+Ns 387.789276
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_Gas Can CaP_BaseColor.png
+map_refl /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_Gas Can CaP_Metallic.png
+map_Bump -bm 0.400000 /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_Gas Can CaP_Normal.png
+
+newmtl Gascan
+Ns 387.789276
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_Gascan_BaseColor.png
+map_refl /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_Gascan_Metallic.png
+map_Bump -bm 0.400000 /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_Gascan_Normal.png
+
+newmtl GumaKola
+Ns 387.789276
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_GumaKola_BaseColor.png
+map_refl /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_GumaKola_Metallic.png
+map_Bump -bm 0.400000 /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_GumaKola_Normal.png
+
+newmtl HullMetal
+Ns 387.789276
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_HullMetal_BaseColor.png
+map_refl /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_HullMetal_Metallic.png
+map_Bump -bm 0.400000 /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_HullMetal_Normal.png
+
+newmtl Podvozek
+Ns 387.789276
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_Podvozek_BaseColor.png
+map_refl /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_Podvozek_Metallic.png
+map_Bump -bm 0.400000 /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_Podvozek_Normal.png
+
+newmtl Reflective_kukatka
+Ns 856.609314
+Ka 0.460993 0.460993 0.460993
+Kd 0.000000 0.000000 0.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 3
+
+newmtl Tracks
+Ns 387.789276
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_Tracks_BaseColor.png
+map_refl /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_Tracks_Metallic.png
+map_Bump -bm 0.400000 /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_Tracks_Normal.png
+
+newmtl Turret
+Ns 387.789276
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_Turret_BaseColor.png
+map_refl /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_Turret_Metallic.png
+map_Bump -bm 0.600000 /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_Turret_Normal.png
+
+newmtl Wood
+Ns 387.789276
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_Wood_BaseColor.png
+map_refl /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_Wood_Metallic.png
+map_Bump -bm 0.400000 /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_Wood_Normal.png
+
+newmtl WoodCratesNew
+Ns 387.789276
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_WoodCratesNew_BaseColor.png
+map_refl /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_WoodCratesNew_Metallic.png
+map_Bump -bm 0.400000 /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_WoodCratesNew_Normal.png
+
+newmtl Zadni_svetla
+Ns 856.609314
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.027385 0.024276
+Ks 0.500000 0.500000 0.500000
+Ke 2.000000 0.150262 0.114673
+Ni 1.450000
+d 1.000000
+illum 2
+
+newmtl basic
+Ns 387.789276
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_basic_BaseColor.png
+map_refl /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_basic_Metallic.png
+map_Bump -bm 0.400000 /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanComplete_basic_Normal.png
+
+newmtl strap
+Ns 387.789276
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_strap_BaseColor.png
+map_refl /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_strap_Metallic.png
+map_Bump -bm 0.400000 /Users/edjan03/Downloads/glGen-main/assets/sherman/ShermanCammo_strap_Normal.png

@@ -1,0 +1,22 @@
+# Blender 5.0.1 MTL File: 'Sketchfab_2022_04_14_09_29_50.blend'
+# www.blender.org
+
+newmtl /Users/edjan03/Downloads/glGen-main/assets/starwars/atst_body.jpeg
+Ns 0.000010
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+
+newmtl /Users/edjan03/Downloads/glGen-main/assets/starwars/atst_legs.jpeg
+Ns 0.000010
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2

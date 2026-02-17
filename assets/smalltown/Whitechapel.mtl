@@ -1,0 +1,771 @@
+# Blender 5.0.1 MTL File: 'Whitechapel.blend'
+# www.blender.org
+
+newmtl 3td_Africa_Grass01
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl DryWeeds-CC0
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl Leaves0119_14_S
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl TexturesCom_Leaves0119_1_alphamasked_S
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl TexturesCom_Leaves0119_2_alphamasked_S
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl arbre-feuille
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl arbre-feuille-variante
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl arbre-feuille-variante2
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl arbre-tronc
+Ka 1.000000 1.000000 1.000000
+Ks 0.033333 0.033333 0.033333
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/BarkDecidious0036_10_S.jpg
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/BarkDecidious0036_10_S_SPEC.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/BarkDecidious0036_10_S_NRML.png
+
+newmtl bat1-fenetres
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat1-fenetres_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat1-fenetres_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat1-fenetres_Metallic.png
+
+newmtl bat1-structure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat1-structure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat1-structure_Roughness.png
+map_Bump -bm 0.600000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat1-structure_Normal.png
+
+newmtl bat1-toiture
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat1-toiture_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat1-toiture_Roughness.png
+map_Bump -bm 0.600000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat1-toiture_Normal.png
+
+newmtl bat10-fenetres
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat10-fenetres_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat10-fenetres_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat10-fenetres_Metallic.png
+
+newmtl bat10-moulure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat10-moulure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat10-moulure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat10-moulure_Normal.png
+
+newmtl bat10-structure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat10-structure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat10-structure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat10-structure_Normal.png
+
+newmtl bat10-toiture.
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat10-toiture._BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat10-toiture._Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat10-toiture._Normal.png
+
+newmtl bat11-fenetres
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat11-fenetres_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat11-fenetres_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat11-fenetres_Metallic.png
+
+newmtl bat11-moulure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat11-moulure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat11-moulure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat11-moulure_Normal.png
+
+newmtl bat11-structure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat11-structure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat11-structure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat11-structure_Normal.png
+
+newmtl bat11-toiture
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat11-toiture_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat11-toiture_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat11-toiture_Normal.png
+
+newmtl bat12-fenetres
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat12-fenetres_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat12-fenetres_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat12-fenetres_Metallic.png
+
+newmtl bat12-moulure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat12-moulure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat12-moulure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat12-moulure_Normal.png
+
+newmtl bat12-structure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat12-structure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat12-structure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat12-structure_Normal.png
+
+newmtl bat12-toiture
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat12-toiture_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat12-toiture_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat12-toiture_Normal.png
+
+newmtl bat2-fenetres
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat2-fenetres_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat2-fenetres_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat2-fenetres_Metallic.png
+
+newmtl bat2-moulure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat2-moulure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat2-moulure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat2-moulure_Normal.png
+
+newmtl bat2-structure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat2-structure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat2-structure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat2-structure_Normal.png
+
+newmtl bat2-toiture
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat2-toiture_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat2-toiture_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat2-toiture_Normal.png
+
+newmtl bat3-fenetres
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat3-fenetres_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat3-fenetres_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat3-fenetres_Metallic.png
+
+newmtl bat3-rembarde
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat3-rembarde_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat3-rembarde_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat3-rembarde_Normal.png
+
+newmtl bat3-structure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat3-structure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat3-structure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat3-structure_Normal.png
+
+newmtl bat3-toiture
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat3-toiture_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat3-toiture_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat3-toiture_Normal.png
+
+newmtl bat4-fenetres
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat4-fenetres_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat4-fenetres_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat4-fenetres_Metallic.png
+
+newmtl bat4-structure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat4-structure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat4-structure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat4-structure_Normal.png
+
+newmtl bat4-toiture
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat4-toiture_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat4-toiture_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat4-toiture_Normal.png
+
+newmtl bat5-fenetres
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat5-fenetres_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat5-fenetres_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat5-fenetres_Metallic.png
+
+newmtl bat5-rembarde
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat5-rembarde_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat5-rembarde_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat5-rembarde_Normal.png
+
+newmtl bat5-structure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat5-structure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat5-structure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat5-structure_Normal.png
+
+newmtl bat5-toiture
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat5-toiture_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat5-toiture_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat5-toiture_Normal.png
+
+newmtl bat6-fenetres
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat6-fenetres_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat6-fenetres_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat6-fenetres_Metallic.png
+
+newmtl bat6-moulure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat6-moulure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat6-moulure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat6-moulure_Normal.png
+
+newmtl bat6-structure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat6-structure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat6-structure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat6-structure_Normal.png
+
+newmtl bat6-toiture
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat6-toiture_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat6-toiture_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat6-toiture_Normal.png
+
+newmtl bat7-fenetres
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat7-fenetres_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat7-fenetres_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat7-fenetres_Metallic.png
+
+newmtl bat7-moulure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat7-moulure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat7-moulure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat7-moulure_Normal.png
+
+newmtl bat7-structure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat7-structure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat7-structure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat7-structure_Normal.png
+
+newmtl bat7-toiture
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat7-toiture_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat7-toiture_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat7-toiture_Normal.png
+
+newmtl bat8-fenetres
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat8-fenetres_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat8-fenetres_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat8-fenetres_Metallic.png
+
+newmtl bat8-moulure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat8-moulure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat8-moulure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat8-moulure_Normal.png
+
+newmtl bat8-structure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat8-structure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat8-structure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat8-structure_Normal.png
+
+newmtl bat8-toiture
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat8-toiture_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat8-toiture_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat8-toiture_Normal.png
+
+newmtl bat9-fenetres
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat9-fenetres_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat9-fenetres_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat9-fenetres_Metallic.png
+
+newmtl bat9-moulure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat9-moulure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat9-moulure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat9-moulure_Normal.png
+
+newmtl bat9-structure
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat9-structure_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat9-structure_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat9-structure_Normal.png
+
+newmtl bat9-toiture
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat9-toiture_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat9-toiture_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/bat9-toiture_Normal.png
+
+newmtl caisse
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/caisse_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/caisse_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/caisse_Normal.png
+
+newmtl cerclage
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/cerclage_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/cerclage_Roughness.png
+
+newmtl fence-classic
+Ns 390.625000
+Ka 1.000000 1.000000 1.000000
+Kd 0.010111 0.010111 0.010111
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+
+newmtl fence-emit
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/fence-emit_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/fence-emit_Roughness.png
+
+newmtl fence-or-classic
+Ns 1000.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.354741 0.278270 0.126687
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 3
+
+newmtl fgrass1_v2_256
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl ground1
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/ground1_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/ground1_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/ground1_Metallic.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/ground1_Normal.png
+
+newmtl ground2
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/ground2_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/ground2_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/ground2_Metallic.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/ground2_Normal.png
+
+newmtl ground3
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/ground3_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/ground3_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/ground3_Metallic.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/ground3_Normal.png
+
+newmtl lampadaire
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/lampadaire_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/lampadaire_Roughness.png
+
+newmtl lampadaire-verre
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.380550 0.800000 0.086314
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl planche
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/planche_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/planche_Roughness.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/planche_Normal.png
+
+newmtl terre
+Ka 1.000000 1.000000 1.000000
+Ks 0.000000 0.000000 0.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 1
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/terre_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/terre_Roughness.png
+
+newmtl tonneau
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/tonneau_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/tonneau_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/tonneau_Metallic.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/tonneau_Normal.png
+
+newmtl trottoir
+Ka 1.000000 1.000000 1.000000
+Ks 0.250000 0.250000 0.250000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/trottoir_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/trottoir_Roughness.png
+
+newmtl zeppelin
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/zeppelin_BaseColor.png
+map_Ns /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/zeppelin_Roughness.png
+map_refl /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/zeppelin_Metallic.png
+map_Bump -bm 1.000000 /Users/edjan03/Downloads/after-the-rain-vr-sound/source/textureLow/zeppelin_Normal.png

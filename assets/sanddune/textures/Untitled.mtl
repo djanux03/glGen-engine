@@ -1,0 +1,24 @@
+# Blender 5.0.1 MTL File: 'Untitled.blend'
+
+newmtl WC_Terrain_0_0
+Ns 360.000000
+Ka 1.000000 1.000000 1.000000
+Kd 1.000000 1.000000 1.000000
+Ks 0.000000 0.000000 0.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+# Base Color / Albedo
+map_Kd Ground055L_8K_Color.jpg
+
+# Normal Map
+norm Ground055L_8K_NormalGL.jpg
+map_Bump -bm 1.0 Ground055L_8K_NormalGL.jpg
+
+# Roughness (MTL doesn’t officially support roughness, but some engines use map_Pr)
+map_Pr Ground055L_8K_Roughness.jpg
+
+# Ambient Occlusion (custom tag, some engines read map_Ka)
+map_Ka Ground055L_8K_AmbientOcclusion.jpg

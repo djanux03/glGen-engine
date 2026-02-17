@@ -1,0 +1,52 @@
+# Blender 5.0.1 MTL File: 'Untitled.blend'
+# www.blender.org
+
+newmtl tank_chassis_01_skinned
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd PzVIB_Tiger_II_chassis_01_AM.png
+
+newmtl tank_guns_skinned
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd PzVIB_Tiger_II_guns_AM.png
+
+newmtl tank_hull_01
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd PzVIB_Tiger_II_hull_01_AM.png
+
+newmtl tank_turret_02
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd PzVIB_Tiger_II_turret_02_AM.png
+
+newmtl track_mat
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd Gg_26_800_300_segment_track_AM.png

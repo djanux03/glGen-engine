@@ -1,0 +1,22 @@
+# Blender 5.0.1 MTL File: 'Untitled.blend'
+# www.blender.org
+
+newmtl Fire
+Ns 62.500000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 25.000000 2.273768 0.026119
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd Forest.psd
+
+newmtl Forest_Material
+Ns 62.500000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd Forest.psd

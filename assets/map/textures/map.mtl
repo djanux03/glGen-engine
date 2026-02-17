@@ -1,0 +1,26 @@
+# Blender 5.0.1 MTL File: 'Untitled.blend'
+# www.blender.org
+
+newmtl Lake
+Ns 902.500000
+Ka 1.000000 1.000000 1.000000
+Kd 0.456394 0.711442 1.000000
+Ks 0.036364 0.036364 0.036364
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd Lake_BaseColor.jpg
+
+newmtl Mountain_Valley_Terrain
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd MtR.001.BaseColor_Out.jpg
+map_Ks MtR.001.Specular_Out.jpg
+map_Ns MtR.001.Roughness_Out.jpg
+map_refl MtR.001.Metallic_Out.jpg
+map_Bump -bm 1.000000 MtR.001.Normal_Normals.jpg
