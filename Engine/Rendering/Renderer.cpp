@@ -1,8 +1,10 @@
 #include "Renderer.h"
+#include "EngineAssert.h"
+#include "GLStateCache.h"
+#include "Logger.h"
 #include "Shader.h"
 #include <GLFW/glfw3.h> // Needed for glfwExtensionSupported check if you add Anisotropy
 #include <glm/gtc/matrix_transform.hpp>
-#include <iostream>
 
 Renderer::Renderer() = default;
 Renderer::~Renderer() = default;
@@ -11,16 +13,18 @@ bool Renderer::init(const char* vertexPath,
                     const char* fragmentPath,
                     const char* sidePath,
                     const char* topPath,
-                    const char* bottomPath)
+                    const char* bottomPath,
+                    const char* shadowVertPath,
+                    const char* shadowFragPath,
+                    int shadowMapRes)
 {
     (void)sidePath; (void)topPath; (void)bottomPath;
 
-    // Suggestion: Increase shadow res to 2048 for sharper shadows if performance allows
     return initWithShadows(vertexPath, fragmentPath,
                            sidePath, topPath, bottomPath,
-                           "/Users/edjan03/Downloads/glGen-main/shaders/glsl/point_shadow_depth.vert",
-                           "/Users/edjan03/Downloads/glGen-main/shaders/glsl/point_shadow_depth.frag",
-                           2048); 
+                           shadowVertPath,
+                           shadowFragPath,
+                           shadowMapRes);
 }
 
 bool Renderer::initWithShadows(const char* vertexPath,
@@ -47,7 +51,7 @@ bool Renderer::initWithShadows(const char* vertexPath,
     mShader->setFloat("uShadowStrength", 1.5f);
 
     if (!initShadowResources_(shadowVertPath, shadowFragPath, shadowMapRes))
-        std::cout << "Shadow resources init failed (continuing without shadows)\n";
+        LOG_WARN("Render", "Shadow resources init failed. Continuing without shadows.");
 
     return true;
 }
@@ -90,7 +94,7 @@ bool Renderer::initShadowResources_(const char* shadowVertPath,
 
     if (status != GL_FRAMEBUFFER_COMPLETE)
     {
-        std::cout << "Shadow FBO incomplete: " << status << "\n";
+        LOG_ERROR("Render", "Shadow FBO incomplete: status=" + std::to_string((int)status));
         shutdownShadowResources_();
         return false;
     }
@@ -133,6 +137,7 @@ void Renderer::setFrameUniforms(const glm::mat4& view,
                                 float farPlane,
                                 float shadowStrength)
 {
+    ENGINE_ASSERT(mShader != nullptr, "Renderer::setFrameUniforms called before shader init");
     mShader->activate();
 
     mShader->setMat4("view", view);
@@ -161,6 +166,7 @@ void Renderer::setFrameUniforms(const glm::mat4& view,
 
 void Renderer::beginShadowPass()
 {
+    ENGINE_ASSERT(mShader != nullptr, "Renderer::beginShadowPass called before init");
     if (!mShadowFBO || !mShadowCubeTex || !mShadowShader) return;
 
     glGetIntegerv(GL_VIEWPORT, mPrevViewport);
@@ -173,7 +179,7 @@ void Renderer::beginShadowPass()
     // This solves "peter panning" (floating shadows) better than PolygonOffset usually does.
     // It renders the BACK of the objects into the shadow map.
     glEnable(GL_CULL_FACE);
-    glCullFace(GL_FRONT);
+    GLStateCache::instance().setCullFace(GL_FRONT);
 }
 
 void Renderer::endShadowPass()
@@ -181,7 +187,7 @@ void Renderer::endShadowPass()
     if (!mShadowFBO) return;
 
     // Restore standard rendering state
-    glCullFace(GL_BACK);
+    GLStateCache::instance().setCullFace(GL_BACK);
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(mPrevViewport[0], mPrevViewport[1], mPrevViewport[2], mPrevViewport[3]);

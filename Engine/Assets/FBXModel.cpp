@@ -1,4 +1,6 @@
 #include "FBXModel.h"
+#include "GLStateCache.h"
+#include "Logger.h"
 #include "Shader.h"
 #include "Texture.h"
 #include <stb/stb_image.h>
@@ -6,7 +8,6 @@
 
 #include "tiny_gltf.h"
 
-#include <iostream>
 #include <map>
 #include <vector>
 #include <glm/gtc/matrix_transform.hpp>
@@ -49,15 +50,15 @@ bool FBXModel::loadFromFile(const std::string& path)
     }
 
     if (!warn.empty()) {
-        std::cout << "glTF Warning: " << warn << "\n";
+        LOG_WARN("Asset", "glTF warning: " + warn);
     }
 
     if (!err.empty()) {
-        std::cout << "glTF Error: " << err << "\n";
+        LOG_ERROR("Asset", "glTF error: " + err);
     }
 
     if (!ret) {
-        std::cout << "Failed to load glTF: " << path << "\n";
+        LOG_ERROR("Asset", "Failed to load glTF: " + path);
         return false;
     }
 
@@ -68,7 +69,8 @@ bool FBXModel::loadFromFile(const std::string& path)
         processNode(scene.nodes[i]);
     }
 
-    std::cout << "Loaded glTF: " << path << " with " << mSubmeshes.size() << " submeshes.\n";
+    LOG_INFO("Asset", "Loaded glTF: " + path + " with " +
+                          std::to_string(mSubmeshes.size()) + " submeshes.");
     return true;
 }
 
@@ -165,47 +167,48 @@ void FBXModel::processMesh(const tinygltf::Mesh& mesh)
         // Create submesh
         FBXSubmesh submesh;
         submesh.indexCount = (GLsizei)indices.size();
-        submesh.kd = glm::vec3(0.8f);
-        submesh.texDiffuse = 0;
-        submesh.texNormal = 0;
-        submesh.texRoughness = 0;
-        submesh.texMetallic = 0;
+        submesh.material.baseColor = glm::vec4(0.8f, 0.8f, 0.8f, 1.0f);
+        submesh.material.texDiffuse = 0;
+        submesh.material.texNormal = 0;
+        submesh.material.texRoughness = 0;
+        submesh.material.texMetallic = 0;
 
         // Load material
         if (primitive.material >= 0) {
             const tinygltf::Material& mat = mModel.materials[primitive.material];
             submesh.materialName = mat.name;
-            std::cout << "[DEBUG] Material [" << mat.name << "] processing...\n";
+            LOG_TRACE("Asset", "Processing material: " + mat.name);
 
             // Base color
             if (mat.pbrMetallicRoughness.baseColorTexture.index >= 0) {
-                submesh.texDiffuse = LoadTextureFromGLTF(mat.pbrMetallicRoughness.baseColorTexture.index);
-                if (submesh.texDiffuse != 0) {
-                    std::cout << "[LOADED] Diffuse texture\n";
+                submesh.material.texDiffuse = LoadTextureFromGLTF(mat.pbrMetallicRoughness.baseColorTexture.index);
+                if (submesh.material.texDiffuse != 0) {
+                    LOG_TRACE("Asset", "Loaded diffuse texture");
                 }
             }
             
             // Base color factor (fallback color)
             auto& colorFactor = mat.pbrMetallicRoughness.baseColorFactor;
-            submesh.kd = glm::vec3(colorFactor[0], colorFactor[1], colorFactor[2]);
+            submesh.material.baseColor = glm::vec4((float)colorFactor[0], (float)colorFactor[1], (float)colorFactor[2], 1.0f);
 
             // Normal map
             if (mat.normalTexture.index >= 0) {
-                submesh.texNormal = LoadTextureFromGLTF(mat.normalTexture.index);
-                if (submesh.texNormal != 0) {
-                    std::cout << "[LOADED] Normal texture\n";
+                submesh.material.texNormal = LoadTextureFromGLTF(mat.normalTexture.index);
+                if (submesh.material.texNormal != 0) {
+                    LOG_TRACE("Asset", "Loaded normal texture");
                 }
             }
 
             // Metallic-roughness texture (packed: R=unused, G=roughness, B=metallic)
             if (mat.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0) {
-                submesh.texRoughness = LoadTextureFromGLTF(mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
-                submesh.texMetallic = submesh.texRoughness; // Same texture, different channels
-                if (submesh.texRoughness != 0) {
-                    std::cout << "[LOADED] Metallic-Roughness texture\n";
+                submesh.material.texRoughness = LoadTextureFromGLTF(mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
+                submesh.material.texMetallic = submesh.material.texRoughness; // Same texture, different channels
+                if (submesh.material.texRoughness != 0) {
+                    LOG_TRACE("Asset", "Loaded metallic-roughness texture");
                 }
             }
         }
+        submesh.material.id = submesh.materialName;
 
         // Create GL buffers
         glGenVertexArrays(1, &submesh.vao);
@@ -250,9 +253,9 @@ GLuint FBXModel::LoadTextureFromGLTF(int textureIndex)
     if (texID != 0) {
         sTextureCache[key] = texID;
         if (image.uri.empty()) {
-            std::cout << "[EMBEDDED] Loaded texture from glTF\n";
+            LOG_TRACE("Asset", "Loaded embedded texture from glTF");
         } else {
-            std::cout << "[FILE] Loaded texture: " << image.uri << "\n";
+            LOG_TRACE("Asset", "Loaded texture file: " + image.uri);
         }
     }
 
@@ -288,52 +291,41 @@ void FBXModel::draw(Shader& shader, const glm::vec3& pos, const glm::vec3& rot, 
     glm::mat4 modelMatrix = buildTRS(pos, rot, scale);
     shader.setMat4("model", modelMatrix);
 
-        std::cout << "Drawing " << mSubmeshes.size() << " submeshes\n";
+    LOG_TRACE("Render", "Drawing FBX/glTF model submeshes=" +
+                            std::to_string(mSubmeshes.size()));
 
 
     for(const auto& sm : mSubmeshes)
     {
         if (sm.vao == 0) continue;
 
-                std::cout << "  Submesh: texDiffuse=" << sm.texDiffuse 
-                  << " texNormal=" << sm.texNormal 
-                  << " texRoughness=" << sm.texRoughness << "\n";
-        // Bind diffuse texture
-        if (sm.texDiffuse != 0) {
-            shader.setBool("uUseColor", false);
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, sm.texDiffuse);
-            shader.setInt("texDiffuse", 0);
-        } else {
-            shader.setBool("uUseColor", true);
-            shader.setVec4("uColor", glm::vec4(sm.kd, 1.0f));
-        }
+        LOG_TRACE("Render", "Submesh textures diffuse=" +
+                                std::to_string((unsigned long long)sm.material.texDiffuse) +
+                                " normal=" +
+                                std::to_string((unsigned long long)sm.material.texNormal) +
+                                " roughness=" +
+                                std::to_string((unsigned long long)sm.material.texRoughness));
+        sm.material.apply(shader);
 
-        // Bind normal map (if available)
-        if (sm.texNormal != 0) {
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, sm.texNormal);
-            shader.setInt("texNormal", 1);
-        }
-
-        // Bind roughness map (if available)
-        if (sm.texRoughness != 0) {
-            glActiveTexture(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_2D, sm.texRoughness);
-            shader.setInt("texRoughness", 2);
-        }
-
-        // Bind metallic map (if available)
-        if (sm.texMetallic != 0) {
-            glActiveTexture(GL_TEXTURE3);
-            glBindTexture(GL_TEXTURE_2D, sm.texMetallic);
-            shader.setInt("texMetallic", 3);
-        }
-
-        glBindVertexArray(sm.vao);
+        GLStateCache::instance().bindVertexArray(sm.vao);
         glDrawElements(GL_TRIANGLES, sm.indexCount, GL_UNSIGNED_INT, 0);
-        glBindVertexArray(0);
     }
+    GLStateCache::instance().bindVertexArray(0);
+}
+
+void FBXModel::drawDepth(Shader& shadowShader, const glm::vec3& pos, const glm::vec3& rot, const glm::vec3& scale)
+{
+    glm::mat4 modelMatrix = buildTRS(pos, rot, scale);
+    shadowShader.setMat4("model", modelMatrix);
+
+    for (const auto& sm : mSubmeshes)
+    {
+        if (sm.vao == 0 || sm.indexCount <= 0) continue;
+        GLStateCache::instance().bindVertexArray(sm.vao);
+        glDrawElements(GL_TRIANGLES, sm.indexCount, GL_UNSIGNED_INT, 0);
+    }
+
+    GLStateCache::instance().bindVertexArray(0);
 }
 
 void FBXModel::shutdown()

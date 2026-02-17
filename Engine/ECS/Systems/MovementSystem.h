@@ -8,9 +8,15 @@
 
 class MovementSystem {
 public:
-  void update(Registry &registry, float dt) {
+  void update(Registry &registry, float dt, float walkSpeed = 0.03f,
+              float runMult = 2.0f, float jumpStrength = 0.18f) {
     for (auto entity : registry.view<TransformComponent>()) {
-      // We also need PhysicsComponent
+      if (registry.has<LifecycleComponent>(entity)) {
+        auto s = registry.get<LifecycleComponent>(entity).state;
+        if (s != EntityLifecycleState::Alive)
+          continue;
+      }
+
       if (!registry.has<PhysicsComponent>(entity))
         continue;
 
@@ -19,7 +25,8 @@ public:
 
       // Handle Camera control if this entity also has a CameraComponent
       if (registry.has<CameraComponent>(entity)) {
-        handleInput(registry.get<CameraComponent>(entity), tr, phys);
+        handleInput(registry.get<CameraComponent>(entity), tr, phys, walkSpeed,
+                    runMult, jumpStrength);
       }
 
       // Apply Physics (Gravity)
@@ -40,13 +47,14 @@ public:
 
 private:
   void handleInput(CameraComponent &cam, TransformComponent &tr,
-                   PhysicsComponent &phys) {
-    float speed = 0.03f; // Base walk speed
+                   PhysicsComponent &phys, float walkSpeed, float runMult,
+                   float jumpStrength) {
+    float speed = walkSpeed;
 
     // Sprint
     if (Keyboard::key(GLFW_KEY_LEFT_SHIFT) ||
         Keyboard::key(GLFW_KEY_RIGHT_SHIFT)) {
-      speed *= 2.0f;
+      speed *= runMult;
     }
 
     // Calculate forward/right vectors flattened on XZ plane
@@ -72,7 +80,7 @@ private:
     static bool spaceWasDown = false;
     bool spaceDown = Keyboard::key(GLFW_KEY_SPACE);
     if (spaceDown && !spaceWasDown && phys.onGround) {
-      phys.velocity.y = 0.18f; // Jump strength
+      phys.velocity.y = jumpStrength;
       phys.onGround = false;
     }
     spaceWasDown = spaceDown;

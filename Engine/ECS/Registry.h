@@ -1,5 +1,6 @@
 #pragma once
 #include "SparseSet.h"
+#include <algorithm>
 #include <memory>
 #include <vector>
 
@@ -76,6 +77,43 @@ public:
     return mViewCache;
   }
 
+  template <typename... Ts> std::vector<EntityId> viewAll() {
+    auto pickSmallest = [this]() -> const std::vector<EntityId> * {
+      const std::vector<EntityId> *smallest = nullptr;
+      (([&]() {
+         auto &entities = getPool<Ts>()->entities();
+         if (!smallest || entities.size() < smallest->size())
+           smallest = &entities;
+       }()),
+       ...);
+      return smallest;
+    };
+
+    const std::vector<EntityId> *seed = pickSmallest();
+    mViewCache.clear();
+    if (!seed)
+      return mViewCache;
+
+    for (EntityId e : *seed) {
+      bool hasAll = true;
+      ((hasAll = hasAll && getPool<Ts>()->has(e)), ...);
+      if (hasAll)
+        mViewCache.push_back(e);
+    }
+    return mViewCache;
+  }
+
+  template <typename... Ts, typename Pred>
+  std::vector<EntityId> viewWhere(Pred pred) {
+    auto entities = viewAll<Ts...>();
+    mFilteredViewCache.clear();
+    for (EntityId e : entities) {
+      if (pred(e))
+        mFilteredViewCache.push_back(e);
+    }
+    return mFilteredViewCache;
+  }
+
   // Direct access to component array for cache-friendly iteration
   template <typename T> std::vector<T> &componentView() {
     return getPool<T>()->components();
@@ -98,6 +136,7 @@ private:
 
   // Reusable scratch buffer for multi-component views
   std::vector<EntityId> mViewCache;
+  std::vector<EntityId> mFilteredViewCache;
 
   EntityId mNextId = 1;
   std::vector<EntityId> mFreeIds;

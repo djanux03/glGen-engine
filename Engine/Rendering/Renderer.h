@@ -17,7 +17,10 @@ public:
               const char* fragmentPath,
               const char* sidePath,
               const char* topPath,
-              const char* bottomPath);
+              const char* bottomPath,
+              const char* shadowVertPath,
+              const char* shadowFragPath,
+              int shadowMapRes = 2048);
 
     bool initWithShadows(const char* vertexPath,
                          const char* fragmentPath,

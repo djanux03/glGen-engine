@@ -18,6 +18,7 @@ public:
 
   Shader(const char *vertexShaderPath, const char *fragmentShaderPath);
   void activate();
+  bool reload();
 
   // utility functions
   std::string loadShaderSrc(const char *filepath);
@@ -40,6 +41,8 @@ public:
   void setMat3(const std::string &name, const glm::mat3 &value);
 
 private:
+  std::string mVertexPath;
+  std::string mFragmentPath;
   std::unordered_map<std::string, GLint> mUniformCache;
 };
 

@@ -15,6 +15,12 @@ public:
     float yoff = (float)Mouse::getDY() * mouseSensitivity;
 
     for (auto entity : registry.view<CameraComponent>()) {
+      if (registry.has<LifecycleComponent>(entity)) {
+        auto s = registry.get<LifecycleComponent>(entity).state;
+        if (s != EntityLifecycleState::Alive)
+          continue;
+      }
+
       auto &cam = registry.get<CameraComponent>(entity);
       if (!cam.isPrimary)
         continue;

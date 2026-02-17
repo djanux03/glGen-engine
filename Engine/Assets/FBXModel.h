@@ -5,6 +5,7 @@
 #include <glad/glad.h>
 #include <unordered_map>
 #include "Texture.h"
+#include "Material.h"
 #include "tiny_gltf.h"
 
 struct FBXVertex {
@@ -19,19 +20,16 @@ struct FBXSubmesh {
     GLuint vao = 0, vbo = 0, ebo = 0;
     GLsizei indexCount = 0;
     
-    // Textures/Material
-    glm::vec3 kd{1.0f};
-    GLuint texDiffuse = 0;    // BaseColor
-    GLuint texNormal = 0;     // Normal map
-    GLuint texRoughness = 0;  // Roughness map
-    GLuint texMetallic = 0;   // Metallic map
+    MaterialAsset material;
 };
 
 class FBXModel {
 public:
     bool loadFromFile(const std::string& path);
     void draw(class Shader& shader, const glm::vec3& pos, const glm::vec3& rot, const glm::vec3& scale);
+    void drawDepth(class Shader& shadowShader, const glm::vec3& pos, const glm::vec3& rot, const glm::vec3& scale);
     void shutdown();
+    std::size_t submeshCount() const { return mSubmeshes.size(); }
 
 private:
     std::vector<FBXSubmesh> mSubmeshes;

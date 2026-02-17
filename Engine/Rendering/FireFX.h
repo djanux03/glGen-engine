@@ -31,7 +31,10 @@ public:
     FireFX();
     ~FireFX();              // declare only (no =default here)
 
-    bool init(const char* fireTexPath);
+    bool init(const char* fireTexPath,
+              const char* billboardVertPath,
+              const char* fireFragPath,
+              const char* smokeFragPath);
     void shutdown();
 
     void draw(const glm::mat4& view,

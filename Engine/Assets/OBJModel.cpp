@@ -1,10 +1,11 @@
 #include "OBJModel.h"
+#include "GLStateCache.h"
+#include "Logger.h"
 #include "Shader.h"
 #include "Texture.h"
 #include <algorithm>
 #include <cctype>
 #include <glm/gtc/matrix_transform.hpp>
-#include <iostream>
 #include <unordered_map>
 
 // tinyobjloader
@@ -102,9 +103,9 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
                              objPath.c_str(), baseDir.c_str(), true);
 
   if (!warn.empty())
-    std::cout << "OBJ warn: " << warn << "\n";
+    LOG_WARN("Asset", "OBJ warn: " + warn);
   if (!err.empty())
-    std::cout << "OBJ err: " << err << "\n";
+    LOG_ERROR("Asset", "OBJ error: " + err);
   if (!ok)
     return false;
 
@@ -130,7 +131,7 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
             isAbsolutePath(texName) ? texName : joinPath(baseDir, texName);
         matGpu[i].tex = LoadTexture2D(texPath.c_str());
         if (matGpu[i].tex == 0)
-          std::cout << "Failed to load tex: " << texPath << "\n";
+          LOG_WARN("Asset", "Failed to load texture: " + texPath);
       }
     }
   }
@@ -157,9 +158,10 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
     Submesh sm;
     sm.objectName = objectName;
     sm.materialName = materialName;
-    sm.kd = kd;
-    sm.tex = tex;
     sm.debugName = objectName + " / " + materialName;
+    sm.material.baseColor = glm::vec4(kd, 1.0f);
+    sm.material.texDiffuse = tex;
+    sm.material.id = sm.debugName;
 
     size_t idx = mSubmeshes.size();
     mSubmeshes.push_back(sm);
@@ -283,8 +285,10 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
 
     glBindVertexArray(0);
 
-    std::cout << "Submesh[" << i << "] " << sm.debugName
-              << " verts=" << sm.vertexCount << " tex=" << sm.tex << "\n";
+    LOG_TRACE("Asset", "OBJ submesh '" + sm.debugName +
+                           "' verts=" + std::to_string(sm.vertexCount) +
+                           " tex=" +
+                           std::to_string((unsigned long long)sm.material.texDiffuse));
   }
 
   return true;
@@ -458,11 +462,11 @@ void OBJModel::drawDepth(Shader &shadowShader, const glm::vec3 &position,
 
     shadowShader.setMat4("model", model);
 
-    glBindVertexArray(sm.vao);
+    GLStateCache::instance().bindVertexArray(sm.vao);
     glDrawArrays(GL_TRIANGLES, 0, sm.vertexCount);
   }
 
-  glBindVertexArray(0);
+  GLStateCache::instance().bindVertexArray(0);
 }
 
 void OBJModel::draw(Shader &shader, const glm::vec3 &position,
@@ -481,20 +485,10 @@ void OBJModel::draw(Shader &shader, const glm::vec3 &position,
     glm::mat4 model = TR * extra * S; // TRS order matters [web:2214]
     shader.setMat4("model", model);
 
-    if (sm.tex != 0) {
-      shader.setBool("uUseColor", false);
-      glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, sm.tex);
-    } else {
-      shader.setBool("uUseColor", true);
-      shader.setVec4("uColor", glm::vec4(sm.kd, 1.0f));
-      glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, 0);
-    }
-
-    glBindVertexArray(sm.vao);
+    sm.material.apply(shader);
+    GLStateCache::instance().bindVertexArray(sm.vao);
     glDrawArrays(GL_TRIANGLES, 0, sm.vertexCount);
   }
 
-  glBindVertexArray(0);
+  GLStateCache::instance().bindVertexArray(0);
 }

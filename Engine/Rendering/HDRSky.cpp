@@ -12,11 +12,13 @@
 HDRSky::HDRSky() = default;
 HDRSky::~HDRSky() = default;
 
-bool HDRSky::init(const std::string& hdrPath)
+bool HDRSky::init(const std::string& hdrPath,
+                  const std::string& vertPath,
+                  const std::string& fragPath)
 {
     mShader = std::make_unique<Shader>(
-        "/Users/edjan03/Downloads/glGen-main/shaders/glsl/hdr_sky.vert",
-        "/Users/edjan03/Downloads/glGen-main/shaders/glsl/hdr_sky.frag"
+        vertPath.c_str(),
+        fragPath.c_str()
     );
 
     createFullscreenQuad_();

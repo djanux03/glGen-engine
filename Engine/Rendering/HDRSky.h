@@ -17,7 +17,9 @@ public:
     void setRotationDegrees(const glm::vec3& eulerDeg);
     glm::vec3 mSkyRotDeg = glm::vec3(0.0f);
 
-    bool init(const std::string& hdrPath);
+    bool init(const std::string& hdrPath,
+              const std::string& vertPath,
+              const std::string& fragPath);
     void shutdown();
     void draw(const glm::mat4& view, const glm::mat4& projection,
               float exposure = 1.0f, float gamma = 2.2f);

@@ -1,6 +1,6 @@
 #include "Texture.h"
+#include "Logger.h"
 #include <stb/stb_image.h>
-#include <iostream>
 
 GLuint LoadTexture2D(const std::string& path, bool flipY)
 {
@@ -14,8 +14,10 @@ GLuint LoadTexture2D(const std::string& path, bool flipY)
     unsigned char* data = stbi_load(path.c_str(), &w, &h, &channels, 4);
     
     if (!data) {
-        std::cerr << "Failed to load texture: " << path
-                  << " reason: " << stbi_failure_reason() << "\n";
+        LOG_ERROR("Asset", "Failed to load texture: " + path +
+                               " reason: " +
+                               (stbi_failure_reason() ? stbi_failure_reason()
+                                                      : "unknown"));
         return 0;
     }
 
@@ -46,8 +48,10 @@ GLuint LoadHDRTexture2D(const std::string& path, bool flipY)
     float* data = stbi_loadf(path.c_str(), &w, &h, &n, 0);
     if (!data)
     {
-        std::cerr << "Failed to load HDR: " << path
-                  << " reason: " << stbi_failure_reason() << "\n";
+        LOG_ERROR("Asset", "Failed to load HDR: " + path +
+                               " reason: " +
+                               (stbi_failure_reason() ? stbi_failure_reason()
+                                                      : "unknown"));
         return 0;
     }
 

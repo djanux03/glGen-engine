@@ -1,0 +1,21 @@
+{
+  "projectRoot": ".",
+  "shaderRoot": "shaders/glsl",
+  "assetRoot": "assets",
+  "mainVertexShader": "vertex_core.glsl",
+  "mainFragmentShader": "fragment_core.glsl",
+  "shadowVertexShader": "point_shadow_depth.vert",
+  "shadowFragmentShader": "point_shadow_depth.frag",
+  "hdrSkyVertexShader": "hdr_sky.vert",
+  "hdrSkyFragmentShader": "hdr_sky.frag",
+  "fireBillboardVertexShader": "fire_billboard.vert",
+  "fireBillboardFragmentShader": "fire_billboard.frag",
+  "smokeBillboardFragmentShader": "smoke_billboard.frag",
+  "projectileVertexShader": "projectile.vert",
+  "projectileFragmentShader": "projectile.frag",
+  "grassSideTexture": "grass_side.png",
+  "grassTopTexture": "grass_top.png",
+  "skyHDR": "hdr/hdr_1/cloudy.hdr",
+  "fireTexture": "pngtree-realistic-3d-fire-flame-effect-for-designs-png-image_13631567.png"
+}
+

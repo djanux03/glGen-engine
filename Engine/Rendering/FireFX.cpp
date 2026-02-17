@@ -5,16 +5,19 @@
 
 FireFX::FireFX() = default;
 FireFX::~FireFX() = default;
-bool FireFX::init(const char* fireTexPath)
+bool FireFX::init(const char* fireTexPath,
+                  const char* billboardVertPath,
+                  const char* fireFragPath,
+                  const char* smokeFragPath)
 {
 mFireShader = std::make_unique<Shader>(
-    "/Users/edjan03/Downloads/glGen-main/shaders/glsl/fire_billboard.vert",
-    "/Users/edjan03/Downloads/glGen-main/shaders/glsl/fire_billboard.frag"
+    billboardVertPath,
+    fireFragPath
 );
 
 mSmokeShader = std::make_unique<Shader>(
-    "/Users/edjan03/Downloads/glGen-main/shaders/glsl/fire_billboard.vert", // reuse same vert (has uYaw)
-    "/Users/edjan03/Downloads/glGen-main/shaders/glsl/smoke_billboard.frag"
+    billboardVertPath,
+    smokeFragPath
 );
 
 

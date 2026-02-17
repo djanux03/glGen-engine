@@ -1,12 +1,16 @@
 #include "Shader.h"
+#include "GLStateCache.h"
+#include "Logger.h"
 #include <glm/gtc/type_ptr.hpp>
 
 Shader::Shader(const char *vertexShaderPath, const char *fragmentShaderPath) {
+  mVertexPath = vertexShaderPath ? vertexShaderPath : "";
+  mFragmentPath = fragmentShaderPath ? fragmentShaderPath : "";
   int success;
   char infoLog[512];
 
-  GLuint vertexShader = compileShader(vertexShaderPath, GL_VERTEX_SHADER);
-  GLuint fragShader = compileShader(fragmentShaderPath, GL_FRAGMENT_SHADER);
+  GLuint vertexShader = compileShader(mVertexPath.c_str(), GL_VERTEX_SHADER);
+  GLuint fragShader = compileShader(mFragmentPath.c_str(), GL_FRAGMENT_SHADER);
 
   id = glCreateProgram();
   glAttachShader(id, vertexShader);
@@ -16,14 +20,50 @@ Shader::Shader(const char *vertexShaderPath, const char *fragmentShaderPath) {
   glGetProgramiv(id, GL_LINK_STATUS, &success);
   if (!success) {
     glGetProgramInfoLog(id, 512, NULL, infoLog);
-    std::cout << "Linking error: " << std::endl << infoLog << std::endl;
+    LOG_ERROR("Render", std::string("Shader link error: ") + infoLog);
   }
 
   glDeleteShader(vertexShader);
   glDeleteShader(fragShader);
 }
 
-void Shader::activate() { glUseProgram(id); }
+void Shader::activate() { GLStateCache::instance().useProgram(id); }
+
+bool Shader::reload() {
+  if (mVertexPath.empty() || mFragmentPath.empty())
+    return false;
+
+  int success;
+  char infoLog[512];
+
+  GLuint vertexShader = compileShader(mVertexPath.c_str(), GL_VERTEX_SHADER);
+  GLuint fragShader = compileShader(mFragmentPath.c_str(), GL_FRAGMENT_SHADER);
+  if (vertexShader == 0 || fragShader == 0)
+    return false;
+
+  GLuint newProgram = glCreateProgram();
+  glAttachShader(newProgram, vertexShader);
+  glAttachShader(newProgram, fragShader);
+  glLinkProgram(newProgram);
+  glGetProgramiv(newProgram, GL_LINK_STATUS, &success);
+  if (!success) {
+    glGetProgramInfoLog(newProgram, 512, NULL, infoLog);
+    LOG_ERROR("Render", std::string("Shader reload link error: ") + infoLog);
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragShader);
+    glDeleteProgram(newProgram);
+    return false;
+  }
+
+  glDeleteShader(vertexShader);
+  glDeleteShader(fragShader);
+
+  if (id != 0)
+    glDeleteProgram(id);
+  id = newProgram;
+  mUniformCache.clear();
+  return true;
+}
 std::string Shader::loadShaderSrc(const char *filename) {
 
   std::ifstream file;
@@ -36,7 +76,8 @@ std::string Shader::loadShaderSrc(const char *filename) {
     buf << file.rdbuf();
     ret = buf.str();
   } else {
-    std::cout << "could not open " << filename << std::endl;
+    LOG_ERROR("Render", std::string("Could not open shader source: ") +
+                            (filename ? filename : "<null>"));
   }
   file.close();
   return ret;
@@ -55,7 +96,9 @@ GLuint Shader::compileShader(const char *filepath, GLenum type) {
   glGetShaderiv(ret, GL_COMPILE_STATUS, &success);
   if (!success) {
     glGetShaderInfoLog(ret, 512, NULL, infoLog);
-    std::cout << "Error compiling shader: " << infoLog << std::endl;
+    LOG_ERROR("Render", std::string("Error compiling shader: ") + infoLog);
+    glDeleteShader(ret);
+    return 0;
   }
   return ret;
 }
