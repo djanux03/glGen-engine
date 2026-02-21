@@ -32,5 +32,4 @@ cmake -B Build
 cmake --build Build
 ./run.sh
 ```
-
-![Editor Screenshot](path/to/editor.png)
+<img width="1467" height="823" alt="Screenshot 2026-02-20 at 18 52 21" src="https://github.com/user-attachments/assets/34ba8f96-b4d0-4fbe-85f3-db3e29b0e771" />
