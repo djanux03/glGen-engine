@@ -1,4 +1,0 @@
-g++ glad.c /home/edjan03/dev/c/glGen/io/keyboard.cpp /home/edjan03/dev/c/glGen/io/mouse.cpp shaders.cpp main.cpp -I/home/edjan03/dev/c/glGen/include/ -I/home/edjan03/dev/c/glGen/io/ -lGL -lGLU -lX11 -lXxf86vm -lXrandr -lpthread -lXi -lglfw             
-
-
-You will need to install the necessary dependencies in order to successfully run the command above. GLFW (specifically the development libraries -dev), graphics libs for openGL, and some xorg libraries, honestly I don't remember them all, just install whatever the terminal says.
