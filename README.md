@@ -2,13 +2,15 @@
 
 Modern C++ Game Engine built on OpenGL 4.1.
 
-![Header Image](path/to/header.png)
+<img width="1465" height="823" alt="Screenshot 2026-02-20 at 18 33 22" src="https://github.com/user-attachments/assets/943b84f3-85d9-400f-96eb-64659377a797" />
+png)
 
 ## Overview
 
+
 **glGen** is a lightweight, high-performance engine focusing on architectural clarity and performance.
 
-![Feature Demo](path/to/demo.png)
+<img width="1462" height="825" alt="Screenshot 2026-02-20 at 18 42 12" src="https://github.com/user-attachments/assets/2baf568c-4952-4acb-81f2-6f1ca993eb2b" />
 
 ## Core Capabilities
 
