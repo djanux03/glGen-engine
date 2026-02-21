@@ -29,3 +29,7 @@ struct CreateEmptyEntityRequestedEvent {
 struct DeleteEntityRequestedEvent {
   uint32_t entityId = 0;
 };
+
+struct DuplicateEntityRequestedEvent {
+  uint32_t entityId = 0;
+};

@@ -51,6 +51,10 @@ public:
     return getPool<T>()->has(entity);
   }
 
+  template <typename T> void removeComponent(EntityId entity) {
+    getPool<T>()->remove(entity);
+  }
+
   // Single-component view: iterate all entities with component T
   template <typename T> std::vector<EntityId> &view() {
     return getPool<T>()->entities();

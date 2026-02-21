@@ -1,6 +1,7 @@
 #pragma once
 #include "Assets/FBXModel.h"
 #include "Assets/OBJModel.h"
+#include "Assets/UFBXModel.h"
 #include "ECS/Components.h"
 #include "ECS/Registry.h"
 #include "Rendering/Shader.h"
@@ -23,7 +24,8 @@ public:
   bool cullingEnabled() const { return mCullingEnabled; }
   const VisibilityStats &stats() const { return mStats; }
 
-  void update(Registry &registry, Shader &shader, bool shadowPass = false) {
+  void update(Registry &registry, Shader &shader, bool shadowPass = false,
+              EntityId selectedEntity = 0, bool outlinePass = false) {
     if (!shadowPass)
       mStats = {};
 
@@ -107,7 +109,7 @@ public:
         continue;
       if (shadowPass && !mesh.castsShadow)
         continue;
-      if (!mesh.objModel && !mesh.fbxModel)
+      if (!mesh.objModel && !mesh.gltfModel && !mesh.ufbxModel)
         continue;
 
       if (shadowPass) {
@@ -118,25 +120,53 @@ public:
             if (!shadowPass)
               ++mStats.drawn;
           });
-        } else if (mesh.fbxModel) {
+        } else if (mesh.gltfModel) {
           drawWithWorld(entity, [&](const glm::vec3 &p, const glm::vec3 &r,
                                     const glm::vec3 &s) {
-            mesh.fbxModel->drawDepth(shader, p, r, s);
+            mesh.gltfModel->drawDepth(shader, p, r, s);
+            if (!shadowPass)
+              ++mStats.drawn;
+          });
+        } else if (mesh.ufbxModel) {
+          drawWithWorld(entity, [&](const glm::vec3 &p, const glm::vec3 &r,
+                                    const glm::vec3 &s) {
+            mesh.ufbxModel->drawDepth(shader, p, r, s);
             if (!shadowPass)
               ++mStats.drawn;
           });
         }
       } else {
+        // Stencil writing logic for selected entity
+        if (!outlinePass && selectedEntity != 0) {
+          if (entity == selectedEntity) {
+            glStencilFunc(GL_ALWAYS, 1, 0xFF);
+            glStencilMask(0xFF);
+          } else {
+            glStencilMask(0x00);
+          }
+        }
+
+        // If we are in the outline pass, ONLY draw the selected entity
+        if (outlinePass && entity != selectedEntity) {
+          continue;
+        }
+
         if (mesh.objModel) {
           drawWithWorld(entity, [&](const glm::vec3 &p, const glm::vec3 &r,
                                     const glm::vec3 &s) {
             mesh.objModel->draw(shader, p, r, s);
             ++mStats.drawn;
           });
-        } else if (mesh.fbxModel) {
+        } else if (mesh.gltfModel) {
           drawWithWorld(entity, [&](const glm::vec3 &p, const glm::vec3 &r,
                                     const glm::vec3 &s) {
-            mesh.fbxModel->draw(shader, p, r, s);
+            mesh.gltfModel->draw(shader, p, r, s);
+            ++mStats.drawn;
+          });
+        } else if (mesh.ufbxModel) {
+          drawWithWorld(entity, [&](const glm::vec3 &p, const glm::vec3 &r,
+                                    const glm::vec3 &s) {
+            mesh.ufbxModel->draw(shader, p, r, s);
             ++mStats.drawn;
           });
         }

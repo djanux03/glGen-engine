@@ -4,6 +4,7 @@
 #include "OBJModel.h"
 #include "Shader.h"
 #include "Texture.h"
+#include "UFBXModel.h"
 #include "json.hpp"
 
 #include <algorithm>
@@ -28,11 +29,14 @@ void AssetManager::setCookRoot(const std::string &cookRoot) {
 }
 
 AssetType AssetManager::inferAssetType_(const std::string &path) {
-  const std::string ext = toLower(std::filesystem::path(path).extension().string());
+  const std::string ext =
+      toLower(std::filesystem::path(path).extension().string());
   if (ext == ".obj")
     return AssetType::OBJModel;
-  if (ext == ".gltf" || ext == ".glb" || ext == ".fbx")
+  if (ext == ".gltf" || ext == ".glb")
     return AssetType::GLTFModel;
+  if (ext == ".fbx")
+    return AssetType::UFBXModel;
   if (ext == ".hdr")
     return AssetType::HDRTexture;
   if (ext == ".vert" || ext == ".frag" || ext == ".glsl")
@@ -46,6 +50,8 @@ std::string AssetManager::assetTypeToString_(AssetType t) {
     return "OBJModel";
   case AssetType::GLTFModel:
     return "GLTFModel";
+  case AssetType::UFBXModel:
+    return "UFBXModel";
   case AssetType::HDRTexture:
     return "HDRTexture";
   case AssetType::ShaderProgram:
@@ -100,8 +106,7 @@ OBJHandle AssetManager::loadOBJ(const std::string &path) {
   rec.watchedTime = safeWriteTime_(path);
   rec.asset = std::make_unique<OBJModel>();
   const std::string cooked = cookedPathFor_(path);
-  const std::string loadPath =
-      std::filesystem::exists(cooked) ? cooked : path;
+  const std::string loadPath = std::filesystem::exists(cooked) ? cooked : path;
   if (!rec.asset->loadFromFile(loadPath)) {
     return {};
   }
@@ -125,8 +130,7 @@ GLTFHandle AssetManager::loadGLTF(const std::string &path) {
   rec.watchedTime = safeWriteTime_(path);
   rec.asset = std::make_unique<FBXModel>();
   const std::string cooked = cookedPathFor_(path);
-  const std::string loadPath =
-      std::filesystem::exists(cooked) ? cooked : path;
+  const std::string loadPath = std::filesystem::exists(cooked) ? cooked : path;
   if (!rec.asset->loadFromFile(loadPath)) {
     return {};
   }
@@ -135,6 +139,30 @@ GLTFHandle AssetManager::loadGLTF(const std::string &path) {
   mGLTF.push_back(std::move(rec));
   mGLTFByPath[path] = idx;
   return GLTFHandle{idx, mGLTF[idx].generation};
+}
+
+UFBXHandle AssetManager::loadUFBX(const std::string &path) {
+  const auto it = mUFBXByPath.find(path);
+  if (it != mUFBXByPath.end()) {
+    uint32_t idx = it->second;
+    return UFBXHandle{idx, mUFBX[idx].generation};
+  }
+
+  UFBXRecord rec;
+  rec.sourcePath = path;
+  rec.dependencies = {path};
+  rec.watchedTime = safeWriteTime_(path);
+  rec.asset = std::make_unique<UFBXModel>();
+  const std::string cooked = cookedPathFor_(path);
+  const std::string loadPath = std::filesystem::exists(cooked) ? cooked : path;
+  if (!rec.asset->loadFromFile(loadPath)) {
+    return {};
+  }
+
+  const uint32_t idx = (uint32_t)mUFBX.size();
+  mUFBX.push_back(std::move(rec));
+  mUFBXByPath[path] = idx;
+  return UFBXHandle{idx, mUFBX[idx].generation};
 }
 
 OBJModel *AssetManager::getOBJ(OBJHandle h) {
@@ -151,6 +179,14 @@ FBXModel *AssetManager::getGLTF(GLTFHandle h) {
   if (mGLTF[h.index].generation != h.generation)
     return nullptr;
   return mGLTF[h.index].asset.get();
+}
+
+UFBXModel *AssetManager::getUFBX(UFBXHandle h) {
+  if (!h.valid() || h.index >= mUFBX.size())
+    return nullptr;
+  if (mUFBX[h.index].generation != h.generation)
+    return nullptr;
+  return mUFBX[h.index].asset.get();
 }
 
 ShaderHandle AssetManager::registerShader(Shader *shader,
@@ -230,9 +266,9 @@ std::vector<std::string> AssetManager::pollHotReload() {
       const std::string cooked = cookedPathFor_(rec.sourcePath);
       if (std::filesystem::exists(cooked)) {
         std::error_code ec;
-        std::filesystem::copy_file(rec.sourcePath, cooked,
-                                   std::filesystem::copy_options::overwrite_existing,
-                                   ec);
+        std::filesystem::copy_file(
+            rec.sourcePath, cooked,
+            std::filesystem::copy_options::overwrite_existing, ec);
       }
       const std::string loadPath =
           std::filesystem::exists(cooked) ? cooked : rec.sourcePath;
@@ -249,9 +285,9 @@ std::vector<std::string> AssetManager::pollHotReload() {
       const std::string cooked = cookedPathFor_(rec.sourcePath);
       if (std::filesystem::exists(cooked)) {
         std::error_code ec;
-        std::filesystem::copy_file(rec.sourcePath, cooked,
-                                   std::filesystem::copy_options::overwrite_existing,
-                                   ec);
+        std::filesystem::copy_file(
+            rec.sourcePath, cooked,
+            std::filesystem::copy_options::overwrite_existing, ec);
       }
       const std::string loadPath =
           std::filesystem::exists(cooked) ? cooked : rec.sourcePath;
@@ -270,7 +306,8 @@ std::vector<std::string> AssetManager::pollHotReload() {
       if (rec.shader && rec.shader->reload()) {
         rec.vertTime = vt;
         rec.fragTime = ft;
-        out.push_back("Reloaded Shader: " + rec.vertPath + " + " + rec.fragPath);
+        out.push_back("Reloaded Shader: " + rec.vertPath + " + " +
+                      rec.fragPath);
       }
     }
   }

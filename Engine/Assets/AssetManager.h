@@ -9,12 +9,14 @@
 
 class OBJModel;
 class FBXModel;
+class UFBXModel;
 class Shader;
 
 enum class AssetType {
   Unknown = 0,
   OBJModel,
   GLTFModel,
+  UFBXModel,
   HDRTexture,
   ShaderProgram,
 };
@@ -27,11 +29,13 @@ template <typename Tag> struct AssetHandle {
 
 struct OBJAssetTag {};
 struct GLTFAssetTag {};
+struct UFBXAssetTag {};
 struct HDRAssetTag {};
 struct ShaderAssetTag {};
 
 using OBJHandle = AssetHandle<OBJAssetTag>;
 using GLTFHandle = AssetHandle<GLTFAssetTag>;
+using UFBXHandle = AssetHandle<UFBXAssetTag>;
 using HDRHandle = AssetHandle<HDRAssetTag>;
 using ShaderHandle = AssetHandle<ShaderAssetTag>;
 
@@ -55,9 +59,11 @@ public:
 
   OBJHandle loadOBJ(const std::string &path);
   GLTFHandle loadGLTF(const std::string &path);
+  UFBXHandle loadUFBX(const std::string &path);
 
   OBJModel *getOBJ(OBJHandle h);
   FBXModel *getGLTF(GLTFHandle h);
+  UFBXModel *getUFBX(UFBXHandle h);
 
   ShaderHandle registerShader(Shader *shader, const std::string &vertPath,
                               const std::string &fragPath);
@@ -89,6 +95,14 @@ private:
     std::unique_ptr<FBXModel> asset;
   };
 
+  struct UFBXRecord {
+    uint32_t generation = 1;
+    std::string sourcePath;
+    std::vector<std::string> dependencies;
+    std::filesystem::file_time_type watchedTime{};
+    std::unique_ptr<UFBXModel> asset;
+  };
+
   struct ShaderRecord {
     uint32_t generation = 1;
     Shader *shader = nullptr; // non-owning, owned by runtime systems
@@ -108,11 +122,12 @@ private:
 
   std::vector<OBJRecord> mOBJ;
   std::vector<GLTFRecord> mGLTF;
+  std::vector<UFBXRecord> mUFBX;
   std::vector<ShaderRecord> mShaders;
 
   std::unordered_map<std::string, uint32_t> mOBJByPath;
   std::unordered_map<std::string, uint32_t> mGLTFByPath;
+  std::unordered_map<std::string, uint32_t> mUFBXByPath;
 
   std::vector<ImportJob> mImportJobs;
 };
-

@@ -1,6 +1,7 @@
 #pragma once
-#include <glm/glm.hpp>
+#include "EditorToolbar.h"
 #include <cstdint>
+#include <glm/glm.hpp>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,26 @@ class EventBus;
 struct ProjectConfig;
 class AssetManager;
 struct VisibilityStats;
+
+// ---------------------------------------------------------------------------
+// Selection state for outliner / gizmo
+// ---------------------------------------------------------------------------
+struct EditorSelectionState {
+  uint32_t &selectedEntityId;
+  std::vector<uint32_t> &selectedEntities;
+  uint32_t &lastClickedEntity;
+
+  bool &editObjPart;
+  std::string &selectedObjPartName;
+
+  int &gizmoOp;
+  int &gizmoMode;
+
+  bool &renaming;
+  char *renameBuf;
+  char *outlinerFilter;
+  float &focusDistance;
+};
 
 // ---------------------------------------------------------------------------
 // EditorContext — single struct replaces the 14-parameter draw() signature.
@@ -65,6 +86,7 @@ struct EditorContext {
   bool &wireframe;
   bool &disableShadows;
   bool &disableClouds;
+  bool &disableHDR;
   bool &freezeTime;
 
   // Frame stats
@@ -80,6 +102,9 @@ struct EditorContext {
   const std::vector<std::string> *hotReloadMessages = nullptr;
   const std::vector<std::string> *historyLabels = nullptr;
   int historyIndex = -1;
+
+  // Selection State
+  EditorSelectionState &selection;
 };
 
 // ---------------------------------------------------------------------------
@@ -89,6 +114,7 @@ struct EditorUIOutput {
   bool wantCaptureMouse = false;
   bool wantCaptureKeyboard = false;
   bool terrainDirty = false;
+  bool sceneModified = false;
 
   bool saveRequested = false;
   bool loadRequested = false;
@@ -100,24 +126,6 @@ struct EditorUIOutput {
 };
 
 // ---------------------------------------------------------------------------
-// Selection state for outliner / gizmo
-// ---------------------------------------------------------------------------
-struct EditorSelectionState {
-  uint32_t &selectedEntityId;
-  std::vector<uint32_t> &selectedEntities;
-  uint32_t &lastClickedEntity;
-
-  bool &editObjPart;
-  std::string &selectedObjPartName;
-
-  int &gizmoOp;
-  int &gizmoMode;
-
-  bool &renaming;
-  char *renameBuf;
-  char *outlinerFilter;
-  float &focusDistance;
-};
 
 // ---------------------------------------------------------------------------
 // EditorUI
@@ -133,17 +141,46 @@ public:
                  EventBus &events, EditorSelectionState &sel,
                  glm::vec3 &cameraPos);
 
+  // Toolbar state — accessible from outside for gizmo/wireframe sync
+  ToolbarState toolbarState;
+
   // Component inspector for selected entity
-  bool drawInspector(bool uiMode, Registry &reg, uint32_t selectedEntityId);
+  bool drawInspector(EditorContext &ctx);
 
 private:
   // File browser state
   bool mShowFileBrowser = false;
   std::string mBrowsePath;
   char mPathInput[512] = "";
+  bool mResetLayout = false;
+  bool mLockLayout = true; // Panels locked by default
   char mAssetSearch[128] = "";
-  bool mShowPanelEditor = true;
-  bool mShowPanelAssetBrowser = true;
-  bool mShowPanelHistory = true;
-  bool mShowPanelLogConsole = true;
+
+  // Window visibility flags
+  bool mShowHierarchy = true;
+  bool mShowInspector = true;
+  bool mShowAssets = true;
+  bool mShowEnvironment = true;
+  bool mShowLog = false;
+  bool mShowStats = true;
+
+  // Console state
+  bool mConsoleAutoScroll = true;
+  bool mFilterInfo = true;
+  bool mFilterWarn = true;
+  bool mFilterError = true;
+  char mConsoleSearch[128] = "";
+
+  // FPS history for graph
+  static constexpr int kFpsHistorySize = 120;
+  float mFpsHistory[kFpsHistorySize] = {};
+  int mFpsHistoryIdx = 0;
+
+  // Internal draw helpers
+  void drawMainMenuBar(EditorContext &ctx);
+  void drawHierarchy(EditorContext &ctx);
+  void drawAssets(EditorContext &ctx);
+  void drawEnvironment(EditorContext &ctx);
+  void drawLog(EditorContext &ctx);
+  void drawStats(EditorContext &ctx);
 };

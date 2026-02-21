@@ -285,10 +285,10 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
 
     glBindVertexArray(0);
 
-    LOG_TRACE("Asset", "OBJ submesh '" + sm.debugName +
-                           "' verts=" + std::to_string(sm.vertexCount) +
-                           " tex=" +
-                           std::to_string((unsigned long long)sm.material.texDiffuse));
+    LOG_TRACE("Asset",
+              "OBJ submesh '" + sm.debugName +
+                  "' verts=" + std::to_string(sm.vertexCount) + " tex=" +
+                  std::to_string((unsigned long long)sm.material.texDiffuse));
   }
 
   return true;
@@ -328,6 +328,43 @@ std::vector<std::string> OBJModel::objectNames() const {
     out.push_back(kv.first);
   std::sort(out.begin(), out.end());
   return out;
+}
+
+bool OBJModel::getObjectBounds(const std::string &objectName, glm::vec3 &outMin,
+                               glm::vec3 &outMax) const {
+  auto it = mObjectBounds.find(objectName);
+  if (it == mObjectBounds.end())
+    return false;
+  const auto &b = it->second;
+  if (!b.hasBounds)
+    return false;
+  outMin = b.aabbMin;
+  outMax = b.aabbMax;
+  return true;
+}
+
+bool OBJModel::getGlobalBounds(glm::vec3 &outMin, glm::vec3 &outMax) const {
+  if (mSubmeshes.empty())
+    return false;
+
+  glm::vec3 globalMin(1e30f);
+  glm::vec3 globalMax(-1e30f);
+  bool hasAnyBounds = false;
+
+  for (const auto &sm : mSubmeshes) {
+    if (sm.hasBounds) {
+      globalMin = glm::min(globalMin, sm.aabbMin);
+      globalMax = glm::max(globalMax, sm.aabbMax);
+      hasAnyBounds = true;
+    }
+  }
+
+  if (!hasAnyBounds)
+    return false;
+
+  outMin = globalMin;
+  outMax = globalMax;
+  return true;
 }
 
 bool OBJModel::getObjectLocalTRS(const std::string &objectName,

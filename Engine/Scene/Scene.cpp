@@ -1,6 +1,7 @@
-#include "AssetManager.h"
 #include "Scene.h"
+#include "AssetManager.h"
 
+#include "Assets/UFBXModel.h"
 #include "ECS/Components.h"
 #include "FBXModel.h"
 #include "OBJModel.h"
@@ -83,7 +84,7 @@ Scene::EntityId Scene::spawnFromFile(const std::string &path) {
       return 0;
     mesh = MeshComponent(model);
     mesh.objHandle = h;
-  } else if (ext == ".fbx" || ext == ".gltf" || ext == ".glb") {
+  } else if (ext == ".gltf" || ext == ".glb") {
     if (!mAssets)
       return 0;
     auto h = mAssets->loadGLTF(path);
@@ -92,6 +93,15 @@ Scene::EntityId Scene::spawnFromFile(const std::string &path) {
       return 0;
     mesh = MeshComponent(model);
     mesh.gltfHandle = h;
+  } else if (ext == ".fbx") {
+    if (!mAssets)
+      return 0;
+    auto h = mAssets->loadUFBX(path);
+    UFBXModel *model = mAssets->getUFBX(h);
+    if (!h.valid() || !model)
+      return 0;
+    mesh = MeshComponent(model);
+    mesh.ufbxHandle = h;
   } else {
     return 0;
   }
@@ -241,12 +251,14 @@ std::string Scene::serializeToString() const {
       ent["name"] = reg.get<NameComponent>(e).name;
 
     const auto &tr = reg.get<TransformComponent>(e);
-    ent["transform"] = {{"position", {tr.position.x, tr.position.y, tr.position.z}},
-                        {"rotation", {tr.rotation.x, tr.rotation.y, tr.rotation.z}},
-                        {"scale", {tr.scale.x, tr.scale.y, tr.scale.z}}};
+    ent["transform"] = {
+        {"position", {tr.position.x, tr.position.y, tr.position.z}},
+        {"rotation", {tr.rotation.x, tr.rotation.y, tr.rotation.z}},
+        {"scale", {tr.scale.x, tr.scale.y, tr.scale.z}}};
 
     if (reg.has<LifecycleComponent>(e)) {
-      ent["lifecycle"] = lifecycleToString(reg.get<LifecycleComponent>(e).state);
+      ent["lifecycle"] =
+          lifecycleToString(reg.get<LifecycleComponent>(e).state);
     }
 
     if (reg.has<HierarchyComponent>(e)) {
@@ -259,8 +271,11 @@ std::string Scene::serializeToString() const {
       std::string type = "None";
       if (mc.type == MeshComponent::AssetType::OBJ)
         type = "OBJ";
+      else if (mc.type == MeshComponent::AssetType::GLTF)
+        type = "GLTF";
       else if (mc.type == MeshComponent::AssetType::FBX)
         type = "FBX";
+
       ent["mesh"] = {{"type", type},
                      {"assetId", mc.assetId},
                      {"visible", mc.visible},
@@ -269,9 +284,10 @@ std::string Scene::serializeToString() const {
 
     if (reg.has<PhysicsComponent>(e)) {
       const auto &ph = reg.get<PhysicsComponent>(e);
-      ent["physics"] = {{"velocity", {ph.velocity.x, ph.velocity.y, ph.velocity.z}},
-                        {"gravity", ph.gravity},
-                        {"onGround", ph.onGround}};
+      ent["physics"] = {
+          {"velocity", {ph.velocity.x, ph.velocity.y, ph.velocity.z}},
+          {"gravity", ph.gravity},
+          {"onGround", ph.onGround}};
     }
 
     if (reg.has<CameraComponent>(e)) {
@@ -327,6 +343,7 @@ bool Scene::loadFromString(const std::string &jsonText) {
     }
 
     mRegistry.emplace<NameComponent>(id, ent.value("name", "Entity"));
+    mRegistry.emplace<BoundsComponent>(id, BoundsComponent{2.0f});
 
     auto &lc = mRegistry.emplace<LifecycleComponent>(id);
     lc.state = lifecycleFromString(ent.value("lifecycle", "Alive"));
@@ -351,18 +368,48 @@ bool Scene::loadFromString(const std::string &jsonText) {
             continue;
           auto h = mAssets->loadOBJ(assetId);
           if (OBJModel *obj = mAssets->getOBJ(h)) {
-            auto &mc = mRegistry.emplace<MeshComponent>(id, obj, visible, castsShadow);
+            auto &mc =
+                mRegistry.emplace<MeshComponent>(id, obj, visible, castsShadow);
             mc.assetId = assetId;
             mc.objHandle = h;
+
+            glm::vec3 minB, maxB;
+            if (obj->getGlobalBounds(minB, maxB)) {
+              float rad = glm::length(maxB - minB) * 0.5f;
+              mRegistry.get<BoundsComponent>(id).radius = rad;
+            }
           }
-        } else if (type == "FBX") {
+        } else if (type == "GLTF") {
           if (!mAssets)
             continue;
           auto h = mAssets->loadGLTF(assetId);
           if (FBXModel *fbx = mAssets->getGLTF(h)) {
-            auto &mc = mRegistry.emplace<MeshComponent>(id, fbx, visible, castsShadow);
+            auto &mc =
+                mRegistry.emplace<MeshComponent>(id, fbx, visible, castsShadow);
             mc.assetId = assetId;
             mc.gltfHandle = h;
+
+            glm::vec3 minB, maxB;
+            if (fbx->getGlobalBounds(minB, maxB)) {
+              float rad = glm::length(maxB - minB) * 0.5f;
+              mRegistry.get<BoundsComponent>(id).radius = rad;
+            }
+          }
+        } else if (type == "FBX") {
+          if (!mAssets)
+            continue;
+          auto h = mAssets->loadUFBX(assetId);
+          if (UFBXModel *ufbx = mAssets->getUFBX(h)) {
+            auto &mc = mRegistry.emplace<MeshComponent>(id, ufbx, visible,
+                                                        castsShadow);
+            mc.assetId = assetId;
+            mc.ufbxHandle = h;
+
+            glm::vec3 minB, maxB;
+            if (ufbx->getGlobalBounds(minB, maxB)) {
+              float rad = glm::length(maxB - minB) * 0.5f;
+              mRegistry.get<BoundsComponent>(id).radius = rad;
+            }
           }
         }
       }

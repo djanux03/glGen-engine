@@ -1,10 +1,10 @@
 #pragma once
+#include "Material.h"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "Material.h"
 
 class Shader;
 
@@ -46,6 +46,13 @@ public:
   glm::mat4 buildObjectExtra(const std::string &objectName) const;
   std::vector<std::string> objectNames() const;
   std::size_t submeshCount() const { return mSubmeshes.size(); }
+
+  // Object-level AABB bounds (for mouse picking per submesh)
+  bool getObjectBounds(const std::string &objectName, glm::vec3 &outMin,
+                       glm::vec3 &outMax) const;
+
+  // Global AABB bounds for the entire loaded model
+  bool getGlobalBounds(glm::vec3 &outMin, glm::vec3 &outMax) const;
 
 private:
   struct Vertex {

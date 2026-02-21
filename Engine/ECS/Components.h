@@ -1,11 +1,11 @@
 #pragma once
+#include "AssetManager.h"
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
-#include "AssetManager.h"
 #include <string>
 #include <vector>
-#include <cstdint>
 
 struct TransformComponent {
   glm::vec3 position = {0.0f, 0.0f, 0.0f};
@@ -24,7 +24,7 @@ struct TransformComponent {
 };
 
 struct MeshComponent {
-  enum class AssetType { None, OBJ, FBX };
+  enum class AssetType { None, OBJ, GLTF, FBX };
 
   MeshComponent(bool vis = true, bool shadow = true)
       : visible(vis), castsShadow(shadow) {}
@@ -33,19 +33,29 @@ struct MeshComponent {
       : objModel(m), type(AssetType::OBJ), visible(vis), castsShadow(shadow) {}
 
   MeshComponent(class FBXModel *m, bool vis = true, bool shadow = true)
-      : fbxModel(m), type(AssetType::FBX), visible(vis), castsShadow(shadow) {}
+      : gltfModel(m), type(AssetType::GLTF), visible(vis), castsShadow(shadow) {
+  }
 
-  class OBJModel *objModel = nullptr; // Raw pointer to cached model in Scene
-  class FBXModel *fbxModel = nullptr; // Raw pointer to cached model in Scene
+  MeshComponent(class UFBXModel *m, bool vis = true, bool shadow = true)
+      : ufbxModel(m), type(AssetType::FBX), visible(vis), castsShadow(shadow) {}
+
+  class OBJModel *objModel = nullptr;
+  class FBXModel *gltfModel = nullptr;
+  class UFBXModel *ufbxModel = nullptr;
   std::string assetId;
   OBJHandle objHandle{};
   GLTFHandle gltfHandle{};
+  UFBXHandle ufbxHandle{};
   AssetType type = AssetType::None;
   bool visible = true;
   bool castsShadow = true;
 };
 
-enum class EntityLifecycleState : uint8_t { Alive = 0, Disabled = 1, PendingDestroy = 2 };
+enum class EntityLifecycleState : uint8_t {
+  Alive = 0,
+  Disabled = 1,
+  PendingDestroy = 2
+};
 
 struct LifecycleComponent {
   EntityLifecycleState state = EntityLifecycleState::Alive;
