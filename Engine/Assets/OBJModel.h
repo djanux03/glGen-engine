@@ -13,6 +13,15 @@ public:
   bool loadFromFile(const std::string &objPath);
   void shutdown();
 
+  // Load from raw vertex data (for procedural meshes)
+  struct VertexData {
+    glm::vec3 pos;
+    glm::vec2 uv;
+    glm::vec3 normal;
+  };
+  bool loadFromVertices(const std::vector<VertexData> &vertices,
+                        const std::string &name = "Primitive");
+
   // Same signature your engine already uses:
   void draw(Shader &shader, const glm::vec3 &position, const glm::vec3 &rotDeg,
             const glm::vec3 &scale);

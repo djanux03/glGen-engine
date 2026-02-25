@@ -49,4 +49,7 @@ private:
   void processMesh(const tinygltf::Mesh &mesh);
   GLuint LoadTextureFromGLTF(int textureIndex);
   GLuint CreateTextureFromImage(const tinygltf::Image &image);
+
+  // Per-instance texture cache (replaces leaked static global)
+  std::map<std::string, GLuint> mTextureCache;
 };

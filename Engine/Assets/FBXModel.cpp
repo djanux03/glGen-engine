@@ -14,8 +14,6 @@
 
 // --- STATIC HELPERS & CACHE ---
 
-static std::map<std::string, GLuint> sTextureCache;
-
 static glm::mat4 buildTRS(const glm::vec3 &pos, const glm::vec3 &rotDeg,
                           const glm::vec3 &scale) {
   glm::mat4 m(1.0f);
@@ -298,14 +296,14 @@ GLuint FBXModel::LoadTextureFromGLTF(int textureIndex) {
   std::string key = image.uri.empty()
                         ? ("embedded_" + std::to_string(tex.source))
                         : image.uri;
-  if (sTextureCache.find(key) != sTextureCache.end()) {
-    return sTextureCache[key];
+  if (mTextureCache.find(key) != mTextureCache.end()) {
+    return mTextureCache[key];
   }
 
   GLuint texID = CreateTextureFromImage(image);
 
   if (texID != 0) {
-    sTextureCache[key] = texID;
+    mTextureCache[key] = texID;
     if (image.uri.empty()) {
       LOG_TRACE("Asset", "Loaded embedded texture from glTF");
     } else {
@@ -393,5 +391,13 @@ void FBXModel::shutdown() {
       glDeleteBuffers(1, &sm.ebo);
   }
   mSubmeshes.clear();
+
+  // Free cached textures
+  for (auto &[key, texId] : mTextureCache) {
+    if (texId != 0)
+      glDeleteTextures(1, &texId);
+  }
+  mTextureCache.clear();
+
   // tinygltf::Model cleans up automatically
 }

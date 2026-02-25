@@ -62,39 +62,16 @@ public:
       return world;
     };
 
-    auto drawWithWorld = [&](EntityId entity, auto drawFn) {
-      glm::mat4 world = worldMatrix(worldMatrix, entity);
-
-      if (!shadowPass && mCullingEnabled) {
-        ++mStats.tested;
-        float radius = 1.0f;
-        if (registry.has<BoundsComponent>(entity))
-          radius = registry.get<BoundsComponent>(entity).radius;
-        const glm::vec3 center = glm::vec3(world[3]);
-
-        if (registry.has<LODComponent>(entity)) {
-          const auto &lod = registry.get<LODComponent>(entity);
-          const float d = glm::length(mCameraPos - center);
-          if (d < lod.minDistance || d > lod.maxDistance) {
-            ++mStats.culled;
-            return;
-          }
-        }
-        if (!sphereInFrustum_(center, radius)) {
-          ++mStats.culled;
-          return;
-        }
-      }
-
-      glm::vec3 skew;
-      glm::vec4 perspective;
-      glm::vec3 pos, scale;
-      glm::quat rotQ;
-      if (!glm::decompose(world, scale, rotQ, pos, skew, perspective))
-        return;
-      glm::vec3 rot = glm::degrees(glm::eulerAngles(rotQ));
-      drawFn(pos, rot, scale);
+    // ------------------------------------------------------------------
+    // Draw call sorting: collect visible entities, sort by model pointer
+    // to batch same-model draws (reduces VAO/texture rebinds).
+    // ------------------------------------------------------------------
+    struct DrawItem {
+      EntityId entity;
+      uintptr_t sortKey; // Model pointer as sort key — groups same model
     };
+
+    std::vector<DrawItem> drawList;
 
     for (auto entity :
          registry.viewWhere<MeshComponent, TransformComponent>([&](EntityId e) {
@@ -111,34 +88,77 @@ public:
         continue;
       if (!mesh.objModel && !mesh.gltfModel && !mesh.ufbxModel)
         continue;
+      if (outlinePass && entity != selectedEntity)
+        continue;
+
+      // Frustum culling (only main pass)
+      if (!shadowPass && mCullingEnabled) {
+        ++mStats.tested;
+        glm::mat4 world = worldMatrix(worldMatrix, entity);
+        float radius = 1.0f;
+        if (registry.has<BoundsComponent>(entity))
+          radius = registry.get<BoundsComponent>(entity).radius;
+        const glm::vec3 center = glm::vec3(world[3]);
+
+        if (registry.has<LODComponent>(entity)) {
+          const auto &lod = registry.get<LODComponent>(entity);
+          const float d = glm::length(mCameraPos - center);
+          if (d < lod.minDistance || d > lod.maxDistance) {
+            ++mStats.culled;
+            continue;
+          }
+        }
+        if (!sphereInFrustum_(center, radius)) {
+          ++mStats.culled;
+          continue;
+        }
+      }
+
+      // Compute sort key — model pointer groups entities with same model
+      uintptr_t key = 0;
+      if (mesh.objModel)
+        key = reinterpret_cast<uintptr_t>(mesh.objModel);
+      else if (mesh.gltfModel)
+        key = reinterpret_cast<uintptr_t>(mesh.gltfModel);
+      else if (mesh.ufbxModel)
+        key = reinterpret_cast<uintptr_t>(mesh.ufbxModel);
+
+      drawList.push_back({entity, key});
+    }
+
+    // Sort by model pointer — entities sharing the same model draw together
+    std::sort(drawList.begin(), drawList.end(),
+              [](const DrawItem &a, const DrawItem &b) {
+                return a.sortKey < b.sortKey;
+              });
+
+    // ------------------------------------------------------------------
+    // Execute sorted draw calls
+    // ------------------------------------------------------------------
+    for (const auto &item : drawList) {
+      auto &mesh = registry.get<MeshComponent>(item.entity);
+      glm::mat4 world = worldMatrix(worldMatrix, item.entity);
+
+      glm::vec3 skew;
+      glm::vec4 perspective;
+      glm::vec3 pos, scale;
+      glm::quat rotQ;
+      if (!glm::decompose(world, scale, rotQ, pos, skew, perspective))
+        continue;
+      glm::vec3 rot = glm::degrees(glm::eulerAngles(rotQ));
 
       if (shadowPass) {
         if (mesh.objModel) {
-          drawWithWorld(entity, [&](const glm::vec3 &p, const glm::vec3 &r,
-                                    const glm::vec3 &s) {
-            mesh.objModel->drawDepth(shader, p, r, s);
-            if (!shadowPass)
-              ++mStats.drawn;
-          });
+          mesh.objModel->drawDepth(shader, pos, rot, scale);
         } else if (mesh.gltfModel) {
-          drawWithWorld(entity, [&](const glm::vec3 &p, const glm::vec3 &r,
-                                    const glm::vec3 &s) {
-            mesh.gltfModel->drawDepth(shader, p, r, s);
-            if (!shadowPass)
-              ++mStats.drawn;
-          });
+          mesh.gltfModel->drawDepth(shader, pos, rot, scale);
         } else if (mesh.ufbxModel) {
-          drawWithWorld(entity, [&](const glm::vec3 &p, const glm::vec3 &r,
-                                    const glm::vec3 &s) {
-            mesh.ufbxModel->drawDepth(shader, p, r, s);
-            if (!shadowPass)
-              ++mStats.drawn;
-          });
+          mesh.ufbxModel->drawDepth(shader, pos, rot, scale);
         }
       } else {
         // Stencil writing logic for selected entity
         if (!outlinePass && selectedEntity != 0) {
-          if (entity == selectedEntity) {
+          if (item.entity == selectedEntity) {
             glStencilFunc(GL_ALWAYS, 1, 0xFF);
             glStencilMask(0xFF);
           } else {
@@ -146,29 +166,15 @@ public:
           }
         }
 
-        // If we are in the outline pass, ONLY draw the selected entity
-        if (outlinePass && entity != selectedEntity) {
-          continue;
-        }
-
         if (mesh.objModel) {
-          drawWithWorld(entity, [&](const glm::vec3 &p, const glm::vec3 &r,
-                                    const glm::vec3 &s) {
-            mesh.objModel->draw(shader, p, r, s);
-            ++mStats.drawn;
-          });
+          mesh.objModel->draw(shader, pos, rot, scale);
+          ++mStats.drawn;
         } else if (mesh.gltfModel) {
-          drawWithWorld(entity, [&](const glm::vec3 &p, const glm::vec3 &r,
-                                    const glm::vec3 &s) {
-            mesh.gltfModel->draw(shader, p, r, s);
-            ++mStats.drawn;
-          });
+          mesh.gltfModel->draw(shader, pos, rot, scale);
+          ++mStats.drawn;
         } else if (mesh.ufbxModel) {
-          drawWithWorld(entity, [&](const glm::vec3 &p, const glm::vec3 &r,
-                                    const glm::vec3 &s) {
-            mesh.ufbxModel->draw(shader, p, r, s);
-            ++mStats.drawn;
-          });
+          mesh.ufbxModel->draw(shader, pos, rot, scale);
+          ++mStats.drawn;
         }
       }
     }

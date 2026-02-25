@@ -70,6 +70,8 @@ struct PhysicsComponent {
   glm::vec3 velocity = {0.0f, 0.0f, 0.0f};
   float gravity = 0.01f;
   bool onGround = false;
+  bool spaceWasDown =
+      false; // Per-entity jump debounce (was incorrectly static)
 };
 
 struct BoundsComponent {
@@ -96,4 +98,10 @@ struct NameComponent {
   NameComponent() = default;
   explicit NameComponent(const std::string &n) : name(n) {}
   explicit NameComponent(std::string &&n) : name(std::move(n)) {}
+};
+
+struct ScriptComponent {
+  std::string scriptPath;   // Path to .lua file
+  bool initialized = false; // Has on_spawn been called?
+  int envRef = -1;          // Lua registry ref to script environment
 };

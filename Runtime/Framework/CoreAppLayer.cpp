@@ -39,60 +39,68 @@ void loadConfig(AppState &s, const char *filename) {}
 bool CoreAppLayer::initialize() {
   mState.events.subscribe<SaveConfigRequestedEvent>(
       [this](const SaveConfigRequestedEvent &) {
-        mState.requestSaveConfig = true;
+        mState.pending.requestSaveConfig = true;
       });
   mState.events.subscribe<LoadConfigRequestedEvent>(
       [this](const LoadConfigRequestedEvent &) {
-        mState.requestLoadConfig = true;
+        mState.pending.requestLoadConfig = true;
       });
   mState.events.subscribe<SaveProjectConfigRequestedEvent>(
       [this](const SaveProjectConfigRequestedEvent &) {
-        mState.requestSaveProjectConfig = true;
+        mState.pending.requestSaveProjectConfig = true;
       });
   mState.events.subscribe<SpawnEntityRequestedEvent>(
       [this](const SpawnEntityRequestedEvent &e) {
-        mState.pendingSpawnPaths.push_back(e.path);
+        mState.pending.pendingSpawnPaths.push_back(e.path);
       });
   mState.events.subscribe<CreateEmptyEntityRequestedEvent>(
       [this](const CreateEmptyEntityRequestedEvent &e) {
-        mState.pendingEmptyEntityNames.push_back(e.name);
+        mState.pending.pendingEmptyEntityNames.push_back(e.name);
       });
   mState.events.subscribe<DeleteEntityRequestedEvent>(
       [this](const DeleteEntityRequestedEvent &e) {
-        mState.pendingDeleteEntityIds.push_back(e.entityId);
+        mState.pending.pendingDeleteEntityIds.push_back(e.entityId);
       });
   mState.events.subscribe<SaveSceneRequestedEvent>(
       [this](const SaveSceneRequestedEvent &e) {
-        mState.pendingSceneSavePath = e.path;
+        mState.pending.pendingSceneSavePath = e.path;
       });
   mState.events.subscribe<LoadSceneRequestedEvent>(
       [this](const LoadSceneRequestedEvent &e) {
-        mState.pendingSceneLoadPath = e.path;
+        mState.pending.pendingSceneLoadPath = e.path;
       });
   mState.events.subscribe<UndoRequestedEvent>(
-      [this](const UndoRequestedEvent &) { mState.requestUndo = true; });
+      [this](const UndoRequestedEvent &) {
+        mState.history.requestUndo = true;
+      });
   mState.events.subscribe<RedoRequestedEvent>(
-      [this](const RedoRequestedEvent &) { mState.requestRedo = true; });
+      [this](const RedoRequestedEvent &) {
+        mState.history.requestRedo = true;
+      });
   mState.events.subscribe<SceneHistoryJumpRequestedEvent>(
       [this](const SceneHistoryJumpRequestedEvent &e) {
-        mState.requestHistoryJump = e.index;
+        mState.history.requestHistoryJump = e.index;
       });
 
   commitHistorySnapshot("Initial");
+
+  // Initialize Lua scripting
+  mState.scriptSystem.initialize(mState.scene.registry());
+
   return true;
 }
 
 void CoreAppLayer::shutdown() {}
 
 void CoreAppLayer::applyHistorySnapshot(int idx) {
-  if (idx < 0 || idx >= (int)mState.historySnapshots.size())
+  if (idx < 0 || idx >= (int)mState.history.historySnapshots.size())
     return;
-  if (!mState.scene.loadFromString(mState.historySnapshots[idx]))
+  if (!mState.scene.loadFromString(mState.history.historySnapshots[idx]))
     return;
-  mState.historyCursor = idx;
-  mState.selectedEntityId = 0;
-  mState.selectedEntities.clear();
-  mState.lastClickedEntity = 0;
+  mState.history.historyCursor = idx;
+  mState.selection.selectedEntityId = 0;
+  mState.selection.selectedEntities.clear();
+  mState.selection.lastClickedEntity = 0;
   mState.playerId = 0;
   for (auto e : mState.scene.registry().view<CameraComponent>()) {
     if (!mState.scene.registry().has<LifecycleComponent>(e) ||
@@ -106,70 +114,71 @@ void CoreAppLayer::applyHistorySnapshot(int idx) {
 
 void CoreAppLayer::commitHistorySnapshot(const std::string &label) {
   const std::string snap = mState.scene.serializeToString();
-  if (mState.historyCursor >= 0 &&
-      mState.historyCursor < (int)mState.historySnapshots.size() &&
-      mState.historySnapshots[mState.historyCursor] == snap)
+  if (mState.history.historyCursor >= 0 &&
+      mState.history.historyCursor <
+          (int)mState.history.historySnapshots.size() &&
+      mState.history.historySnapshots[mState.history.historyCursor] == snap)
     return;
 
-  if (mState.historyCursor + 1 < (int)mState.historySnapshots.size()) {
-    mState.historySnapshots.erase(mState.historySnapshots.begin() +
-                                      mState.historyCursor + 1,
-                                  mState.historySnapshots.end());
-    mState.historyLabels.erase(mState.historyLabels.begin() +
-                                   mState.historyCursor + 1,
-                               mState.historyLabels.end());
+  if (mState.history.historyCursor + 1 <
+      (int)mState.history.historySnapshots.size()) {
+    mState.history.historySnapshots.erase(
+        mState.history.historySnapshots.begin() + mState.history.historyCursor +
+            1,
+        mState.history.historySnapshots.end());
+    mState.history.historyLabels.erase(mState.history.historyLabels.begin() +
+                                           mState.history.historyCursor + 1,
+                                       mState.history.historyLabels.end());
   }
 
-  mState.historySnapshots.push_back(snap);
-  mState.historyLabels.push_back(label);
-  mState.historyCursor = (int)mState.historySnapshots.size() - 1;
+  mState.history.historySnapshots.push_back(snap);
+  mState.history.historyLabels.push_back(label);
+  mState.history.historyCursor =
+      (int)mState.history.historySnapshots.size() - 1;
 
   const int maxHistory = 128;
-  if ((int)mState.historySnapshots.size() > maxHistory) {
-    const int trim = (int)mState.historySnapshots.size() - maxHistory;
-    mState.historySnapshots.erase(mState.historySnapshots.begin(),
-                                  mState.historySnapshots.begin() + trim);
-    mState.historyLabels.erase(mState.historyLabels.begin(),
-                               mState.historyLabels.begin() + trim);
-    mState.historyCursor -= trim;
-    if (mState.historyCursor < 0)
-      mState.historyCursor = 0;
+  if ((int)mState.history.historySnapshots.size() > maxHistory) {
+    const int trim = (int)mState.history.historySnapshots.size() - maxHistory;
+    mState.history.historySnapshots.erase(
+        mState.history.historySnapshots.begin(),
+        mState.history.historySnapshots.begin() + trim);
+    mState.history.historyLabels.erase(mState.history.historyLabels.begin(),
+                                       mState.history.historyLabels.begin() +
+                                           trim);
+    mState.history.historyCursor -= trim;
+    if (mState.history.historyCursor < 0)
+      mState.history.historyCursor = 0;
   }
 }
 
 void CoreAppLayer::update(float dt, float nowT) {
-  bool escDown = Keyboard::key(GLFW_KEY_ESCAPE);
-  if (escDown && !mState.escWasDown) {
-    mState.uiMode = !mState.uiMode;
-    glfwSetInputMode(mState.window, GLFW_CURSOR,
-                     mState.uiMode ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
-  }
-  mState.escWasDown = escDown;
+  // Always in editor mode — cursor always visible
+  mState.uiMode = true;
 
   if (mState.editorSubsystem)
     mState.editorSubsystem->beginFrame();
 
-  float renderTime = mState.freezeTime ? mState.frozenTime : nowT;
-  if (!mState.freezeTime)
-    mState.frozenTime = nowT;
+  float renderTime = mState.render.freezeTime ? mState.render.frozenTime : nowT;
+  if (!mState.render.freezeTime)
+    mState.render.frozenTime = nowT;
 
   EditorSelectionState selState{
-      mState.selectedEntityId,    mState.selectedEntities,
-      mState.lastClickedEntity,   mState.editObjPart,
-      mState.selectedObjPartName, (int &)mState.gizmoOp,
-      (int &)mState.gizmoMode,    mState.renaming,
-      mState.renameBuf,           mState.outlinerFilter,
-      mState.focusDistance};
+      mState.selection.selectedEntityId,    mState.selection.selectedEntities,
+      mState.selection.lastClickedEntity,   mState.selection.editObjPart,
+      mState.selection.selectedObjPartName, (int &)mState.selection.gizmoOp,
+      (int &)mState.selection.gizmoMode,    mState.selection.renaming,
+      mState.selection.renameBuf,           mState.selection.outlinerFilter,
+      mState.selection.focusDistance};
 
   EditorContext ctx{
       mState.uiMode,
-      mState.walkStep,
-      mState.runMult,
-      mState.jumpStrength,
-      mState.gravity,
-      mState.freezePhysics,
-      mState.mouseSensitivity,
-      mState.fov,
+      mState.input.walkStep,
+      mState.input.runMult,
+      mState.input.jumpStrength,
+      mState.input.gravity,
+      mState.input.freezePhysics,
+      mState.input.mouseSensitivity,
+      mState.input.fov,
       mState.sun,
       mState.fire,
       mState.cloud,
@@ -181,65 +190,66 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.assets,
       mState.terrainSize,
       mState.terrainSpacing,
-      mState.solidSky,
-      mState.skyHorizon,
-      mState.skyTop,
-      mState.shadowStrength,
-      mState.shadowFarPlane,
-      mState.exposure,
-      mState.gamma,
-      mState.wireframe,
-      mState.disableShadows,
-      mState.disableClouds,
-      mState.disableHDR,
-      mState.freezeTime,
+      mState.skyUI.solidSky,
+      mState.skyUI.skyHorizon,
+      mState.skyUI.skyTop,
+      mState.render.shadowStrength,
+      mState.render.shadowFarPlane,
+      mState.render.exposure,
+      mState.render.gamma,
+      mState.render.wireframe,
+      mState.render.disableShadows,
+      mState.render.disableClouds,
+      mState.render.disableHDR,
+      mState.render.freezeTime,
       dt,
       (int)mState.scene.registry().view<TransformComponent>().size(),
       (int)(mState.projectiles.count()),
       mState.renderSystem.stats().drawn,
       mState.renderSystem.stats().culled,
-      mState.frustumCulling,
+      mState.render.frustumCulling,
       &mState.lastRenderPassOrder,
       mState.hotReloadEnabled,
       mState.autoProcessImportQueue,
       &mState.hotReloadMessages,
-      &mState.historyLabels,
-      mState.historyCursor,
-      selState};
+      &mState.history.historyLabels,
+      mState.history.historyCursor,
+      selState,
+      (int &)mState.playState};
 
   EditorUIOutput uiOut = mState.editor.draw(ctx);
   if (uiOut.sceneModified) {
-    mState.pendingHistoryCommit = true;
-    mState.pendingHistoryLabel = "Edit Scene";
+    mState.history.pendingHistoryCommit = true;
+    mState.history.pendingHistoryLabel = "Edit Scene";
   }
   bool sceneMutatedByCommands = false;
-  if (mState.requestSaveConfig) {
+  if (mState.pending.requestSaveConfig) {
     saveConfig(mState, "editor_state.bin");
-    mState.requestSaveConfig = false;
+    mState.pending.requestSaveConfig = false;
   }
-  if (mState.requestLoadConfig) {
+  if (mState.pending.requestLoadConfig) {
     loadConfig(mState, "editor_state.bin");
-    mState.requestLoadConfig = false;
+    mState.pending.requestLoadConfig = false;
   }
-  if (mState.requestSaveProjectConfig) {
+  if (mState.pending.requestSaveProjectConfig) {
     if (!mState.projectConfig.saveToFile("project_config.json")) {
       LOG_ERROR("Runtime", "Failed to save project_config.json");
     }
-    mState.requestSaveProjectConfig = false;
+    mState.pending.requestSaveProjectConfig = false;
   }
-  if (!mState.pendingSceneSavePath.empty()) {
-    if (!mState.scene.saveToFile(mState.pendingSceneSavePath))
+  if (!mState.pending.pendingSceneSavePath.empty()) {
+    if (!mState.scene.saveToFile(mState.pending.pendingSceneSavePath))
       LOG_ERROR("Runtime",
-                "Failed to save scene: " + mState.pendingSceneSavePath);
-    mState.pendingSceneSavePath.clear();
+                "Failed to save scene: " + mState.pending.pendingSceneSavePath);
+    mState.pending.pendingSceneSavePath.clear();
   }
-  if (!mState.pendingSceneLoadPath.empty()) {
-    if (!mState.scene.loadFromFile(mState.pendingSceneLoadPath))
+  if (!mState.pending.pendingSceneLoadPath.empty()) {
+    if (!mState.scene.loadFromFile(mState.pending.pendingSceneLoadPath))
       LOG_ERROR("Runtime",
-                "Failed to load scene: " + mState.pendingSceneLoadPath);
+                "Failed to load scene: " + mState.pending.pendingSceneLoadPath);
     else {
-      mState.pendingHistoryCommit = true;
-      mState.pendingHistoryLabel = "Load Scene";
+      mState.history.pendingHistoryCommit = true;
+      mState.history.pendingHistoryLabel = "Load Scene";
       sceneMutatedByCommands = true;
       mState.playerId = 0;
       for (auto e : mState.scene.registry().view<CameraComponent>()) {
@@ -251,22 +261,22 @@ void CoreAppLayer::update(float dt, float nowT) {
         }
       }
     }
-    mState.pendingSceneLoadPath.clear();
+    mState.pending.pendingSceneLoadPath.clear();
   }
 
-  if (mState.requestHistoryJump >= 0) {
-    applyHistorySnapshot(mState.requestHistoryJump);
-    mState.requestHistoryJump = -1;
+  if (mState.history.requestHistoryJump >= 0) {
+    applyHistorySnapshot(mState.history.requestHistoryJump);
+    mState.history.requestHistoryJump = -1;
     sceneMutatedByCommands = true;
-  } else if (mState.requestUndo) {
-    applyHistorySnapshot(mState.historyCursor - 1);
+  } else if (mState.history.requestUndo) {
+    applyHistorySnapshot(mState.history.historyCursor - 1);
     sceneMutatedByCommands = true;
-  } else if (mState.requestRedo) {
-    applyHistorySnapshot(mState.historyCursor + 1);
+  } else if (mState.history.requestRedo) {
+    applyHistorySnapshot(mState.history.historyCursor + 1);
     sceneMutatedByCommands = true;
   }
-  mState.requestUndo = false;
-  mState.requestRedo = false;
+  mState.history.requestUndo = false;
+  mState.history.requestRedo = false;
 
   if (mState.autoProcessImportQueue)
     mState.assets.processImportQueue();
@@ -276,49 +286,59 @@ void CoreAppLayer::update(float dt, float nowT) {
     mState.hotReloadMessages.clear();
   }
 
-  for (const std::string &emptyName : mState.pendingEmptyEntityNames) {
+  for (const std::string &emptyName : mState.pending.pendingEmptyEntityNames) {
     (void)mState.scene.createEmptyEntity(emptyName.empty() ? "Empty"
                                                            : emptyName);
-    mState.pendingHistoryCommit = true;
-    mState.pendingHistoryLabel = "Create Entity";
+    mState.history.pendingHistoryCommit = true;
+    mState.history.pendingHistoryLabel = "Create Entity";
     sceneMutatedByCommands = true;
   }
-  mState.pendingEmptyEntityNames.clear();
+  mState.pending.pendingEmptyEntityNames.clear();
 
-  for (uint32_t entityId : mState.pendingDeleteEntityIds) {
+  for (uint32_t entityId : mState.pending.pendingDeleteEntityIds) {
     if (entityId != 0) {
       mState.scene.deleteEntity(entityId);
-      mState.pendingHistoryCommit = true;
-      mState.pendingHistoryLabel = "Delete Entity";
+      mState.history.pendingHistoryCommit = true;
+      mState.history.pendingHistoryLabel = "Delete Entity";
       sceneMutatedByCommands = true;
     }
   }
-  mState.pendingDeleteEntityIds.clear();
+  mState.pending.pendingDeleteEntityIds.clear();
 
-  for (const std::string &path : mState.pendingSpawnPaths) {
-    const uint32_t spawnedId = mState.scene.spawnFromFile(path);
-    if (spawnedId == 0) {
-      LOG_ERROR("Runtime", "Failed to load model from path: " + path);
+  for (const std::string &path : mState.pending.pendingSpawnPaths) {
+    uint32_t spawnedId = 0;
+
+    // Intercept procedural primitives (__primitive_cube, etc.)
+    const std::string prefix = "__primitive_";
+    if (path.substr(0, prefix.size()) == prefix) {
+      std::string shape = path.substr(prefix.size());
+      spawnedId = mState.scene.spawnPrimitive(shape);
     } else {
-      mState.pendingHistoryCommit = true;
-      mState.pendingHistoryLabel = "Spawn Asset";
+      spawnedId = mState.scene.spawnFromFile(path);
+    }
+
+    if (spawnedId == 0) {
+      LOG_ERROR("Runtime", "Failed to spawn: " + path);
+    } else {
+      mState.history.pendingHistoryCommit = true;
+      mState.history.pendingHistoryLabel = "Spawn Asset";
       sceneMutatedByCommands = true;
     }
   }
-  mState.pendingSpawnPaths.clear();
+  mState.pending.pendingSpawnPaths.clear();
 
-  if (!mState.pendingDropPaths.empty()) {
-    for (const std::string &path : mState.pendingDropPaths) {
+  if (!mState.pending.pendingDropPaths.empty()) {
+    for (const std::string &path : mState.pending.pendingDropPaths) {
       const uint32_t spawnedId = mState.scene.spawnFromFile(path);
       if (spawnedId == 0)
         LOG_ERROR("Runtime", "Failed to load dropped model: " + path);
       else {
-        mState.pendingHistoryCommit = true;
-        mState.pendingHistoryLabel = "Spawn Asset";
+        mState.history.pendingHistoryCommit = true;
+        mState.history.pendingHistoryLabel = "Spawn Asset";
         sceneMutatedByCommands = true;
       }
     }
-    mState.pendingDropPaths.clear();
+    mState.pending.pendingDropPaths.clear();
   }
 
   const size_t entityCountBeforeFlush =
@@ -327,57 +347,47 @@ void CoreAppLayer::update(float dt, float nowT) {
   const size_t entityCountAfterFlush =
       mState.scene.registry().view<TransformComponent>().size();
   if (entityCountAfterFlush != entityCountBeforeFlush) {
-    mState.pendingHistoryCommit = true;
-    mState.pendingHistoryLabel = "Destroy Entity";
+    mState.history.pendingHistoryCommit = true;
+    mState.history.pendingHistoryLabel = "Destroy Entity";
     sceneMutatedByCommands = true;
   }
 
-  if (mState.wireframe)
+  if (mState.render.wireframe)
     GLStateCache::instance().setPolygonMode(GL_LINE);
   else
     GLStateCache::instance().setPolygonMode(GL_FILL);
 
-  bool allowGameInput = (!mState.uiMode && !uiOut.wantCaptureKeyboard);
-
-  if (allowGameInput) {
-    mState.movementSystem.update(mState.scene.registry(), dt, mState.walkStep,
-                                 mState.runMult, mState.jumpStrength);
+  // Run Lua scripts only when Playing
+  if (mState.playState == AppState::PlayState::Playing) {
+    mState.scriptSystem.update(mState.scene.registry(), dt);
   }
 
-  bool allowMouseLook =
-      (!mState.uiMode && !uiOut.wantCaptureMouse && !ImGuizmo::IsUsing());
-  if (allowMouseLook) {
-    mState.cameraSystem.update(mState.scene.registry(),
-                               mState.mouseSensitivity);
-  } else {
-    Mouse::getDX(); // Consume delta
-    Mouse::getDY();
-  }
+  // ── Editor Camera (orbit / pan / zoom via mouse) ──
+  mState.editorCamera.update(mState.window,
+                             uiOut.wantCaptureMouse || ImGuizmo::IsUsing());
 
-  glm::vec3 cameraPos(0, 0, 3);
-  glm::vec3 cameraFront(0, 0, -1);
-  glm::vec3 cameraUp(0, 1, 0);
-
-  if (mState.playerId != 0) {
-    if (mState.scene.registry().has<TransformComponent>(mState.playerId)) {
-      cameraPos = mState.scene.registry()
-                      .get<TransformComponent>(mState.playerId)
-                      .position;
-    }
-    if (mState.scene.registry().has<CameraComponent>(mState.playerId)) {
-      const auto &cam =
-          mState.scene.registry().get<CameraComponent>(mState.playerId);
-      cameraFront = cam.front;
-      cameraUp = cam.up;
+  // F key: focus on selected entity
+  if (Keyboard::key(GLFW_KEY_F) && !uiOut.wantCaptureKeyboard &&
+      mState.selection.selectedEntityId != 0) {
+    auto &reg = mState.scene.registry();
+    if (reg.has<TransformComponent>(mState.selection.selectedEntityId)) {
+      glm::vec3 target =
+          reg.get<TransformComponent>(mState.selection.selectedEntityId)
+              .position;
+      mState.editorCamera.focusOn(target);
     }
   }
 
-  glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+  glm::vec3 cameraPos = mState.editorCamera.getPosition();
+  glm::vec3 cameraFront = mState.editorCamera.getForwardVector();
+  glm::vec3 cameraUp = mState.editorCamera.getUpVector();
+
+  glm::mat4 view = mState.editorCamera.getViewMatrix();
 
   int winW, winH;
   glfwGetWindowSize(mState.window, &winW, &winH);
   glm::mat4 projection = glm::perspective(
-      glm::radians(mState.fov), (float)winW / (float)winH, 0.1f, 500.0f);
+      glm::radians(mState.input.fov), (float)winW / (float)winH, 0.1f, 500.0f);
 
   if (mState.uiMode && Mouse::buttonWentDown(GLFW_MOUSE_BUTTON_LEFT) &&
       !uiOut.wantCaptureMouse && !ImGuizmo::IsUsing()) {
@@ -393,22 +403,22 @@ void CoreAppLayer::update(float dt, float nowT) {
           glfwGetKey(mState.window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS ||
           glfwGetKey(mState.window, GLFW_KEY_LEFT_SUPER) == GLFW_PRESS;
       if (ctrlHeld) {
-        auto &sel = mState.selectedEntities;
+        auto &sel = mState.selection.selectedEntities;
         auto it = std::find(sel.begin(), sel.end(), hitId);
         if (it != sel.end()) {
           sel.erase(it);
-          if (mState.selectedEntityId == hitId)
-            mState.selectedEntityId = sel.empty() ? 0 : sel.back();
+          if (mState.selection.selectedEntityId == hitId)
+            mState.selection.selectedEntityId = sel.empty() ? 0 : sel.back();
         } else {
           sel.push_back(hitId);
-          mState.selectedEntityId = hitId;
+          mState.selection.selectedEntityId = hitId;
         }
       } else {
-        mState.selectedEntities.clear();
-        mState.selectedEntities.push_back(hitId);
-        mState.selectedEntityId = hitId;
+        mState.selection.selectedEntities.clear();
+        mState.selection.selectedEntities.push_back(hitId);
+        mState.selection.selectedEntityId = hitId;
       }
-      mState.lastClickedEntity = hitId;
+      mState.selection.lastClickedEntity = hitId;
 
       auto &reg = mState.scene.registry();
       if (reg.has<MeshComponent>(hitId) && reg.has<TransformComponent>(hitId)) {
@@ -417,25 +427,25 @@ void CoreAppLayer::update(float dt, float nowT) {
           auto &tr = reg.get<TransformComponent>(hitId);
           std::string hitPart = MousePicking::pickSubmesh(ray, tr, *mdl);
           if (!hitPart.empty()) {
-            mState.editObjPart = true;
-            mState.selectedObjPartName = hitPart;
+            mState.selection.editObjPart = true;
+            mState.selection.selectedObjPartName = hitPart;
           } else {
-            mState.editObjPart = false;
-            mState.selectedObjPartName.clear();
+            mState.selection.editObjPart = false;
+            mState.selection.selectedObjPartName.clear();
           }
         } else {
-          mState.editObjPart = false;
-          mState.selectedObjPartName.clear();
+          mState.selection.editObjPart = false;
+          mState.selection.selectedObjPartName.clear();
         }
       } else {
-        mState.editObjPart = false;
-        mState.selectedObjPartName.clear();
+        mState.selection.editObjPart = false;
+        mState.selection.selectedObjPartName.clear();
       }
     } else {
-      mState.selectedEntities.clear();
-      mState.selectedEntityId = 0;
-      mState.editObjPart = false;
-      mState.selectedObjPartName.clear();
+      mState.selection.selectedEntities.clear();
+      mState.selection.selectedEntityId = 0;
+      mState.selection.editObjPart = false;
+      mState.selection.selectedObjPartName.clear();
     }
   }
 
@@ -443,32 +453,32 @@ void CoreAppLayer::update(float dt, float nowT) {
     if (mState.editor.drawGizmo(mState.uiMode, view, projection, mState.scene,
                                 mState.sun, mState.events, selState,
                                 cameraPos)) {
-      mState.pendingHistoryCommit = true;
-      mState.pendingHistoryLabel = "Edit Scene";
+      mState.history.pendingHistoryCommit = true;
+      mState.history.pendingHistoryLabel = "Edit Scene";
     }
   }
 
-  if (mState.pendingHistoryCommit) {
+  if (mState.history.pendingHistoryCommit) {
     const bool interacting = ImGuizmo::IsUsing() || ImGui::IsAnyItemActive() ||
                              ImGui::IsMouseDown(0);
     if (!interacting || sceneMutatedByCommands) {
-      commitHistorySnapshot(mState.pendingHistoryLabel.empty()
+      commitHistorySnapshot(mState.history.pendingHistoryLabel.empty()
                                 ? "Edit Scene"
-                                : mState.pendingHistoryLabel);
-      mState.pendingHistoryCommit = false;
-      mState.pendingHistoryLabel.clear();
+                                : mState.history.pendingHistoryLabel);
+      mState.history.pendingHistoryCommit = false;
+      mState.history.pendingHistoryLabel.clear();
     }
   }
 
-  bool editingSun =
-      (mState.uiMode && mState.selectedEntityId == 0 && ImGuizmo::IsUsing());
+  bool editingSun = (mState.uiMode && mState.selection.selectedEntityId == 0 &&
+                     ImGuizmo::IsUsing());
   if (!editingSun)
     mState.sun.update(dt, renderTime);
 
   mState.projectiles.update(dt);
   mState.renderSystem.setViewProjection(projection * view);
   mState.renderSystem.setCameraPosition(cameraPos);
-  mState.renderSystem.setCullingEnabled(mState.frustumCulling);
+  mState.renderSystem.setCullingEnabled(mState.render.frustumCulling);
 
   if (mState.renderLoopSubsystem) {
     mState.renderLoopSubsystem->executeRenderPasses(

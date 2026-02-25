@@ -22,10 +22,6 @@ struct ToolbarState {
   bool snapEnabled = false;
   float snapValue = 1.0f;
 
-  // Play mode
-  enum PlayState : int { Stopped = 0, Playing = 1, Paused = 2 };
-  PlayState playState = Stopped;
-
   // Viewport shading
   enum ShadingMode : int { Textured = 0, Solid = 1, Wireframe = 2 };
   ShadingMode shadingMode = Textured;
@@ -58,23 +54,6 @@ inline bool ToolButton(const char *label, bool active, float width = 0) {
     pressed = ImGui::Button(label);
   }
   ImGui::PopStyleColor(3);
-  return pressed;
-}
-
-// Helper: play-state colored button
-inline bool PlayButton(const char *label, ImVec4 activeColor, bool active) {
-  if (active) {
-    ImGui::PushStyleColor(ImGuiCol_Button, activeColor);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                          ImVec4(activeColor.x + 0.1f, activeColor.y + 0.1f,
-                                 activeColor.z + 0.1f, 1.0f));
-  } else {
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.20f, 0.23f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                          ImVec4(0.28f, 0.28f, 0.32f, 1.0f));
-  }
-  bool pressed = ImGui::Button(label);
-  ImGui::PopStyleColor(2);
   return pressed;
 }
 
@@ -133,29 +112,6 @@ inline void draw(ToolbarState &state) {
 
     ImGui::TextDisabled("|");
     ImGui::SameLine();
-
-    // ── Play Controls (centered) ─────────────────────────────────────────
-    float centerX = vp->WorkSize.x * 0.5f - 80;
-    ImGui::SetCursorPosX(centerX);
-
-    if (PlayButton(" Play ", EditorTheme::kSuccess,
-                   state.playState == ToolbarState::Playing)) {
-      state.playState = (state.playState == ToolbarState::Playing)
-                            ? ToolbarState::Stopped
-                            : ToolbarState::Playing;
-    }
-    ImGui::SameLine();
-    if (PlayButton("Pause", ImVec4(0.8f, 0.6f, 0.1f, 1.0f),
-                   state.playState == ToolbarState::Paused)) {
-      if (state.playState == ToolbarState::Playing)
-        state.playState = ToolbarState::Paused;
-      else if (state.playState == ToolbarState::Paused)
-        state.playState = ToolbarState::Playing;
-    }
-    ImGui::SameLine();
-    if (PlayButton(" Stop ", EditorTheme::kError, false)) {
-      state.playState = ToolbarState::Stopped;
-    }
 
     // ── Right side: Shading + Camera speed ───────────────────────────────
     float rightX = vp->WorkSize.x - 260;

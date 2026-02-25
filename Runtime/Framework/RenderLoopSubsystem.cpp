@@ -14,16 +14,17 @@ void RenderLoopSubsystem::executeRenderPasses(const glm::mat4 &view,
                                               const glm::vec3 &cameraUp,
                                               float renderTime) {
   mState.renderGraph.clear();
-  if (!mState.disableShadows) {
+  if (!mState.render.disableShadows) {
     mState.renderGraph.addPass({"ShadowPass", {}, [&]() {
-                                  renderShadowPass(mState.sun.sunPos, 1.0f,
-                                                   mState.shadowFarPlane);
+                                  renderShadowPass(
+                                      mState.sun.sunPos, 1.0f,
+                                      mState.render.shadowFarPlane);
                                 }});
   }
   mState.renderGraph.addPass(
       {"MainPass",
-       mState.disableShadows ? std::vector<std::string>{}
-                             : std::vector<std::string>{"ShadowPass"},
+       mState.render.disableShadows ? std::vector<std::string>{}
+                                    : std::vector<std::string>{"ShadowPass"},
        [&]() {
          renderMainPass(view, projection, cameraPos, cameraFront, cameraUp,
                         renderTime);
@@ -79,7 +80,7 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
                                          const glm::vec3 &cameraUp,
                                          float nowT) {
   glm::vec3 lightPos = mState.sun.sunPos;
-  float far_plane = mState.shadowFarPlane;
+  float far_plane = mState.render.shadowFarPlane;
 
   glEnable(GL_STENCIL_TEST);
   glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
@@ -89,15 +90,16 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
   mState.renderer.beginFrame(0.2f, 0.3f, 0.3f, 1.0f);
   glStencilMask(0x00);
 
-  if (mState.disableHDR) {
+  if (mState.render.disableHDR) {
     mState.sky.setSolidSky(true);
-    mState.sky.setSkyColors(glm::make_vec3(mState.skyHorizon),
-                            glm::make_vec3(mState.skyTop));
+    mState.sky.setSkyColors(glm::make_vec3(mState.skyUI.skyHorizon),
+                            glm::make_vec3(mState.skyUI.skyTop));
   } else {
     mState.sky.setSolidSky(false);
   }
 
-  mState.sky.draw(view, projection, mState.exposure, mState.gamma);
+  mState.sky.draw(view, projection, mState.render.exposure,
+                  mState.render.gamma);
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, 0);
@@ -108,21 +110,21 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
   mState.renderer.shader().setInt("shadowCube", 1);
 
   mState.renderer.setFrameUniforms(
-      view, projection, mState.mixVal, nowT, mState.sun.sunColor,
+      view, projection, mState.render.mixVal, nowT, mState.sun.sunColor,
       mState.sun.ambientStrength, cameraPos, mState.sun.glowStrength, lightPos,
-      far_plane, mState.shadowStrength);
+      far_plane, mState.render.shadowStrength);
 
   mState.renderer.shader().setBool("uHasFire", false);
 
   mState.renderSystem.update(mState.scene.registry(), mState.renderer.shader(),
-                             false, mState.selectedEntityId, false);
+                             false, mState.selection.selectedEntityId, false);
 
   mState.projectiles.draw(view, projection, 0.25f);
 
   mState.renderer.shader().activate();
   mState.sun.draw(mState.renderer.shader(), cameraFront, cameraUp);
 
-  if (mState.selectedEntityId != 0 && mState.outlineShader) {
+  if (mState.selection.selectedEntityId != 0 && mState.outlineShader) {
     glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
     glStencilMask(0x00);
     glDisable(GL_DEPTH_TEST);
@@ -131,7 +133,7 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
     mState.outlineShader->setMat4("view", view);
     mState.outlineShader->setMat4("projection", projection);
     mState.renderSystem.update(mState.scene.registry(), *mState.outlineShader,
-                               false, mState.selectedEntityId, true);
+                               false, mState.selection.selectedEntityId, true);
 
     glStencilMask(0xFF);
     glStencilFunc(GL_ALWAYS, 1, 0xFF);

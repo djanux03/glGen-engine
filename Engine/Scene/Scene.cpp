@@ -5,6 +5,7 @@
 #include "ECS/Components.h"
 #include "FBXModel.h"
 #include "OBJModel.h"
+#include "PrimitiveMeshGenerator.h"
 #include "json.hpp"
 
 #include <algorithm>
@@ -119,6 +120,47 @@ Scene::EntityId Scene::spawnFromFile(const std::string &path) {
   if (name.empty())
     name = "Entity";
   mRegistry.emplace<NameComponent>(id, name);
+
+  return id;
+}
+
+Scene::EntityId Scene::spawnPrimitive(const std::string &primitiveName) {
+  OBJModel *model = nullptr;
+  std::string displayName;
+
+  if (primitiveName == "cube") {
+    model = PrimitiveMeshGenerator::createCube();
+    displayName = "Cube";
+  } else if (primitiveName == "sphere") {
+    model = PrimitiveMeshGenerator::createSphere();
+    displayName = "Sphere";
+  } else if (primitiveName == "plane") {
+    model = PrimitiveMeshGenerator::createPlane();
+    displayName = "Plane";
+  } else if (primitiveName == "cylinder") {
+    model = PrimitiveMeshGenerator::createCylinder();
+    displayName = "Cylinder";
+  } else if (primitiveName == "cone") {
+    model = PrimitiveMeshGenerator::createCone();
+    displayName = "Cone";
+  } else {
+    return 0;
+  }
+
+  if (!model)
+    return 0;
+
+  EntityId id = mRegistry.create();
+  mRegistry.emplace<TransformComponent>(id);
+
+  MeshComponent mesh(model);
+  mesh.assetId = "__primitive_" + primitiveName;
+  auto &mc = mRegistry.emplace<MeshComponent>(id, mesh);
+
+  mRegistry.emplace<BoundsComponent>(id, BoundsComponent{2.0f});
+  mRegistry.emplace<LifecycleComponent>(id);
+  mRegistry.emplace<HierarchyComponent>(id);
+  mRegistry.emplace<NameComponent>(id, displayName);
 
   return id;
 }

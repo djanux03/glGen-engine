@@ -76,13 +76,12 @@ private:
     if (Keyboard::key(GLFW_KEY_DOWN))
       tr.position.y -= speed;
 
-    // Jump
-    static bool spaceWasDown = false;
+    // Jump (per-entity debounce via phys.spaceWasDown)
     bool spaceDown = Keyboard::key(GLFW_KEY_SPACE);
-    if (spaceDown && !spaceWasDown && phys.onGround) {
+    if (spaceDown && !phys.spaceWasDown && phys.onGround) {
       phys.velocity.y = jumpStrength;
       phys.onGround = false;
     }
-    spaceWasDown = spaceDown;
+    phys.spaceWasDown = spaceDown;
   }
 };

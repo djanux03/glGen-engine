@@ -48,3 +48,18 @@ target_include_directories(ufbx PUBLIC include)
 # TinyObjLoader
 add_library(tinyobjloader INTERFACE)
 target_include_directories(tinyobjloader INTERFACE include)
+
+# Lua 5.4
+file(GLOB LUA_SOURCES lua/src/*.c)
+# Remove standalone executables (lua.c = interpreter, luac.c = compiler)
+list(FILTER LUA_SOURCES EXCLUDE REGEX "lua/src/lua\\.c$")
+list(FILTER LUA_SOURCES EXCLUDE REGEX "lua/src/luac\\.c$")
+add_library(lua STATIC ${LUA_SOURCES})
+target_include_directories(lua PUBLIC lua/src)
+# Silence warnings in Lua source
+target_compile_options(lua PRIVATE -w)
+
+# sol2 - header-only C++ Lua bindings
+add_library(sol2 INTERFACE)
+target_include_directories(sol2 INTERFACE sol2/include)
+target_link_libraries(sol2 INTERFACE lua)

@@ -18,6 +18,7 @@
 #include "AssetManager.h"
 #include "CloudFX.h"
 #include "ECS/Systems/CameraSystem.h"
+#include "ECS/Systems/EditorCamera.h"
 #include "ECS/Systems/MovementSystem.h"
 #include "ECS/Systems/RenderSystem.h"
 #include "EditorUI.h"
@@ -29,6 +30,7 @@
 #include "RenderGraph.h"
 #include "Renderer.h"
 #include "Scene.h"
+#include "Scripting/ScriptSystem.h"
 #include "SubsystemManager.h"
 #include "SunFX.h"
 
@@ -76,6 +78,87 @@ struct EntitySaveData {
   glm::vec3 rot;
   glm::vec3 scale;
 };
+
+// ---------------------------------------------------------------------------
+// Focused sub-structs — each groups a coherent set of concerns
+// ---------------------------------------------------------------------------
+
+struct RenderSettings {
+  float mixVal = 0.5f;
+  float shadowStrength = 1.5f;
+  float shadowFarPlane = 250.0f;
+  float exposure = 1.0f;
+  float gamma = 2.2f;
+
+  bool wireframe = false;
+  bool disableShadows = false;
+  bool disableClouds = false;
+  bool disableHDR = true; // Off by default
+  bool freezeTime = false;
+  float frozenTime = 0.0f;
+  bool frustumCulling = true;
+};
+
+struct InputSettings {
+  float walkStep = 0.03f;
+  float runMult = 2.0f;
+  float jumpStrength = 0.18f;
+  float gravity = 0.01f;
+  bool freezePhysics = false;
+  float mouseSensitivity = 0.10f;
+  float fov = 50.0f;
+};
+
+struct SelectionState {
+  uint32_t selectedEntityId = 0;
+  std::vector<uint32_t> selectedEntities;
+  uint32_t lastClickedEntity = 0;
+
+  bool editObjPart = false;
+  std::string selectedObjPartName;
+
+  ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE;
+  ImGuizmo::MODE gizmoMode = ImGuizmo::WORLD;
+
+  bool renaming = false;
+  char renameBuf[128] = "";
+  char outlinerFilter[128] = "";
+  float focusDistance = 12.0f;
+};
+
+struct SkySettings {
+  bool solidSky = true;
+  float skyHorizon[3] = {0.70f, 0.80f, 0.95f};
+  float skyTop[3] = {0.12f, 0.20f, 0.45f};
+};
+
+struct PendingActions {
+  std::vector<std::string> pendingDropPaths;
+  std::vector<std::string> pendingSpawnPaths;
+  std::vector<uint32_t> pendingDeleteEntityIds;
+  std::vector<std::string> pendingEmptyEntityNames;
+
+  bool requestSaveConfig = false;
+  bool requestLoadConfig = false;
+  bool requestSaveProjectConfig = false;
+  std::string pendingSceneSavePath;
+  std::string pendingSceneLoadPath;
+};
+
+struct HistoryState {
+  bool requestUndo = false;
+  bool requestRedo = false;
+  int requestHistoryJump = -1;
+  std::vector<std::string> historySnapshots;
+  std::vector<std::string> historyLabels;
+  int historyCursor = -1;
+  bool pendingHistoryCommit = false;
+  std::string pendingHistoryLabel;
+};
+
+// ---------------------------------------------------------------------------
+// AppState — organized into focused sub-structs
+// ---------------------------------------------------------------------------
 struct AppState {
   // Window / timing
   GLFWwindow *window = nullptr;
@@ -97,84 +180,41 @@ struct AppState {
   RenderSystem renderSystem;
   MovementSystem movementSystem;
   CameraSystem cameraSystem;
+  EditorCamera editorCamera;
+  ScriptSystem scriptSystem;
   RenderGraph renderGraph;
   std::vector<std::string> lastRenderPassOrder;
 
   // Player ID
   uint32_t playerId = 0;
 
-  // Terrain/editor vars
+  // Terrain
   int terrainSize = 10;
   float terrainSpacing = 1.0f;
 
   // Fire
   bool hasFire = false;
 
-  // Sub-object selection
-  std::string selectedObjPartName;
-  bool editObjPart = false;
-
-  // Tuning
-  float mixVal = 0.5f;
-  float walkStep = 0.03f;
-  float runMult = 2.0f;
-  float jumpStrength = 0.18f;
-  float gravity = 0.01f;
-  float fov = 50.0f;
-  bool freezePhysics = false;
-  float mouseSensitivity = 0.10f;
-
-  // Renderer controls
-  float shadowStrength = 1.5f;
-  float shadowFarPlane = 250.0f;
-  float exposure = 1.0f;
-  float gamma = 2.2f;
-
   // Outline shader
   std::unique_ptr<Shader> outlineShader;
 
-  // Render debug toggles
-  bool wireframe = false;
-  bool disableShadows = false;
-  bool disableClouds = false;
-  bool disableHDR = true; // Off by default
-  bool freezeTime = false;
-  float frozenTime = 0.0f;
-  bool frustumCulling = true;
-
   // UI mode
-  bool uiMode = false;
+  bool uiMode = true;
   bool escWasDown = false;
 
-  // Outliner & Selection
-  char outlinerFilter[128] = "";
-  std::vector<uint32_t> selectedEntities;
-  uint32_t lastClickedEntity = 0;
-  bool renaming = false;
-  char renameBuf[128] = "";
-  float focusDistance = 12.0f;
-  uint32_t selectedEntityId = 0;
+  // Play state (controls Lua script execution)
+  enum class PlayState { Stopped, Playing, Paused };
+  PlayState playState = PlayState::Stopped;
 
-  ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE;
-  ImGuizmo::MODE gizmoMode = ImGuizmo::WORLD;
+  // --- Focused sub-structs ---
+  RenderSettings render;
+  InputSettings input;
+  SelectionState selection;
+  SkySettings skyUI;
+  PendingActions pending;
+  HistoryState history;
 
-  // Sky UI
-  bool solidSky = true;
-  float skyHorizon[3] = {0.70f, 0.80f, 0.95f};
-  float skyTop[3] = {0.12f, 0.20f, 0.45f};
-
-  // Pending model import paths from OS drag-drop callback
-  std::vector<std::string> pendingDropPaths;
-  std::vector<std::string> pendingSpawnPaths;
-  std::vector<uint32_t> pendingDeleteEntityIds;
-  std::vector<std::string> pendingEmptyEntityNames;
-
-  bool requestSaveConfig = false;
-  bool requestLoadConfig = false;
-  bool requestSaveProjectConfig = false;
-  std::string pendingSceneSavePath;
-  std::string pendingSceneLoadPath;
-
+  // Infrastructure
   ProjectConfig projectConfig;
   EventBus events;
   EditorSubsystem *editorSubsystem = nullptr;
@@ -183,16 +223,8 @@ struct AppState {
   SubsystemManager subsystems;
   AssetManager assets;
 
+  // Hot reload
   std::vector<std::string> hotReloadMessages;
   bool hotReloadEnabled = true;
   bool autoProcessImportQueue = false;
-
-  bool requestUndo = false;
-  bool requestRedo = false;
-  int requestHistoryJump = -1;
-  std::vector<std::string> historySnapshots;
-  std::vector<std::string> historyLabels;
-  int historyCursor = -1;
-  bool pendingHistoryCommit = false;
-  std::string pendingHistoryLabel;
 };

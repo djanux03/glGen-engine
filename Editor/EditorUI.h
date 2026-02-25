@@ -105,6 +105,9 @@ struct EditorContext {
 
   // Selection State
   EditorSelectionState &selection;
+
+  // Play state (reference into AppState)
+  int &playState; // 0=Stopped, 1=Playing, 2=Paused
 };
 
 // ---------------------------------------------------------------------------
@@ -146,6 +149,7 @@ public:
 
   // Component inspector for selected entity
   bool drawInspector(EditorContext &ctx);
+  void drawScriptEditor(EditorContext &ctx);
 
 private:
   // File browser state
@@ -163,11 +167,18 @@ private:
   bool mShowEnvironment = true;
   bool mShowLog = false;
   bool mShowStats = true;
+  bool mShowScriptEditor = false;
+
+  // Script editor state
+  std::string mScriptEditorPath;
+  char mScriptEditorBuf[8192] = {};
+  bool mScriptEditorDirty = false;
 
   // Console state
   bool mConsoleAutoScroll = true;
   bool mFilterInfo = true;
   bool mFilterWarn = true;
+
   bool mFilterError = true;
   char mConsoleSearch[128] = "";
 

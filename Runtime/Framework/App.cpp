@@ -93,7 +93,7 @@ bool initWindowAndImGui(AppState &s) {
     return false;
 
   glfwMakeContextCurrent(s.window);
-  glfwSetInputMode(s.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+  glfwSetInputMode(s.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
   glfwSetWindowUserPointer(s.window, &s);
 
   if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
@@ -262,7 +262,7 @@ void App::dropCallback(GLFWwindow *window, int pathCount, const char **paths) {
 
   for (int i = 0; i < pathCount; ++i) {
     if (paths[i] && paths[i][0] != '\0')
-      state->pendingDropPaths.emplace_back(paths[i]);
+      state->pending.pendingDropPaths.emplace_back(paths[i]);
   }
 }
 

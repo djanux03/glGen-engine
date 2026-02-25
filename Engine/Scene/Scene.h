@@ -30,6 +30,7 @@ public:
   // Spawns an entity from supported mesh files (.obj, .fbx, .gltf, .glb):
   // creates Transform + Mesh + Name. Returns 0 on failure.
   EntityId spawnFromFile(const std::string &path);
+  EntityId spawnPrimitive(const std::string &primitiveName);
   EntityId createEmptyEntity(const std::string &name = "Empty");
   bool saveToFile(const std::string &path) const;
   bool loadFromFile(const std::string &path);

@@ -73,12 +73,12 @@ public:
                       ? static_cast<ISparseSet *>(poolB)
                       : static_cast<ISparseSet *>(poolA);
 
-    mViewCache.clear();
+    std::vector<EntityId> result;
     for (auto e : smallEntities) {
       if (other->has(e))
-        mViewCache.push_back(e);
+        result.push_back(e);
     }
-    return mViewCache;
+    return result; // NRVO — no copy
   }
 
   template <typename... Ts> std::vector<EntityId> viewAll() {
@@ -94,28 +94,28 @@ public:
     };
 
     const std::vector<EntityId> *seed = pickSmallest();
-    mViewCache.clear();
+    std::vector<EntityId> result;
     if (!seed)
-      return mViewCache;
+      return result;
 
     for (EntityId e : *seed) {
       bool hasAll = true;
       ((hasAll = hasAll && getPool<Ts>()->has(e)), ...);
       if (hasAll)
-        mViewCache.push_back(e);
+        result.push_back(e);
     }
-    return mViewCache;
+    return result; // NRVO — no copy
   }
 
   template <typename... Ts, typename Pred>
   std::vector<EntityId> viewWhere(Pred pred) {
     auto entities = viewAll<Ts...>();
-    mFilteredViewCache.clear();
+    std::vector<EntityId> result;
     for (EntityId e : entities) {
       if (pred(e))
-        mFilteredViewCache.push_back(e);
+        result.push_back(e);
     }
-    return mFilteredViewCache;
+    return result; // NRVO — no copy
   }
 
   // Direct access to component array for cache-friendly iteration
@@ -137,10 +137,6 @@ private:
 
   // Flat vector indexed by compile-time component ID (replaces unordered_map)
   std::vector<std::unique_ptr<ISparseSet>> mComponentPools;
-
-  // Reusable scratch buffer for multi-component views
-  std::vector<EntityId> mViewCache;
-  std::vector<EntityId> mFilteredViewCache;
 
   EntityId mNextId = 1;
   std::vector<EntityId> mFreeIds;

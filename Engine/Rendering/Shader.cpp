@@ -12,14 +12,14 @@ Shader::Shader(const char *vertexShaderPath, const char *fragmentShaderPath) {
   GLuint vertexShader = compileShader(mVertexPath.c_str(), GL_VERTEX_SHADER);
   GLuint fragShader = compileShader(mFragmentPath.c_str(), GL_FRAGMENT_SHADER);
 
-  id = glCreateProgram();
-  glAttachShader(id, vertexShader);
-  glAttachShader(id, fragShader);
-  glLinkProgram(id);
+  mId = glCreateProgram();
+  glAttachShader(mId, vertexShader);
+  glAttachShader(mId, fragShader);
+  glLinkProgram(mId);
 
-  glGetProgramiv(id, GL_LINK_STATUS, &success);
+  glGetProgramiv(mId, GL_LINK_STATUS, &success);
   if (!success) {
-    glGetProgramInfoLog(id, 512, NULL, infoLog);
+    glGetProgramInfoLog(mId, 512, NULL, infoLog);
     LOG_ERROR("Render", std::string("Shader link error: ") + infoLog);
   }
 
@@ -27,7 +27,38 @@ Shader::Shader(const char *vertexShaderPath, const char *fragmentShaderPath) {
   glDeleteShader(fragShader);
 }
 
-void Shader::activate() { GLStateCache::instance().useProgram(id); }
+Shader::~Shader() {
+  if (mId != 0) {
+    glDeleteProgram(mId);
+    mId = 0;
+  }
+}
+
+Shader::Shader(Shader &&other) noexcept
+    : mId(other.mId), mVertexPath(std::move(other.mVertexPath)),
+      mFragmentPath(std::move(other.mFragmentPath)),
+      mUniformCache(std::move(other.mUniformCache)) {
+  other.mId = 0; // Source no longer owns the GL program
+}
+
+Shader &Shader::operator=(Shader &&other) noexcept {
+  if (this != &other) {
+    // Release our current GL program
+    if (mId != 0)
+      glDeleteProgram(mId);
+
+    // Transfer ownership
+    mId = other.mId;
+    mVertexPath = std::move(other.mVertexPath);
+    mFragmentPath = std::move(other.mFragmentPath);
+    mUniformCache = std::move(other.mUniformCache);
+
+    other.mId = 0; // Source no longer owns the GL program
+  }
+  return *this;
+}
+
+void Shader::activate() { GLStateCache::instance().useProgram(mId); }
 
 bool Shader::reload() {
   if (mVertexPath.empty() || mFragmentPath.empty())
@@ -58,9 +89,9 @@ bool Shader::reload() {
   glDeleteShader(vertexShader);
   glDeleteShader(fragShader);
 
-  if (id != 0)
-    glDeleteProgram(id);
-  id = newProgram;
+  if (mId != 0)
+    glDeleteProgram(mId);
+  mId = newProgram;
   mUniformCache.clear();
   return true;
 }
@@ -110,12 +141,12 @@ GLint Shader::loc(const std::string &name) {
   auto it = mUniformCache.find(name);
   if (it != mUniformCache.end())
     return it->second;
-  GLint l = glGetUniformLocation(id, name.c_str());
+  GLint l = glGetUniformLocation(mId, name.c_str());
   mUniformCache[name] = l;
   return l;
 }
 
-void Shader::setMat4(const std::string &name, glm::mat4 value) {
+void Shader::setMat4(const std::string &name, const glm::mat4 &value) {
   glUniformMatrix4fv(loc(name), 1, GL_FALSE, glm::value_ptr(value));
 }
 void Shader::setInt(const std::string &name, int value) {

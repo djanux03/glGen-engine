@@ -7,8 +7,6 @@
 #include <map>
 #include <vector>
 
-static std::map<std::string, GLuint> sUfbxTextureCache;
-
 static glm::mat4 buildTRS(const glm::vec3 &pos, const glm::vec3 &rotDeg,
                           const glm::vec3 &scale) {
   glm::mat4 m(1.0f);
@@ -194,13 +192,13 @@ GLuint UFBXModel::loadTextureFromUFBX(ufbx_texture *tex) {
     fPath = mDirectory + "/" + relPath;
   }
 
-  if (sUfbxTextureCache.find(fPath) != sUfbxTextureCache.end()) {
-    return sUfbxTextureCache[fPath];
+  if (mTextureCache.find(fPath) != mTextureCache.end()) {
+    return mTextureCache[fPath];
   }
 
   GLuint glid = LoadTexture2D(fPath.c_str());
   if (glid != 0) {
-    sUfbxTextureCache[fPath] = glid;
+    mTextureCache[fPath] = glid;
     LOG_TRACE("Asset", "ufbx loaded texture file: " + fPath);
   }
   return glid;
@@ -253,6 +251,13 @@ void UFBXModel::shutdown() {
       glDeleteBuffers(1, &sm.ebo);
   }
   mSubmeshes.clear();
+
+  // Free cached textures
+  for (auto &[path, texId] : mTextureCache) {
+    if (texId != 0)
+      glDeleteTextures(1, &texId);
+  }
+  mTextureCache.clear();
 
   if (mScene) {
     ufbx_free_scene(mScene);

@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
@@ -141,6 +142,7 @@ EditorUIOutput EditorUI::draw(EditorContext &ctx) {
     mShowEnvironment = false; // Hide by default until user needs it
     mShowStats = false;
     mShowLog = false;
+    mShowScriptEditor = false;
     mResetLayout = false;
   }
 
@@ -178,6 +180,10 @@ EditorUIOutput EditorUI::draw(EditorContext &ctx) {
   if (mShowStats) {
     ImGui::SetNextWindowSize(ImVec2(250, 200), ImGuiCond_FirstUseEver);
     drawStats(ctx);
+  }
+  if (mShowScriptEditor) {
+    ImGui::SetNextWindowSize(ImVec2(600, 400), ImGuiCond_FirstUseEver);
+    drawScriptEditor(ctx);
   }
 
   // Capture IO state
@@ -232,6 +238,10 @@ void EditorUI::drawMainMenuBar(EditorContext &ctx) {
           ctx.events.publish(SpawnEntityRequestedEvent{"__primitive_sphere"});
         if (ImGui::MenuItem("Plane"))
           ctx.events.publish(SpawnEntityRequestedEvent{"__primitive_plane"});
+        if (ImGui::MenuItem("Cylinder"))
+          ctx.events.publish(SpawnEntityRequestedEvent{"__primitive_cylinder"});
+        if (ImGui::MenuItem("Cone"))
+          ctx.events.publish(SpawnEntityRequestedEvent{"__primitive_cone"});
         ImGui::EndMenu();
       }
       ImGui::Separator();
@@ -261,6 +271,74 @@ void EditorUI::drawMainMenuBar(EditorContext &ctx) {
         // TODO: About popup
       }
       ImGui::EndMenu();
+    }
+
+    // ── Play / Pause / Stop ──
+    {
+      float barW = ImGui::GetWindowWidth();
+      float btnW = 60.0f;
+      float totalW = btnW * 3 + ImGui::GetStyle().ItemSpacing.x * 2;
+      float centerX = (barW - totalW) * 0.5f;
+      if (centerX > ImGui::GetCursorPosX())
+        ImGui::SameLine(centerX);
+      else
+        ImGui::SameLine();
+
+      bool isStopped = (ctx.playState == 0);
+      bool isPlaying = (ctx.playState == 1);
+      bool isPaused = (ctx.playState == 2);
+
+      // Play button
+      if (isPlaying) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f, 0.5f, 0.1f, 1.0f));
+      } else {
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              ImGui::GetStyle().Colors[ImGuiCol_Button]);
+      }
+      if (ImGui::Button("Play", ImVec2(btnW, 0))) {
+        ctx.playState = 1; // Playing
+      }
+      ImGui::PopStyleColor();
+
+      ImGui::SameLine();
+
+      // Pause button
+      if (isPaused) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.5f, 0.0f, 1.0f));
+      } else {
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              ImGui::GetStyle().Colors[ImGuiCol_Button]);
+      }
+      if (ImGui::Button("Pause", ImVec2(btnW, 0))) {
+        if (isPlaying)
+          ctx.playState = 2; // Paused
+        else if (isPaused)
+          ctx.playState = 1; // Resume
+      }
+      ImGui::PopStyleColor();
+
+      ImGui::SameLine();
+
+      // Stop button
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.1f, 0.1f, 1.0f));
+      if (ImGui::Button("Stop", ImVec2(btnW, 0))) {
+        ctx.playState = 0; // Stopped
+        // Reset all script components so they re-initialize on next Play
+        for (auto eid : ctx.scene.registry().view<ScriptComponent>()) {
+          auto &sc = ctx.scene.registry().get<ScriptComponent>(eid);
+          sc.initialized = false;
+        }
+      }
+      ImGui::PopStyleColor();
+
+      // State indicator
+      ImGui::SameLine();
+      if (isPlaying)
+        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1), "Playing");
+      else if (isPaused)
+        ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.2f, 1), "Paused");
+      else
+        ImGui::TextDisabled("Stopped");
     }
 
     // ── Right-aligned info ──
@@ -1047,6 +1125,96 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
         }
       }
 
+      // ── Script ──────────────────────────────────────────────────────────
+      if (reg.has<ScriptComponent>(selectedEntityId)) {
+        bool open = false, wantRemove = false, wantReset = false;
+        ComponentHeader("Script", &open, true, &wantRemove, &wantReset);
+        if (wantRemove) {
+          reg.removeComponent<ScriptComponent>(selectedEntityId);
+        } else {
+          if (wantReset) {
+            auto &sc = reg.get<ScriptComponent>(selectedEntityId);
+            sc.scriptPath.clear();
+            sc.initialized = false;
+            sc.envRef = -1;
+            edited = true;
+          }
+          if (open) {
+            auto &sc = reg.get<ScriptComponent>(selectedEntityId);
+
+            // ── Script path input ──
+            char pathBuf[256];
+            std::snprintf(pathBuf, sizeof(pathBuf), "%s",
+                          sc.scriptPath.c_str());
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70);
+            if (ImGui::InputText("##ScriptPath", pathBuf, sizeof(pathBuf))) {
+              sc.scriptPath = pathBuf;
+              sc.initialized = false; // Reload on next frame
+              edited = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Browse##Script")) {
+              ImGui::OpenPopup("ScriptBrowserPopup");
+            }
+
+            // ── Script browser popup ──
+            if (ImGui::BeginPopup("ScriptBrowserPopup")) {
+              ImGui::Text("Lua Scripts:");
+              ImGui::Separator();
+              namespace fs = std::filesystem;
+              std::string searchDir = "scripts";
+              if (fs::exists(searchDir) && fs::is_directory(searchDir)) {
+                for (auto const &entry : fs::directory_iterator(searchDir)) {
+                  if (!entry.is_regular_file())
+                    continue;
+                  std::string ext = entry.path().extension().string();
+                  if (ext != ".lua")
+                    continue;
+                  std::string name = entry.path().filename().string();
+                  if (ImGui::Selectable(name.c_str())) {
+                    sc.scriptPath = entry.path().string();
+                    sc.initialized = false;
+                    edited = true;
+                  }
+                }
+              } else {
+                ImGui::TextDisabled("No 'scripts/' directory found.");
+              }
+              ImGui::EndPopup();
+            }
+
+            // ── Status ──
+            if (sc.scriptPath.empty()) {
+              ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1),
+                                 "No script attached");
+            } else if (sc.initialized) {
+              ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1), "Running");
+            } else {
+              ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.2f, 1), "Pending...");
+            }
+
+            // ── Open editor button ──
+            if (!sc.scriptPath.empty()) {
+              if (ImGui::Button("Edit Script")) {
+                mShowScriptEditor = true;
+                // Force reload in the editor window
+                mScriptEditorPath = sc.scriptPath;
+                mScriptEditorDirty = false;
+                std::ifstream in(sc.scriptPath);
+                if (in.good()) {
+                  std::string content((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+                  std::snprintf(mScriptEditorBuf, sizeof(mScriptEditorBuf),
+                                "%s", content.c_str());
+                } else {
+                  mScriptEditorBuf[0] = '\0';
+                }
+              }
+            }
+          }
+        }
+      }
+
       // ── Add Component Button ───────────────────────────────────────────
       ImGui::Spacing();
       ImGui::Separator();
@@ -1097,6 +1265,10 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
         if (!reg.has<NameComponent>(selectedEntityId)) {
           if (ImGui::MenuItem("Name"))
             reg.emplace<NameComponent>(selectedEntityId, "Unnamed");
+        }
+        if (!reg.has<ScriptComponent>(selectedEntityId)) {
+          if (ImGui::MenuItem("Script"))
+            reg.emplace<ScriptComponent>(selectedEntityId);
         }
         ImGui::EndPopup();
       }
@@ -1289,4 +1461,55 @@ bool EditorUI::drawGizmo(bool uiMode, const glm::mat4 &view,
     }
   }
   return edited;
+}
+
+// =============================================================================
+// Script Editor
+// =============================================================================
+void EditorUI::drawScriptEditor(EditorContext &ctx) {
+  if (!mShowScriptEditor)
+    return;
+
+  std::string windowTitle =
+      "Script Editor - " +
+      (mScriptEditorPath.empty() ? "Untitled" : mScriptEditorPath) +
+      "###ScriptEditorWindow";
+
+  if (ImGui::Begin(windowTitle.c_str(), &mShowScriptEditor)) {
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.08f, 0.08f, 0.12f, 1.0f));
+    ImGui::PushFont(ImGui::GetIO().Fonts->Fonts.Size > 1
+                        ? ImGui::GetIO().Fonts->Fonts[1]
+                        : nullptr);
+    if (ImGui::InputTextMultiline(
+            "##ScriptEditorText", mScriptEditorBuf, sizeof(mScriptEditorBuf),
+            ImVec2(-1, -ImGui::GetTextLineHeightWithSpacing() * 2),
+            ImGuiInputTextFlags_AllowTabInput)) {
+      mScriptEditorDirty = true;
+    }
+    ImGui::PopFont();
+    ImGui::PopStyleColor();
+
+    if (mScriptEditorDirty) {
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.2f, 1.0f));
+      if (ImGui::Button("Save & Reload")) {
+        std::ofstream out(mScriptEditorPath);
+        if (out.good()) {
+          out << mScriptEditorBuf;
+          out.close();
+          mScriptEditorDirty = false;
+          // Force reload of script component
+          for (auto eid : ctx.scene.registry().view<ScriptComponent>()) {
+            auto &sc = ctx.scene.registry().get<ScriptComponent>(eid);
+            if (sc.scriptPath == mScriptEditorPath) {
+              sc.initialized = false;
+            }
+          }
+        }
+      }
+      ImGui::PopStyleColor();
+      ImGui::SameLine();
+      ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.1f, 1), "Unsaved changes");
+    }
+  }
+  ImGui::End();
 }

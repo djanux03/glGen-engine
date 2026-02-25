@@ -7,21 +7,25 @@ file(GLOB_RECURSE ENGINE_SOURCES
     "Scene/*.cpp"
     "Assets/*.cpp"
     "ECS/*.cpp"
+    "Scripting/*.cpp"
 )
 
 add_library(Engine STATIC ${ENGINE_SOURCES})
 
 # Include directories for Engine itself
+# '.' (Engine root) is needed for cross-subdirectory includes like "ECS/Registry.h" from Scene/
 target_include_directories(Engine PUBLIC 
+    ${CMAKE_CURRENT_SOURCE_DIR}
     Core 
     Rendering 
     Input 
     Scene 
     Assets
     ECS
+    Scripting
 )
 
-# Link ThirdParty dependencies
+# Link ThirdParty dependencies (Engine does NOT depend on Editor)
 target_link_libraries(Engine PUBLIC 
     glad 
     glm 
@@ -31,7 +35,7 @@ target_link_libraries(Engine PUBLIC
     ufbx 
     tinyobjloader 
     glfw
-    Editor
+    sol2
 )
 
 # Platform specific libs

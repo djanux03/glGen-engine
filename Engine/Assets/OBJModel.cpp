@@ -294,6 +294,71 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
   return true;
 }
 
+bool OBJModel::loadFromVertices(const std::vector<VertexData> &vertices,
+                                const std::string &name) {
+  if (vertices.empty())
+    return false;
+
+  // Convert VertexData → internal Vertex (same layout)
+  std::vector<Vertex> verts(vertices.size());
+  glm::vec3 bMin(1e30f), bMax(-1e30f);
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    verts[i].pos = vertices[i].pos;
+    verts[i].uv = vertices[i].uv;
+    verts[i].normal = vertices[i].normal;
+    bMin = glm::min(bMin, vertices[i].pos);
+    bMax = glm::max(bMax, vertices[i].pos);
+  }
+
+  // Create single submesh
+  Submesh sm;
+  sm.objectName = name;
+  sm.materialName = "default";
+  sm.debugName = name;
+  sm.vertexCount = (GLsizei)verts.size();
+  sm.aabbMin = bMin;
+  sm.aabbMax = bMax;
+  sm.hasBounds = true;
+
+  // White material (no texture)
+  sm.material.baseColor = glm::vec4(0.8f, 0.8f, 0.8f, 1.0f);
+  sm.material.texDiffuse = 0;
+  sm.material.texNormal = 0;
+
+  // Upload to GPU
+  glGenVertexArrays(1, &sm.vao);
+  glGenBuffers(1, &sm.vbo);
+
+  glBindVertexArray(sm.vao);
+  glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+  glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(Vertex), verts.data(),
+               GL_STATIC_DRAW);
+
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
+                        (void *)offsetof(Vertex, pos));
+  glEnableVertexAttribArray(0);
+
+  glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex),
+                        (void *)offsetof(Vertex, uv));
+  glEnableVertexAttribArray(1);
+
+  glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
+                        (void *)offsetof(Vertex, normal));
+  glEnableVertexAttribArray(2);
+
+  glBindVertexArray(0);
+
+  mSubmeshes.push_back(sm);
+
+  // Object-level bounds
+  ObjectBounds ob;
+  ob.aabbMin = bMin;
+  ob.aabbMax = bMax;
+  ob.hasBounds = true;
+  mObjectBounds[name] = ob;
+
+  return true;
+}
 void OBJModel::setObjectYawDeg(const std::string &objectName, float yawDeg) {
   auto &o = mYawOverride[objectName];
   o.yawDeg = yawDeg;

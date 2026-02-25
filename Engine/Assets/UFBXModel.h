@@ -4,6 +4,7 @@
 #include "ufbx.h"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -47,4 +48,7 @@ private:
   void processNode(ufbx_node *node);
   void processMesh(ufbx_mesh *mesh, ufbx_node *node);
   GLuint loadTextureFromUFBX(ufbx_texture *tex);
+
+  // Per-instance texture cache (replaces leaked static global)
+  std::map<std::string, GLuint> mTextureCache;
 };
