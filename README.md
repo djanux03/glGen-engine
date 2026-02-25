@@ -19,6 +19,17 @@ png)
 - **Integrated Editor**: Real-time scene manipulation using ImGui/ImGuizmo.
 - **FBX/OBJ Support**: Native asset loading through specialized loaders.
 
+## Lua Scripting
+
+glGen features a seamlessly integrated Lua scripting environment powered by `sol2`. You can write, attach, and execute scripts dynamically to control entities and game logic.
+
+- **Built-in Script Editor**: A fully-featured, dockable window directly inside the editor.
+- **Hot-Reloading**: Instantly test changes—scripts reload automatically upon saving.
+
+
+<!-- Add your Script Editor / Lua screenshot here -->
+<img width="800" alt="Script Editor Placeholder" src="https://via.placeholder.com/800x400?text=Insert+Script+Editor+Screenshot+Here" />
+
 ## Getting Started
 
 ### Prerequisites
