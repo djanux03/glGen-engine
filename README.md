@@ -37,8 +37,7 @@ glGen features a seamlessly integrated Lua scripting environment powered by `sol
 - **Hot-Reloading**: Instantly test changes—scripts reload automatically upon saving.
 
 
-<!-- Add your Script Editor / Lua screenshot here -->
-<img width="800" alt="Script Editor Placeholder" src="https://via.placeholder.com/800x400?text=Insert+Script+Editor+Screenshot+Here" />
+<img width=<img width="1470" height="861" alt="Screenshot 2026-02-24 at 22 46 11" src="https://github.com/user-attachments/assets/75923efe-ea9b-4a1f-9938-ef4487bc0ab6" />
 
 ## Getting Started
 
