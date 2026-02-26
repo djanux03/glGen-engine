@@ -27,17 +27,14 @@ glGen integrates the **Jolt Physics** library for robust rigid body simulations.
 - **Interactive Gizmos**: Manipulate collider dimensions independently of the entity transform.
 - **Debug Rendering**: Real-time wireframe visualization of collision shapes (Static, Dynamic, and Kinematic).
 
-<img width="800" alt="Physics Debug Placeholder" src="https://via.placeholder.com/800x400?text=Insert+Physics+Debug+Screenshot+Here" />
-
 ## Lua Scripting
 
 glGen features a seamlessly integrated Lua scripting environment powered by `sol2`. You can write, attach, and execute scripts dynamically to control entities and game logic.
 
 - **Built-in Script Editor**: A fully-featured, dockable window directly inside the editor.
 - **Hot-Reloading**: Instantly test changes—scripts reload automatically upon saving.
+<img width="1468" height="827" alt="Screenshot 2026-02-25 at 20 11 21" src="https://github.com/user-attachments/assets/072cc1ba-15a1-4e60-a201-cc0af9ec84ba" />
 
-
-<img width=<img width="1470" height="861" alt="Screenshot 2026-02-24 at 22 46 11" src="https://github.com/user-attachments/assets/75923efe-ea9b-4a1f-9938-ef4487bc0ab6" />
 
 ## Getting Started
 
