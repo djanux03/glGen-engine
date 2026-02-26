@@ -18,6 +18,16 @@ png)
 - **Advanced Rendering**: Directional shadows, HDR lighting, and procedural clouds.
 - **Integrated Editor**: Real-time scene manipulation using ImGui/ImGuizmo.
 - **FBX/OBJ Support**: Native asset loading through specialized loaders.
+- **Jolt Physics**: High-performance rigid body physics with debug rendering and interactive collider gizmos.
+
+## Physics & Colliders
+
+glGen integrates the **Jolt Physics** library for robust rigid body simulations. It features interactive collider editing directly in the viewport.
+
+- **Interactive Gizmos**: Manipulate collider dimensions independently of the entity transform.
+- **Debug Rendering**: Real-time wireframe visualization of collision shapes (Static, Dynamic, and Kinematic).
+
+<img width="800" alt="Physics Debug Placeholder" src="https://via.placeholder.com/800x400?text=Insert+Physics+Debug+Screenshot+Here" />
 
 ## Lua Scripting
 
