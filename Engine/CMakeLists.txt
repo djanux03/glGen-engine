@@ -23,6 +23,7 @@ target_include_directories(Engine PUBLIC
     Assets
     ECS
     Scripting
+    ../ThirdParty/JoltPhysics
 )
 
 # Link ThirdParty dependencies (Engine does NOT depend on Editor)
@@ -36,6 +37,7 @@ target_link_libraries(Engine PUBLIC
     tinyobjloader 
     glfw
     sol2
+    Jolt
 )
 
 # Platform specific libs

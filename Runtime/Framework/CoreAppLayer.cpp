@@ -9,7 +9,6 @@
 
 #include "ECS/Components.h"
 #include "ECS/Systems/CameraSystem.h"
-#include "ECS/Systems/MovementSystem.h"
 #include "ECS/Systems/RenderSystem.h"
 
 #include "EngineEvents.h"
@@ -87,10 +86,13 @@ bool CoreAppLayer::initialize() {
   // Initialize Lua scripting
   mState.scriptSystem.initialize(mState.scene.registry());
 
+  // Initialize Jolt Physics
+  mState.physicsSystem.init();
+
   return true;
 }
 
-void CoreAppLayer::shutdown() {}
+void CoreAppLayer::shutdown() { mState.physicsSystem.shutdown(); }
 
 void CoreAppLayer::applyHistorySnapshot(int idx) {
   if (idx < 0 || idx >= (int)mState.history.historySnapshots.size())
@@ -162,13 +164,18 @@ void CoreAppLayer::update(float dt, float nowT) {
   if (!mState.render.freezeTime)
     mState.render.frozenTime = nowT;
 
-  EditorSelectionState selState{
-      mState.selection.selectedEntityId,    mState.selection.selectedEntities,
-      mState.selection.lastClickedEntity,   mState.selection.editObjPart,
-      mState.selection.selectedObjPartName, (int &)mState.selection.gizmoOp,
-      (int &)mState.selection.gizmoMode,    mState.selection.renaming,
-      mState.selection.renameBuf,           mState.selection.outlinerFilter,
-      mState.selection.focusDistance};
+  EditorSelectionState selState = {mState.selection.selectedEntityId,
+                                   mState.selection.selectedEntities,
+                                   mState.selection.lastClickedEntity,
+                                   mState.selection.editObjPart,
+                                   mState.selection.selectedObjPartName,
+                                   mState.selection.editColliderBounds,
+                                   (int &)mState.selection.gizmoOp,
+                                   (int &)mState.selection.gizmoMode,
+                                   mState.selection.renaming,
+                                   mState.selection.renameBuf,
+                                   mState.selection.outlinerFilter,
+                                   mState.selection.focusDistance};
 
   EditorContext ctx{
       mState.uiMode,
@@ -360,6 +367,7 @@ void CoreAppLayer::update(float dt, float nowT) {
   // Run Lua scripts only when Playing
   if (mState.playState == AppState::PlayState::Playing) {
     mState.scriptSystem.update(mState.scene.registry(), dt);
+    mState.physicsSystem.update(mState.scene.registry(), dt);
   }
 
   // ── Editor Camera (orbit / pan / zoom via mouse) ──

@@ -63,3 +63,9 @@ target_compile_options(lua PRIVATE -w)
 add_library(sol2 INTERFACE)
 target_include_directories(sol2 INTERFACE sol2/include)
 target_link_libraries(sol2 INTERFACE lua)
+
+# Jolt Physics
+set(TARGET_UNIT_TESTS OFF CACHE BOOL "Build Unit Tests" FORCE)
+set(TARGET_HELLO_WORLD OFF CACHE BOOL "Build Hello World" FORCE)
+set(TARGET_PERFORMANCE_TEST OFF CACHE BOOL "Build Performance Test" FORCE)
+add_subdirectory(JoltPhysics/Build JoltPhysicsBuild)

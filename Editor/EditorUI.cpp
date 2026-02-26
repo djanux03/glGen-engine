@@ -991,22 +991,76 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
         }
       }
 
-      // ── Physics ────────────────────────────────────────────────────────
-      if (reg.has<PhysicsComponent>(selectedEntityId)) {
+      // ── Rigidbody ────────────────────────────────────────────────────────
+      if (reg.has<RigidbodyComponent>(selectedEntityId)) {
         bool open = false, wantRemove = false, wantReset = false;
-        ComponentHeader("Physics", &open, true, &wantRemove, &wantReset);
+        ComponentHeader("Rigidbody", &open, true, &wantRemove, &wantReset);
         if (wantRemove) {
-          reg.removeComponent<PhysicsComponent>(selectedEntityId);
+          reg.removeComponent<RigidbodyComponent>(selectedEntityId);
         } else {
           if (wantReset) {
-            reg.get<PhysicsComponent>(selectedEntityId) = PhysicsComponent{};
+            reg.get<RigidbodyComponent>(selectedEntityId) =
+                RigidbodyComponent{};
             edited = true;
           }
           if (open) {
-            auto &ph = reg.get<PhysicsComponent>(selectedEntityId);
-            edited |= DragFloat3Colored("Velocity", &ph.velocity.x, 0.01f);
-            ImGui::DragFloat("Gravity##Phys", &ph.gravity, 0.001f, 0.0f, 0.1f);
-            ImGui::Checkbox("On Ground", &ph.onGround);
+            auto &rb = reg.get<RigidbodyComponent>(selectedEntityId);
+            const char *typeItems[] = {"Static", "Kinematic", "Dynamic"};
+            int currentType = (int)rb.type;
+            if (ImGui::Combo("Type", &currentType, typeItems,
+                             IM_ARRAYSIZE(typeItems))) {
+              rb.type = (RigidbodyComponent::Type)currentType;
+              edited = true;
+            }
+            edited |= ImGui::DragFloat("Mass", &rb.mass, 0.1f, 0.0f, 1000.0f);
+            edited |=
+                ImGui::DragFloat("Friction", &rb.friction, 0.05f, 0.0f, 1.0f);
+            edited |= ImGui::DragFloat("Restitution", &rb.restitution, 0.05f,
+                                       0.0f, 1.0f);
+          }
+        }
+      }
+
+      // ── Collider ─────────────────────────────────────────────────────────
+      if (reg.has<ColliderComponent>(selectedEntityId)) {
+        bool open = false, wantRemove = false, wantReset = false;
+        ComponentHeader("Collider", &open, true, &wantRemove, &wantReset);
+        if (wantRemove) {
+          reg.removeComponent<ColliderComponent>(selectedEntityId);
+        } else {
+          if (wantReset) {
+            reg.get<ColliderComponent>(selectedEntityId) = ColliderComponent{};
+            edited = true;
+          }
+          if (open) {
+            auto &col = reg.get<ColliderComponent>(selectedEntityId);
+            const char *shapeItems[] = {"Box", "Sphere", "Capsule"};
+            int currentShape = (int)col.shape;
+            if (ImGui::Combo("Shape", &currentShape, shapeItems,
+                             IM_ARRAYSIZE(shapeItems))) {
+              col.shape = (ColliderComponent::Shape)currentShape;
+              edited = true;
+            }
+            if (col.shape == ColliderComponent::Shape::Box) {
+              edited |=
+                  DragFloat3Colored("Dimensions", &col.dimensions.x, 0.1f);
+            } else if (col.shape == ColliderComponent::Shape::Sphere) {
+              edited |= ImGui::DragFloat("Radius", &col.dimensions.x, 0.1f);
+            } else if (col.shape == ColliderComponent::Shape::Capsule) {
+              edited |= ImGui::DragFloat("Height", &col.dimensions.y, 0.1f);
+              edited |= ImGui::DragFloat("Radius", &col.dimensions.x, 0.1f);
+            }
+            ImGui::Spacing();
+            if (ImGui::Button(s.editColliderBounds ? "Stop Editing Bounds"
+                                                   : "Edit Bounds")) {
+              s.editColliderBounds = !s.editColliderBounds;
+              if (s.editColliderBounds) {
+                // Ensure gizmo mode is set to scale when editing colliders to
+                // make it intuitive
+                s.gizmoOp = ImGuizmo::SCALE;
+                s.gizmoMode = ImGuizmo::LOCAL;
+              }
+            }
           }
         }
       }
@@ -1238,9 +1292,13 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
           if (ImGui::MenuItem("Mesh"))
             reg.emplace<MeshComponent>(selectedEntityId);
         }
-        if (!reg.has<PhysicsComponent>(selectedEntityId)) {
-          if (ImGui::MenuItem("Physics"))
-            reg.emplace<PhysicsComponent>(selectedEntityId);
+        if (!reg.has<RigidbodyComponent>(selectedEntityId)) {
+          if (ImGui::MenuItem("Rigidbody"))
+            reg.emplace<RigidbodyComponent>(selectedEntityId);
+        }
+        if (!reg.has<ColliderComponent>(selectedEntityId)) {
+          if (ImGui::MenuItem("Collider"))
+            reg.emplace<ColliderComponent>(selectedEntityId);
         }
         if (!reg.has<BoundsComponent>(selectedEntityId)) {
           if (ImGui::MenuItem("Bounds"))
@@ -1364,6 +1422,7 @@ bool EditorUI::drawGizmo(bool uiMode, const glm::mat4 &view,
     s.selectedEntityId = 0;
     s.lastClickedEntity = 0;
     s.editObjPart = false;
+    s.editColliderBounds = false;
     s.selectedObjPartName.clear();
     s.renaming = false;
   };
@@ -1437,9 +1496,24 @@ bool EditorUI::drawGizmo(bool uiMode, const glm::mat4 &view,
     if (ImGuizmo::IsUsing()) {
       float t[3], r[3], sc[3];
       ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), t, r, sc);
-      tr.position = {t[0], t[1], t[2]};
-      tr.rotation = {r[0], r[1], r[2]};
-      tr.scale = {sc[0], sc[1], sc[2]};
+
+      if (s.editColliderBounds &&
+          reg.has<ColliderComponent>(s.selectedEntityId)) {
+        auto &col = reg.get<ColliderComponent>(s.selectedEntityId);
+        // We only use the scale for colliders
+        if (col.shape == ColliderComponent::Shape::Box) {
+          col.dimensions = {sc[0], sc[1], sc[2]};
+        } else if (col.shape == ColliderComponent::Shape::Sphere) {
+          col.dimensions.x = sc[0];
+        } else if (col.shape == ColliderComponent::Shape::Capsule) {
+          col.dimensions.x = sc[0]; // radius
+          col.dimensions.y = sc[1]; // height
+        }
+      } else {
+        tr.position = {t[0], t[1], t[2]};
+        tr.rotation = {r[0], r[1], r[2]};
+        tr.scale = {sc[0], sc[1], sc[2]};
+      }
       edited = true;
     }
   } else {

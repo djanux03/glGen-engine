@@ -108,6 +108,22 @@ inline void registerScriptBindings(sol::state &lua, Registry &registry) {
     return "";
   };
 
+  entityType["apply_impulse"] = [](const EntityProxy &e, float x, float y,
+                                   float z) {
+    if (e.reg->has<RigidbodyComponent>(e.id)) {
+      e.reg->get<RigidbodyComponent>(e.id).pendingImpulse += glm::vec3(x, y, z);
+    }
+  };
+
+  entityType["set_velocity"] = [](const EntityProxy &e, float x, float y,
+                                  float z) {
+    if (e.reg->has<RigidbodyComponent>(e.id)) {
+      auto &rb = e.reg->get<RigidbodyComponent>(e.id);
+      rb.pendingLinearVelocity = glm::vec3(x, y, z);
+      rb.setLinearVelocity = true;
+    }
+  };
+
   // ── Input table ────────────────────────────────────────────────────
   auto inputTable = lua.create_named_table("input");
 

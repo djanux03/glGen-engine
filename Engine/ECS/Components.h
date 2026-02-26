@@ -66,12 +66,34 @@ struct HierarchyComponent {
   std::vector<uint32_t> children;
 };
 
-struct PhysicsComponent {
-  glm::vec3 velocity = {0.0f, 0.0f, 0.0f};
-  float gravity = 0.01f;
-  bool onGround = false;
-  bool spaceWasDown =
-      false; // Per-entity jump debounce (was incorrectly static)
+// Physics components for Jolt Integration
+struct RigidbodyComponent {
+  enum class Type { Static, Kinematic, Dynamic };
+  Type type = Type::Dynamic;
+  float mass = 1.0f;
+  float friction = 0.5f;
+  float restitution = 0.0f;
+
+  // Pending forces/velocities from scripts to be applied this frame
+  glm::vec3 pendingLinearVelocity = {0.0f, 0.0f, 0.0f};
+  bool setLinearVelocity = false;
+  glm::vec3 pendingImpulse = {0.0f, 0.0f, 0.0f};
+
+  // Tracking last known physics transform to detect external changes (e.g.
+  // Gizmos)
+  glm::vec3 lastPosition = {0.0f, 0.0f, 0.0f};
+  glm::vec3 lastRotation = {0.0f, 0.0f, 0.0f};
+
+  // Internal Jolt Body ID wrapper
+  uint32_t bodyID = 0xFFFFFFFF; // JPH::BodyID::cInvalidBodyID
+};
+
+struct ColliderComponent {
+  enum class Shape { Box, Sphere, Capsule };
+  Shape shape = Shape::Box;
+
+  // Dimensions depend on the shape (e.g., extents for Box, radius for Sphere)
+  glm::vec3 dimensions = {1.0f, 1.0f, 1.0f};
 };
 
 struct BoundsComponent {

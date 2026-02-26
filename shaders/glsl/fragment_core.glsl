@@ -20,6 +20,21 @@ uniform bool  uGlowPass;
 uniform float uGlowStrength;
 uniform float uTime;
 
+// CLOUDS
+uniform bool  uCloudPass;
+uniform vec3  uCloudColor;
+uniform float uCloudScale;
+uniform float uCloudSpeed;
+uniform float uCloudCover;
+uniform float uCloudSoftness;
+uniform float uCloudAlpha;
+uniform float uCloudHeight;
+uniform float uCloudThickness;
+uniform float uCloudDensity;
+uniform float uCloudLightAbsorption;
+uniform float uCloudPhaseG;
+uniform vec3  uCloudWind;
+
 // Lighting / camera
 uniform vec3  uSunColor;
 uniform vec3  uCameraPos;
@@ -91,12 +106,17 @@ float ShadowPoint(vec3 fragPos, vec3 lightPos)
 
     float shadow = 0.0;
     float bias = 0.05;
-    int samples = 20;
     float viewDistance = length(uCameraPos - FragPos);
     
     // Auto-tune radius: sharper shadows when close, softer when far
     float diskRadius = (1.0 + (viewDistance / uFarPlane)) / 25.0;
 
+    // OPTIMIZATION: Dynamic sample count based on distance from camera
+    int samples = 20;
+    if (viewDistance > 40.0) samples = 10;
+    if (viewDistance > 80.0) samples = 4;
+
+    // Using a stable subset of our 20-sample array
     for(int i = 0; i < samples; ++i)
     {
         float closestDepth = texture(shadowCube, fragToLight + gridSamplingDisk[i] * diskRadius).r;
@@ -153,6 +173,55 @@ void main()
         return;
     }
 
+    // ---------------- CLOUD PASS ----------------
+    if (uCloudPass)
+    {
+        vec3 viewDir = normalize(FragPos - uCameraPos);
+        float dirY = max(viewDir.y, 0.05);
+        float distToTop = uCloudThickness / dirY;
+        
+        int numSteps = 16;
+        float stepSize = distToTop / float(numSteps);
+        vec3 rayStep = viewDir * stepSize;
+        
+        vec3 p = FragPos;
+        float T = 1.0; 
+        vec3 cloudLit = vec3(0.0);
+        
+        for (int i = 0; i < numSteps; i++) {
+            vec2 uv = p.xz * 0.01 * uCloudScale;
+            uv += uCloudWind.xz * uTime * uCloudSpeed;
+            
+            float n = fbm(uv);
+            float d = smoothstep(1.0 - uCloudCover, 1.0 - uCloudCover + uCloudSoftness, n);
+            d *= uCloudDensity;
+            
+            if (d > 0.0) {
+                float lightTransmittance = exp(-d * uCloudLightAbsorption);
+                vec3 S = uSunColor * uSunIntensity * lightTransmittance + vec3(0.2); 
+                
+                cloudLit += T * S * d * stepSize * uCloudColor;
+                T *= exp(-d * stepSize);
+                if (T < 0.01) break;
+            }
+            p += rayStep;
+        }
+        
+        float finalAlpha = (1.0 - T) * uCloudAlpha;
+        
+        // Soft edge fade
+        float edgeFade = 1.0 - smoothstep(0.3, 0.5, length(TexCoord - vec2(0.5)));
+        finalAlpha *= edgeFade;
+
+        if (finalAlpha <= 0.01) discard;
+
+        cloudLit = toneMapReinhard(cloudLit);
+        cloudLit = toSRGB(cloudLit);
+
+        FragColor = vec4(cloudLit, finalAlpha);
+        return;
+    }
+
     // ---------------- BASE COLOR ----------------
     vec4 baseColor = uUseColor ? uColor : texture(texDiffuse, TexCoord);
 
@@ -170,7 +239,12 @@ void main()
     vec3  Hs = normalize(Ls + V);
     float NdotLs = max(dot(N, Ls), 0.0);
 
-    float shadow = ShadowPoint(FragPos, uLightPos);
+    // OPTIMIZATION: Early out! If the fragment is facing entirely away from the sun,
+    // don't bother sampling the 4K shadow map 20 times. It's already in shadow.
+    float shadow = 1.0;
+    if (NdotLs > 0.0) {
+        shadow = ShadowPoint(FragPos, uLightPos);
+    }
 
     vec3 sun = uSunColor * uSunIntensity;
 

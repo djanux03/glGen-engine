@@ -19,12 +19,13 @@
 #include "CloudFX.h"
 #include "ECS/Systems/CameraSystem.h"
 #include "ECS/Systems/EditorCamera.h"
-#include "ECS/Systems/MovementSystem.h"
+#include "ECS/Systems/PhysicsSystem.h"
 #include "ECS/Systems/RenderSystem.h"
 #include "EditorUI.h"
 #include "EventBus.h"
 #include "FireFX.h"
 #include "HDRSky.h"
+#include "PostProcessor.h"
 #include "ProjectConfig.h"
 #include "ProjectileSystem.h"
 #include "RenderGraph.h"
@@ -117,6 +118,9 @@ struct SelectionState {
   bool editObjPart = false;
   std::string selectedObjPartName;
 
+  bool editColliderBounds =
+      false; // Toggle to intercept gizmo scaling for colliders
+
   ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE;
   ImGuizmo::MODE gizmoMode = ImGuizmo::WORLD;
 
@@ -173,15 +177,16 @@ struct AppState {
   CloudFX cloud;
   HDRSky sky;
   FireFX fire;
+  PostProcessor postProcessor;
   EditorUI editor;
   ProjectileSystem projectiles;
 
   // ECS Systems
   RenderSystem renderSystem;
-  MovementSystem movementSystem;
   CameraSystem cameraSystem;
   EditorCamera editorCamera;
   ScriptSystem scriptSystem;
+  PhysicsSystem physicsSystem;
   RenderGraph renderGraph;
   std::vector<std::string> lastRenderPassOrder;
 

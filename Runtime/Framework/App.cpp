@@ -8,7 +8,6 @@
 #include "CrashHandler.h"
 #include "ECS/Components.h"
 #include "ECS/Systems/CameraSystem.h"
-#include "ECS/Systems/MovementSystem.h"
 #include "ECS/Systems/RenderSystem.h"
 #include "EditorTheme.h"
 #include "EditorUI.h"
@@ -101,6 +100,11 @@ bool initWindowAndImGui(AppState &s) {
     return false;
   }
 
+  int fbW, fbH;
+  glfwGetFramebufferSize(s.window, &fbW, &fbH);
+  s.scrW = fbW;
+  s.scrH = fbH;
+
   glViewport(0, 0, s.scrW, s.scrH);
   glfwSetFramebufferSizeCallback(s.window, App::framebufferSizeCallback);
   glfwSetKeyCallback(s.window, Keyboard::keyCallBack);
@@ -160,6 +164,15 @@ bool initRuntimeSystems(AppState &s) {
   const std::string outlineVS = s.projectConfig.shaderPath("outline.vert");
   const std::string outlineFS = s.projectConfig.shaderPath("outline.frag");
 
+  const std::string ppQuadVS =
+      s.projectConfig.shaderPath(s.projectConfig.screenQuadVertexShader);
+  const std::string ppBloomExtractFS =
+      s.projectConfig.shaderPath(s.projectConfig.bloomExtractFragmentShader);
+  const std::string ppBloomBlurFS =
+      s.projectConfig.shaderPath(s.projectConfig.bloomBlurFragmentShader);
+  const std::string ppBloomCompositeFS =
+      s.projectConfig.shaderPath(s.projectConfig.bloomCompositeFragmentShader);
+
   if (!s.renderer.init(mainVS.c_str(), mainFS.c_str(), grassSide.c_str(),
                        grassTop.c_str(), grassTop.c_str(), shadowVS.c_str(),
                        shadowFS.c_str())) {
@@ -175,6 +188,9 @@ bool initRuntimeSystems(AppState &s) {
     return false;
   }
   s.fire.setSize(1.0f);
+
+  s.postProcessor.init(ppQuadVS, ppBloomExtractFS, ppBloomBlurFS,
+                       ppBloomCompositeFS, s.scrW, s.scrH);
 
   if (!s.projectiles.init(projVS.c_str(), projFS.c_str()))
     return false;
@@ -193,7 +209,8 @@ bool initRuntimeSystems(AppState &s) {
   reg.emplace<TransformComponent>(s.playerId);
   reg.get<TransformComponent>(s.playerId).position =
       glm::vec3(0.0f, 0.0f, 3.0f);
-  reg.emplace<PhysicsComponent>(s.playerId);
+  reg.emplace<RigidbodyComponent>(s.playerId);
+  reg.emplace<ColliderComponent>(s.playerId);
   reg.emplace<CameraComponent>(s.playerId);
   reg.emplace<BoundsComponent>(s.playerId, BoundsComponent{1.0f});
   reg.emplace<LifecycleComponent>(s.playerId);
@@ -207,6 +224,7 @@ bool initRuntimeSystems(AppState &s) {
 }
 
 void shutdownRuntimeSystems(AppState &s) {
+  s.postProcessor.shutdown();
   s.projectiles.shutdown();
   s.fire.shutdown();
   s.sky.shutdown();
@@ -248,8 +266,12 @@ void App::errorCallback(int, const char *description) {
                            (description ? description : "<null>"));
 }
 
-void App::framebufferSizeCallback(GLFWwindow *, int width, int height) {
+void App::framebufferSizeCallback(GLFWwindow *window, int width, int height) {
   glViewport(0, 0, width, height);
+  if (auto *state = static_cast<AppState *>(glfwGetWindowUserPointer(window))) {
+    state->scrW = width;
+    state->scrH = height;
+  }
 }
 
 void App::dropCallback(GLFWwindow *window, int pathCount, const char **paths) {

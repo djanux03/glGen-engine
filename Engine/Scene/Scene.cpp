@@ -324,12 +324,31 @@ std::string Scene::serializeToString() const {
                      {"castsShadow", mc.castsShadow}};
     }
 
-    if (reg.has<PhysicsComponent>(e)) {
-      const auto &ph = reg.get<PhysicsComponent>(e);
-      ent["physics"] = {
-          {"velocity", {ph.velocity.x, ph.velocity.y, ph.velocity.z}},
-          {"gravity", ph.gravity},
-          {"onGround", ph.onGround}};
+    if (reg.has<RigidbodyComponent>(e)) {
+      const auto &rb = reg.get<RigidbodyComponent>(e);
+      std::string typeStr = "Dynamic";
+      if (rb.type == RigidbodyComponent::Type::Static)
+        typeStr = "Static";
+      else if (rb.type == RigidbodyComponent::Type::Kinematic)
+        typeStr = "Kinematic";
+
+      ent["rigidbody"] = {{"type", typeStr},
+                          {"mass", rb.mass},
+                          {"friction", rb.friction},
+                          {"restitution", rb.restitution}};
+    }
+    if (reg.has<ColliderComponent>(e)) {
+      const auto &col = reg.get<ColliderComponent>(e);
+      std::string shapeStr = "Box";
+      if (col.shape == ColliderComponent::Shape::Sphere)
+        shapeStr = "Sphere";
+      else if (col.shape == ColliderComponent::Shape::Capsule)
+        shapeStr = "Capsule";
+
+      ent["collider"] = {
+          {"shape", shapeStr},
+          {"dimensions",
+           {col.dimensions.x, col.dimensions.y, col.dimensions.z}}};
     }
 
     if (reg.has<CameraComponent>(e)) {
@@ -457,14 +476,35 @@ bool Scene::loadFromString(const std::string &jsonText) {
       }
     }
 
-    if (ent.contains("physics")) {
-      auto &ph = mRegistry.emplace<PhysicsComponent>(id);
-      const auto &p = ent["physics"];
-      auto vel = p.value("velocity", std::vector<float>{0, 0, 0});
-      if (vel.size() == 3)
-        ph.velocity = {vel[0], vel[1], vel[2]};
-      ph.gravity = p.value("gravity", 0.01f);
-      ph.onGround = p.value("onGround", false);
+    if (ent.contains("rigidbody")) {
+      auto &rb = mRegistry.emplace<RigidbodyComponent>(id);
+      const auto &r = ent["rigidbody"];
+      std::string typeStr = r.value("type", "Dynamic");
+      if (typeStr == "Static")
+        rb.type = RigidbodyComponent::Type::Static;
+      else if (typeStr == "Kinematic")
+        rb.type = RigidbodyComponent::Type::Kinematic;
+      else
+        rb.type = RigidbodyComponent::Type::Dynamic;
+
+      rb.mass = r.value("mass", 1.0f);
+      rb.friction = r.value("friction", 0.5f);
+      rb.restitution = r.value("restitution", 0.0f);
+    }
+    if (ent.contains("collider")) {
+      auto &col = mRegistry.emplace<ColliderComponent>(id);
+      const auto &c = ent["collider"];
+      std::string shapeStr = c.value("shape", "Box");
+      if (shapeStr == "Sphere")
+        col.shape = ColliderComponent::Shape::Sphere;
+      else if (shapeStr == "Capsule")
+        col.shape = ColliderComponent::Shape::Capsule;
+      else
+        col.shape = ColliderComponent::Shape::Box;
+
+      auto dims = c.value("dimensions", std::vector<float>{1.0f, 1.0f, 1.0f});
+      if (dims.size() == 3)
+        col.dimensions = {dims[0], dims[1], dims[2]};
     }
 
     if (ent.contains("camera")) {

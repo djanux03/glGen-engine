@@ -87,7 +87,14 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
   glStencilFunc(GL_ALWAYS, 1, 0xFF);
   glStencilMask(0xFF);
 
-  mState.renderer.beginFrame(0.2f, 0.3f, 0.3f, 1.0f);
+  // Replace beginFrame with PostProcessor integration
+  mState.postProcessor.resize(mState.scrW, mState.scrH);
+  mState.postProcessor.beginRenderPass();
+
+  // Clear depth and set clear color (since PostProcessor clear doesn't set
+  // color)
+  glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
   glStencilMask(0x00);
 
   if (mState.render.disableHDR) {
@@ -103,6 +110,11 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, 0);
+
+  if (!mState.render.disableClouds) {
+    mState.renderer.shader().activate();
+    mState.cloud.draw(mState.renderer.shader(), cameraPos);
+  }
 
   mState.renderer.shader().activate();
 
@@ -140,4 +152,12 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
     glEnable(GL_DEPTH_TEST);
   }
   glDisable(GL_STENCIL_TEST);
+
+  if (mState.playState != AppState::PlayState::Playing) {
+    mState.physicsSystem.drawDebugColliders(
+        mState.scene.registry(), view, projection, mState.renderer.shader());
+  }
+
+  // Finish Post Processing and blit to screen
+  mState.postProcessor.endRenderPass();
 }

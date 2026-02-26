@@ -19,6 +19,11 @@ struct ProjectConfig {
   std::string projectileVertexShader = "projectile.vert";
   std::string projectileFragmentShader = "projectile.frag";
 
+  std::string screenQuadVertexShader = "screen_quad.vert";
+  std::string bloomExtractFragmentShader = "bloom_extract.frag";
+  std::string bloomBlurFragmentShader = "bloom_blur.frag";
+  std::string bloomCompositeFragmentShader = "bloom_composite.frag";
+
   std::string grassSideTexture = "grass_side.png";
   std::string grassTopTexture = "grass_top.png";
   std::string skyHDR = "hdr/hdr_1/cloudy.hdr";
@@ -33,4 +38,3 @@ struct ProjectConfig {
   std::string assetPath(const std::string &rel) const;
   std::string projectPath(const std::string &rel) const;
 };
-

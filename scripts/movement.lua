@@ -2,7 +2,7 @@
 -- Attach this to any entity to enable keyboard-driven movement.
 -- Press LSHIFT to sprint.
 
-local speed = 5.1       -- Base movement speed (units/sec)
+local speed = 10.1       -- Base movement speed (units/sec)
 local sprint_mult = 2.5  -- Sprint multiplier when holding Shift
 local rot_speed = 90.0   -- Rotation speed (degrees/sec)
 

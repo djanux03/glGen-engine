@@ -30,6 +30,8 @@ struct EditorSelectionState {
   bool &editObjPart;
   std::string &selectedObjPartName;
 
+  bool &editColliderBounds;
+
   int &gizmoOp;
   int &gizmoMode;
 
