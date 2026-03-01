@@ -139,7 +139,6 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
   if (mState.selection.selectedEntityId != 0 && mState.outlineShader) {
     glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
     glStencilMask(0x00);
-    glDisable(GL_DEPTH_TEST);
 
     mState.outlineShader->activate();
     mState.outlineShader->setMat4("view", view);
@@ -149,7 +148,6 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
 
     glStencilMask(0xFF);
     glStencilFunc(GL_ALWAYS, 1, 0xFF);
-    glEnable(GL_DEPTH_TEST);
   }
   glDisable(GL_STENCIL_TEST);
 

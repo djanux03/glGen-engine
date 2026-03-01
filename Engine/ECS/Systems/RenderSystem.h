@@ -26,7 +26,7 @@ public:
 
   void update(Registry &registry, Shader &shader, bool shadowPass = false,
               EntityId selectedEntity = 0, bool outlinePass = false) {
-    if (!shadowPass)
+    if (!shadowPass && !outlinePass)
       mStats = {};
 
     // Set pass-level uniforms ONCE (instead of per-object in OBJModel::draw)

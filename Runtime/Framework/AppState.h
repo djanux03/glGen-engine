@@ -25,6 +25,7 @@
 #include "EventBus.h"
 #include "FireFX.h"
 #include "HDRSky.h"
+#include "NetworkSubsystem.h"
 #include "PostProcessor.h"
 #include "ProjectConfig.h"
 #include "ProjectileSystem.h"
@@ -187,6 +188,7 @@ struct AppState {
   EditorCamera editorCamera;
   ScriptSystem scriptSystem;
   PhysicsSystem physicsSystem;
+  NetworkSubsystem networkSystem;
   RenderGraph renderGraph;
   std::vector<std::string> lastRenderPassOrder;
 

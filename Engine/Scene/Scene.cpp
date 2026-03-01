@@ -425,19 +425,46 @@ bool Scene::loadFromString(const std::string &jsonText) {
 
       if (!assetId.empty()) {
         if (type == "OBJ") {
-          if (!mAssets)
-            continue;
-          auto h = mAssets->loadOBJ(assetId);
-          if (OBJModel *obj = mAssets->getOBJ(h)) {
-            auto &mc =
-                mRegistry.emplace<MeshComponent>(id, obj, visible, castsShadow);
-            mc.assetId = assetId;
-            mc.objHandle = h;
+          const std::string prefix = "__primitive_";
+          if (assetId.substr(0, prefix.size()) == prefix) {
+            std::string shape = assetId.substr(prefix.size());
+            OBJModel *obj = nullptr;
+            if (shape == "cube")
+              obj = PrimitiveMeshGenerator::createCube();
+            else if (shape == "sphere")
+              obj = PrimitiveMeshGenerator::createSphere();
+            else if (shape == "plane")
+              obj = PrimitiveMeshGenerator::createPlane();
+            else if (shape == "cylinder")
+              obj = PrimitiveMeshGenerator::createCylinder();
+            else if (shape == "cone")
+              obj = PrimitiveMeshGenerator::createCone();
 
-            glm::vec3 minB, maxB;
-            if (obj->getGlobalBounds(minB, maxB)) {
-              float rad = glm::length(maxB - minB) * 0.5f;
-              mRegistry.get<BoundsComponent>(id).radius = rad;
+            if (obj) {
+              auto &mc = mRegistry.emplace<MeshComponent>(id, obj, visible,
+                                                          castsShadow);
+              mc.assetId = assetId;
+              glm::vec3 minB, maxB;
+              if (obj->getGlobalBounds(minB, maxB)) {
+                float rad = glm::length(maxB - minB) * 0.5f;
+                mRegistry.get<BoundsComponent>(id).radius = rad;
+              }
+            }
+          } else {
+            if (!mAssets)
+              continue;
+            auto h = mAssets->loadOBJ(assetId);
+            if (OBJModel *obj = mAssets->getOBJ(h)) {
+              auto &mc = mRegistry.emplace<MeshComponent>(id, obj, visible,
+                                                          castsShadow);
+              mc.assetId = assetId;
+              mc.objHandle = h;
+
+              glm::vec3 minB, maxB;
+              if (obj->getGlobalBounds(minB, maxB)) {
+                float rad = glm::length(maxB - minB) * 0.5f;
+                mRegistry.get<BoundsComponent>(id).radius = rad;
+              }
             }
           }
         } else if (type == "GLTF") {

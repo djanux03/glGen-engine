@@ -84,15 +84,22 @@ bool CoreAppLayer::initialize() {
   commitHistorySnapshot("Initial");
 
   // Initialize Lua scripting
-  mState.scriptSystem.initialize(mState.scene.registry());
+  mState.scriptSystem.initialize(mState.scene.registry(),
+                                 &mState.physicsSystem);
 
   // Initialize Jolt Physics
   mState.physicsSystem.init();
 
+  // Initialize Laravel Networking Gateway
+  mState.networkSystem.init();
+
   return true;
 }
 
-void CoreAppLayer::shutdown() { mState.physicsSystem.shutdown(); }
+void CoreAppLayer::shutdown() {
+  mState.physicsSystem.shutdown();
+  mState.networkSystem.shutdown();
+}
 
 void CoreAppLayer::applyHistorySnapshot(int idx) {
   if (idx < 0 || idx >= (int)mState.history.historySnapshots.size())
@@ -159,6 +166,9 @@ void CoreAppLayer::update(float dt, float nowT) {
 
   if (mState.editorSubsystem)
     mState.editorSubsystem->beginFrame();
+
+  // Tick the Laravel Network poll
+  mState.networkSystem.update(dt, mState);
 
   float renderTime = mState.render.freezeTime ? mState.render.frozenTime : nowT;
   if (!mState.render.freezeTime)
@@ -391,6 +401,39 @@ void CoreAppLayer::update(float dt, float nowT) {
   glm::vec3 cameraUp = mState.editorCamera.getUpVector();
 
   glm::mat4 view = mState.editorCamera.getViewMatrix();
+
+  if (mState.playState == AppState::PlayState::Playing) {
+    auto &reg = mState.scene.registry();
+    if (mState.playerId == 0 || !reg.has<CameraComponent>(mState.playerId)) {
+      for (auto e : reg.view<CameraComponent>()) {
+        if (!reg.has<LifecycleComponent>(e) ||
+            reg.get<LifecycleComponent>(e).state ==
+                EntityLifecycleState::Alive) {
+          mState.playerId = e;
+          break;
+        }
+      }
+    }
+
+    if (mState.playerId != 0 && reg.has<TransformComponent>(mState.playerId)) {
+      auto &tr = reg.get<TransformComponent>(mState.playerId);
+      cameraPos = tr.position;
+
+      glm::vec3 front;
+      front.x =
+          -sin(glm::radians(tr.rotation.y)) * cos(glm::radians(tr.rotation.x));
+      front.y = sin(glm::radians(tr.rotation.x));
+      front.z =
+          -cos(glm::radians(tr.rotation.y)) * cos(glm::radians(tr.rotation.x));
+      cameraFront = glm::normalize(front);
+
+      glm::vec3 right =
+          glm::normalize(glm::cross(cameraFront, glm::vec3(0.0f, 1.0f, 0.0f)));
+      cameraUp = glm::normalize(glm::cross(right, cameraFront));
+
+      view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+    }
+  }
 
   int winW, winH;
   glfwGetWindowSize(mState.window, &winW, &winH);

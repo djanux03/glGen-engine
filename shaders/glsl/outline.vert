@@ -7,21 +7,11 @@ uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
 
-uniform float outlineScale = 0.015; // Represents screen width percentage
+uniform float outlineScale = 1.02; // Scale factor for the outline
 
 void main()
 {
-    vec4 clipPos = projection * view * model * vec4(aPos, 1.0);
-    
-    // Transform normal to clip space
-    mat3 normalMat = mat3(transpose(inverse(view * model)));
-    vec3 viewNormal = normalize(normalMat * aNormal);
-    vec4 clipNormal = projection * vec4(viewNormal, 0.0);
-    
-    // Expand geometry in normalized device coordinates (scaled by w for perspective)
-    if (length(clipNormal.xy) > 0.0001) {
-        clipPos.xy += normalize(clipNormal.xy) * outlineScale * clipPos.w;
-    }
-    
-    gl_Position = clipPos;
+    // Simple object-space scaling to avoid cracks on flat-shaded meshes
+    vec4 scaledPos = vec4(aPos * outlineScale, 1.0);
+    gl_Position = projection * view * model * scaledPos;
 }

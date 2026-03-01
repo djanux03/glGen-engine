@@ -1,6 +1,7 @@
 #pragma once
 #include "ECS/Components.h"
 #include "ECS/Registry.h"
+#include "ECS/Systems/PhysicsSystem.h"
 #include "Keyboard.h"
 #include "Logger.h"
 #include "Mouse.h"
@@ -55,7 +56,8 @@ struct EntityProxy {
 };
 
 // Register all script API bindings into a sol::state
-inline void registerScriptBindings(sol::state &lua, Registry &registry) {
+inline void registerScriptBindings(sol::state &lua, Registry &registry,
+                                   PhysicsSystem *physics) {
   // ── Vec3 type ──────────────────────────────────────────────────────
   auto vec3Type = lua.new_usertype<glm::vec3>(
       "Vec3", sol::constructors<glm::vec3(), glm::vec3(float, float, float)>(),
@@ -134,6 +136,9 @@ inline void registerScriptBindings(sol::state &lua, Registry &registry) {
 
   inputTable["mouse_dx"] = []() -> float { return Mouse::getDX(); };
   inputTable["mouse_dy"] = []() -> float { return Mouse::getDY(); };
+  inputTable["mouse_down"] = [](int button) -> bool {
+    return Mouse::button(button);
+  };
 
   // ── Logging table ──────────────────────────────────────────────────
   auto logTable = lua.create_named_table("log");
@@ -141,4 +146,24 @@ inline void registerScriptBindings(sol::state &lua, Registry &registry) {
   logTable["info"] = [](const std::string &msg) { LOG_INFO("Script", msg); };
   logTable["warn"] = [](const std::string &msg) { LOG_WARN("Script", msg); };
   logTable["error"] = [](const std::string &msg) { LOG_ERROR("Script", msg); };
+
+  // ── Physics table ──────────────────────────────────────────────────
+  auto physicsTable = lua.create_named_table("physics");
+
+  // PhysicsRaycastResult binding
+  lua.new_usertype<PhysicsRaycastResult>(
+      "RaycastResult", "hit", &PhysicsRaycastResult::hit, "distance",
+      &PhysicsRaycastResult::distance, "position",
+      &PhysicsRaycastResult::position, "normal", &PhysicsRaycastResult::normal,
+      "entityId", &PhysicsRaycastResult::entityId);
+
+  physicsTable["raycast"] = [physics](float ox, float oy, float oz, float dx,
+                                      float dy, float dz,
+                                      float maxDist) -> PhysicsRaycastResult {
+    if (physics) {
+      return physics->raycast(glm::vec3(ox, oy, oz), glm::vec3(dx, dy, dz),
+                              maxDist);
+    }
+    return PhysicsRaycastResult{};
+  };
 }

@@ -9,6 +9,15 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+# Fetch cpr for HTTP requests (Laravel Backend Integration)
+include(FetchContent)
+FetchContent_Declare(
+  cpr
+  GIT_REPOSITORY https://github.com/libcpr/cpr.git
+  GIT_TAG        1.10.5
+)
+FetchContent_MakeAvailable(cpr)
+
 # Add subdirectories
 add_subdirectory(ThirdParty)
 add_subdirectory(Engine)

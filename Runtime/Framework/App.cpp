@@ -209,9 +209,13 @@ bool initRuntimeSystems(AppState &s) {
   reg.emplace<TransformComponent>(s.playerId);
   reg.get<TransformComponent>(s.playerId).position =
       glm::vec3(0.0f, 0.0f, 3.0f);
-  reg.emplace<RigidbodyComponent>(s.playerId);
+  reg.emplace<RigidbodyComponent>(s.playerId).type =
+      RigidbodyComponent::Type::Kinematic;
   reg.emplace<ColliderComponent>(s.playerId);
   reg.emplace<CameraComponent>(s.playerId);
+  reg.emplace<NameComponent>(s.playerId, "Player");
+  reg.emplace<ScriptComponent>(s.playerId).scriptPath =
+      "scripts/fps_controller.lua";
   reg.emplace<BoundsComponent>(s.playerId, BoundsComponent{1.0f});
   reg.emplace<LifecycleComponent>(s.playerId);
   reg.emplace<HierarchyComponent>(s.playerId);

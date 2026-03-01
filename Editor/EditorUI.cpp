@@ -17,6 +17,7 @@
 
 #include <imgui.h>
 
+#include "tinyfiledialogs.h"
 #include <ImGuizmo.h>
 
 #include <algorithm>
@@ -62,8 +63,14 @@ EditorUIOutput EditorUI::draw(EditorContext &ctx) {
 
   // ── Toolbar ────────────────────────────────────────────────────────────────
   // Sync toolbar state FROM context (in case external code changed it)
-  toolbarState.gizmoOp =
-      static_cast<ToolbarState::GizmoOp>(ctx.selection.gizmoOp);
+  if (ctx.selection.gizmoOp == ImGuizmo::TRANSLATE) {
+    toolbarState.gizmoOp = ToolbarState::Translate;
+  } else if (ctx.selection.gizmoOp == ImGuizmo::ROTATE) {
+    toolbarState.gizmoOp = ToolbarState::Rotate;
+  } else if (ctx.selection.gizmoOp == ImGuizmo::SCALE) {
+    toolbarState.gizmoOp = ToolbarState::Scale;
+  }
+
   toolbarState.shadingMode =
       ctx.wireframe ? ToolbarState::Wireframe : ToolbarState::Textured;
 
@@ -71,7 +78,14 @@ EditorUIOutput EditorUI::draw(EditorContext &ctx) {
   EditorToolbar::processShortcuts(toolbarState);
 
   // Sync toolbar state BACK to context
-  ctx.selection.gizmoOp = static_cast<int>(toolbarState.gizmoOp);
+  if (toolbarState.gizmoOp == ToolbarState::Translate) {
+    ctx.selection.gizmoOp = ImGuizmo::TRANSLATE;
+  } else if (toolbarState.gizmoOp == ToolbarState::Rotate) {
+    ctx.selection.gizmoOp = ImGuizmo::ROTATE;
+  } else if (toolbarState.gizmoOp == ToolbarState::Scale) {
+    ctx.selection.gizmoOp = ImGuizmo::SCALE;
+  }
+
   ctx.wireframe = (toolbarState.shadingMode == ToolbarState::Wireframe);
 #ifdef IMGUI_HAS_DOCK
   ImGuiViewport *viewport = ImGui::GetMainViewport();
@@ -150,6 +164,20 @@ EditorUIOutput EditorUI::draw(EditorContext &ctx) {
   ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f),
                    ImGuiDockNodeFlags_PassthruCentralNode);
 
+  // Draw Crosshair if playing
+  if (ctx.playState == 1) { // 1 = Playing
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImDrawList *drawList = ImGui::GetWindowDrawList();
+    float size = 10.0f;
+    float thickness = 2.0f;
+    ImU32 color = IM_COL32(255, 255, 255, 200); // White with alpha
+
+    drawList->AddLine(ImVec2(center.x - size, center.y),
+                      ImVec2(center.x + size, center.y), color, thickness);
+    drawList->AddLine(ImVec2(center.x, center.y - size),
+                      ImVec2(center.x, center.y + size), color, thickness);
+  }
+
   ImGui::End();
 #endif
 
@@ -201,13 +229,30 @@ EditorUIOutput EditorUI::draw(EditorContext &ctx) {
 void EditorUI::drawMainMenuBar(EditorContext &ctx) {
   if (ImGui::BeginMainMenuBar()) {
     if (ImGui::BeginMenu("File")) {
-      if (ImGui::MenuItem("Save Config", "Ctrl+S"))
-        ctx.events.publish(SaveConfigRequestedEvent{});
-      if (ImGui::MenuItem("Load Config"))
-        ctx.events.publish(LoadConfigRequestedEvent{});
+      if (ImGui::MenuItem("Save Scene", "Ctrl+S")) {
+        const char *path = tinyfd_saveFileDialog("Save Scene", "scene.json", 0,
+                                                 NULL, "JSON Scene File");
+        if (path) {
+          ctx.events.publish(SaveSceneRequestedEvent{path});
+        }
+      }
+      if (ImGui::MenuItem("Load Scene", "Ctrl+O")) {
+        const char *path = tinyfd_openFileDialog("Load Scene", "", 0, NULL,
+                                                 "JSON Scene File", 0);
+        if (path) {
+          ctx.events.publish(LoadSceneRequestedEvent{path});
+          ctx.selection.selectedEntityId =
+              0; // Clear selection on load to avoid dangling pointers
+        }
+      }
       ImGui::Separator();
-      if (ImGui::MenuItem("Save Project"))
+      if (ImGui::MenuItem("Save Project Settings"))
         ctx.events.publish(SaveProjectConfigRequestedEvent{});
+      // Keeping Editor Config buttons as they just save local editor state
+      if (ImGui::MenuItem("Save Layout"))
+        ctx.events.publish(SaveConfigRequestedEvent{});
+      if (ImGui::MenuItem("Load Layout"))
+        ctx.events.publish(LoadConfigRequestedEvent{});
       ImGui::Separator();
       if (ImGui::MenuItem("Quit", "Alt+F4")) {
         // Request app exit via GLFW (if window available)
@@ -884,6 +929,30 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
     auto &reg = ctx.scene.registry();
     auto &s = ctx.selection;
 
+    // Evaluate Rename Popup eagerly before any scrolling
+    if (s.renaming && selectedEntityId != 0) {
+      ImGui::OpenPopup("RenameEntityPopup");
+    }
+
+    if (ImGui::BeginPopupModal("RenameEntityPopup", &s.renaming,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::InputText("Name", s.renameBuf, 128);
+      if (ImGui::Button("OK") || ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+        if (reg.has<NameComponent>(selectedEntityId)) {
+          reg.get<NameComponent>(selectedEntityId).name = s.renameBuf;
+          edited = true;
+        }
+        s.renaming = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel")) {
+        s.renaming = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+
     if (selectedEntityId == 0) {
       if (!s.selectedEntities.empty() && s.selectedEntities[0] == 0) {
         ImGui::Text("Sun Selected");
@@ -1140,7 +1209,12 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
             auto &h = reg.get<HierarchyComponent>(selectedEntityId);
             int parent = static_cast<int>(h.parent);
             if (ImGui::DragInt("Parent ID", &parent, 1, 0, 100000)) {
-              h.parent = static_cast<uint32_t>(parent);
+              if (parent == 0) {
+                ctx.scene.clearParent(selectedEntityId);
+              } else {
+                ctx.scene.setParent(selectedEntityId,
+                                    static_cast<uint32_t>(parent));
+              }
               edited = true;
             }
             ImGui::Text("Children: %d", (int)h.children.size());
@@ -1297,8 +1371,33 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
             reg.emplace<RigidbodyComponent>(selectedEntityId);
         }
         if (!reg.has<ColliderComponent>(selectedEntityId)) {
-          if (ImGui::MenuItem("Collider"))
-            reg.emplace<ColliderComponent>(selectedEntityId);
+          if (ImGui::MenuItem("Collider")) {
+            auto &col = reg.emplace<ColliderComponent>(selectedEntityId);
+
+            // Auto-calculate bounds based on MeshComponent
+            if (reg.has<MeshComponent>(selectedEntityId)) {
+              auto &mesh = reg.get<MeshComponent>(selectedEntityId);
+              glm::vec3 minAABB(0.0f), maxAABB(0.0f);
+              bool hasBounds = false;
+
+              if (mesh.objModel &&
+                  mesh.objModel->getGlobalBounds(minAABB, maxAABB)) {
+                hasBounds = true;
+              } else if (mesh.gltfModel &&
+                         mesh.gltfModel->getGlobalBounds(minAABB, maxAABB)) {
+                hasBounds = true;
+              } else if (mesh.ufbxModel &&
+                         mesh.ufbxModel->getGlobalBounds(minAABB, maxAABB)) {
+                hasBounds = true;
+              }
+
+              if (hasBounds) {
+                // Dimensions in Jolt/glGen represent half-extents
+                glm::vec3 size = (maxAABB - minAABB);
+                col.dimensions = size * 0.5f;
+              }
+            }
+          }
         }
         if (!reg.has<BoundsComponent>(selectedEntityId)) {
           if (ImGui::MenuItem("Bounds"))
@@ -1334,32 +1433,6 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
   }
   ImGui::End();
 
-  // Rename Popup Logic
-  if (ctx.selection.renaming && ctx.selection.selectedEntityId != 0) {
-    ImGui::OpenPopup("RenameEntityPopup");
-  }
-
-  if (ImGui::BeginPopupModal("RenameEntityPopup", &ctx.selection.renaming,
-                             ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::InputText("Name", ctx.selection.renameBuf, 128);
-    if (ImGui::Button("OK") || ImGui::IsKeyPressed(ImGuiKey_Enter)) {
-      if (ctx.scene.registry().has<NameComponent>(
-              ctx.selection.selectedEntityId)) {
-        ctx.scene.registry()
-            .get<NameComponent>(ctx.selection.selectedEntityId)
-            .name = ctx.selection.renameBuf;
-        edited = true;
-      }
-      ctx.selection.renaming = false;
-      ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel")) {
-      ctx.selection.renaming = false;
-      ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-  }
   return edited;
 }
 

@@ -11,8 +11,11 @@
 file(GLOB EDITOR_SOURCES "*.cpp")
 
 if(EDITOR_SOURCES)
+    # Add tinyfiledialogs directly to Editor target
+    list(APPEND EDITOR_SOURCES "${CMAKE_SOURCE_DIR}/ThirdParty/tinyfiledialogs/tinyfiledialogs.c")
+    
     add_library(Editor STATIC ${EDITOR_SOURCES})
-    target_include_directories(Editor PUBLIC . ../Engine)
+    target_include_directories(Editor PUBLIC . ../Engine "${CMAKE_SOURCE_DIR}/ThirdParty/tinyfiledialogs")
     target_link_libraries(Editor PUBLIC Engine)
 else()
     add_library(Editor INTERFACE)

@@ -10,6 +10,8 @@
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyActivationListener.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
@@ -295,6 +297,7 @@ void ::PhysicsSystem::createBodies(Registry &registry) {
 
     JPH::Body *body = bodyInterface.CreateBody(settings);
     if (body) {
+      body->SetUserData(static_cast<uint64_t>(entity));
       rigidBody.bodyID = body->GetID().GetIndexAndSequenceNumber();
       bodyInterface.AddBody(body->GetID(), JPH::EActivation::Activate);
 
@@ -417,4 +420,41 @@ void ::PhysicsSystem::drawDebugColliders(Registry &reg, const glm::mat4 &view,
 
   glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
   glEnable(GL_CULL_FACE);
+}
+
+auto ::PhysicsSystem::raycast(glm::vec3 origin, glm::vec3 direction,
+                              float maxDistance) -> PhysicsRaycastResult {
+  PhysicsRaycastResult result;
+
+  JPH::RVec3 jphOrigin(origin.x, origin.y, origin.z);
+  JPH::Vec3 jphDirection(direction.x * maxDistance, direction.y * maxDistance,
+                         direction.z * maxDistance);
+  JPH::RRayCast ray(jphOrigin, jphDirection);
+
+  JPH::RayCastResult hit;
+  // Use default broad/object layer filters (accept everything)
+  bool hasHit = mPhysicsSystem->GetNarrowPhaseQuery().CastRay(ray, hit);
+
+  if (hasHit) {
+    result.hit = true;
+    result.distance = hit.mFraction * maxDistance;
+
+    JPH::RVec3 hitPos = jphOrigin + hit.mFraction * jphDirection;
+    result.position = glm::vec3(hitPos.GetX(), hitPos.GetY(), hitPos.GetZ());
+
+    auto &bodyInterface = mPhysicsSystem->GetBodyInterface();
+    JPH::BodyLockRead lock(mPhysicsSystem->GetBodyLockInterface(), hit.mBodyID);
+    if (lock.Succeeded()) {
+      const JPH::Body &hitBody = lock.GetBody();
+      result.entityId = static_cast<uint32_t>(hitBody.GetUserData());
+
+      // Try to get normal
+      JPH::Vec3 normal = hitBody.GetShape()->GetSurfaceNormal(
+          hit.mSubShapeID2, hitPos - hitBody.GetPosition());
+      normal = hitBody.GetRotation() * normal;
+      result.normal = glm::vec3(normal.GetX(), normal.GetY(), normal.GetZ());
+    }
+  }
+
+  return result;
 }

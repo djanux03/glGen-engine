@@ -11,10 +11,10 @@ class ScriptSystem {
 public:
   // Initialize the Lua VM and register all API bindings.
   // Must be called once after the Registry is available.
-  void initialize(Registry &registry) {
+  void initialize(Registry &registry, class PhysicsSystem *physics = nullptr) {
     mLua.open_libraries(sol::lib::base, sol::lib::math, sol::lib::string,
                         sol::lib::table, sol::lib::io, sol::lib::os);
-    registerScriptBindings(mLua, registry);
+    registerScriptBindings(mLua, registry, physics);
     mInitialized = true;
     LOG_INFO("Script", "Lua scripting system initialized");
   }

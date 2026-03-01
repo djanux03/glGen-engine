@@ -12,10 +12,22 @@ class TempAllocatorImpl;
 class JobSystemThreadPool;
 } // namespace JPH
 
+struct PhysicsRaycastResult {
+  bool hit = false;
+  float distance = 0.0f;
+  glm::vec3 position{0.0f, 0.0f, 0.0f};
+  glm::vec3 normal{0.0f, 0.0f, 0.0f};
+  uint32_t entityId = 0;
+};
+
 class PhysicsSystem {
 public:
   PhysicsSystem();
   ~PhysicsSystem();
+
+  // Perform a physics raycast into the world
+  PhysicsRaycastResult raycast(glm::vec3 origin, glm::vec3 direction,
+                               float maxDistance = 1000.0f);
 
   // Initialize the Jolt physics engine
   void init();

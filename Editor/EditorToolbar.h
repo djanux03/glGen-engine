@@ -81,11 +81,11 @@ inline void draw(ToolbarState &state) {
     if (ToolButton("W Move", state.gizmoOp == ToolbarState::Translate))
       state.gizmoOp = ToolbarState::Translate;
     ImGui::SameLine();
-    if (ToolButton("E Rotate", state.gizmoOp == ToolbarState::Rotate))
-      state.gizmoOp = ToolbarState::Rotate;
-    ImGui::SameLine();
-    if (ToolButton("R Scale", state.gizmoOp == ToolbarState::Scale))
+    if (ToolButton("E Scale", state.gizmoOp == ToolbarState::Scale))
       state.gizmoOp = ToolbarState::Scale;
+    ImGui::SameLine();
+    if (ToolButton("R Rotate", state.gizmoOp == ToolbarState::Rotate))
+      state.gizmoOp = ToolbarState::Rotate;
 
     ImGui::SameLine();
     ImGui::TextDisabled("|");
@@ -143,9 +143,9 @@ inline void processShortcuts(ToolbarState &state) {
   if (ImGui::IsKeyPressed(ImGuiKey_W, false))
     state.gizmoOp = ToolbarState::Translate;
   if (ImGui::IsKeyPressed(ImGuiKey_E, false))
-    state.gizmoOp = ToolbarState::Rotate;
-  if (ImGui::IsKeyPressed(ImGuiKey_R, false))
     state.gizmoOp = ToolbarState::Scale;
+  if (ImGui::IsKeyPressed(ImGuiKey_R, false))
+    state.gizmoOp = ToolbarState::Rotate;
 }
 
 } // namespace EditorToolbar
