@@ -49,6 +49,17 @@ struct ImportJob {
   std::vector<std::string> dependencies;
 };
 
+struct AssetStats {
+  uint32_t objLive = 0;
+  uint32_t objRuntimeLive = 0;
+  uint32_t gltfLive = 0;
+  uint32_t ufbxLive = 0;
+  uint32_t shaderLive = 0;
+  uint32_t importQueued = 0;
+  uint32_t importImported = 0;
+  uint32_t importFailed = 0;
+};
+
 class AssetManager {
 public:
   AssetManager() = default;
@@ -60,6 +71,9 @@ public:
   OBJHandle loadOBJ(const std::string &path);
   GLTFHandle loadGLTF(const std::string &path);
   UFBXHandle loadUFBX(const std::string &path);
+  OBJHandle registerRuntimeOBJ(const std::string &assetId,
+                               std::unique_ptr<OBJModel> model);
+  bool releaseOBJ(const std::string &assetId);
 
   OBJModel *getOBJ(OBJHandle h);
   FBXModel *getGLTF(GLTFHandle h);
@@ -71,6 +85,7 @@ public:
   uint64_t queueImport(const std::string &path);
   void processImportQueue();
   const std::vector<ImportJob> &importJobs() const { return mImportJobs; }
+  AssetStats stats() const;
 
   // Returns human-readable reload messages
   std::vector<std::string> pollHotReload();
@@ -85,6 +100,7 @@ private:
     std::vector<std::string> dependencies;
     std::filesystem::file_time_type watchedTime{};
     std::unique_ptr<OBJModel> asset;
+    bool runtimeAsset = false;
   };
 
   struct GLTFRecord {

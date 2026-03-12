@@ -11,9 +11,12 @@ public:
   CoreAppLayer(AppState &state) : mState(state) {}
 
   std::string name() const override { return "CoreAppLayer"; }
+  SubsystemPhase phase() const override { return SubsystemPhase::Application; }
   std::vector<std::string> dependencies() const override {
     return {"Window", "RuntimeSystems", "EditorSubsystem",
-            "RenderLoopSubsystem"};
+            "RenderLoopSubsystem", "PhysicsRuntimeSubsystem",
+            "ScriptRuntimeSubsystem", "NetworkRuntimeSubsystem",
+            "TerrainRuntimeSubsystem"};
   }
 
   bool initialize() override;

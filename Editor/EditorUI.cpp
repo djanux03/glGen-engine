@@ -7,12 +7,16 @@
 #include "Core/ProjectConfig.h"
 #include "ECS/Components.h"
 #include "ECS/Registry.h"
+#include "ECS/Systems/EditorCamera.h"
 #include "FBXModel.h"
 #include "FireFX.h"
 #include "HDRSky.h"
 #include "OBJModel.h"
+#include "PostProcessor.h"
 #include "Scene.h"
 #include "SunFX.h"
+#include "Terrain/TerrainSystem.h"
+#include "Texture.h"
 #include "UFBXModel.h"
 
 #include <imgui.h>
@@ -156,6 +160,7 @@ EditorUIOutput EditorUI::draw(EditorContext &ctx) {
     mShowEnvironment = false; // Hide by default until user needs it
     mShowStats = false;
     mShowLog = false;
+    mShowProfiler = true;
     mShowScriptEditor = false;
     mResetLayout = false;
   }
@@ -208,6 +213,10 @@ EditorUIOutput EditorUI::draw(EditorContext &ctx) {
   if (mShowStats) {
     ImGui::SetNextWindowSize(ImVec2(250, 200), ImGuiCond_FirstUseEver);
     drawStats(ctx);
+  }
+  if (mShowProfiler) {
+    ImGui::SetNextWindowSize(ImVec2(300, 220), ImGuiCond_FirstUseEver);
+    drawProfiler(ctx);
   }
   if (mShowScriptEditor) {
     ImGui::SetNextWindowSize(ImVec2(600, 400), ImGuiCond_FirstUseEver);
@@ -304,6 +313,7 @@ void EditorUI::drawMainMenuBar(EditorContext &ctx) {
       ImGui::MenuItem("Environment", nullptr, &mShowEnvironment);
       ImGui::MenuItem("Console", nullptr, &mShowLog);
       ImGui::MenuItem("Statistics", nullptr, &mShowStats);
+      ImGui::MenuItem("Profiler", nullptr, &mShowProfiler);
       ImGui::Separator();
       ImGui::MenuItem("Lock Layout", nullptr, &mLockLayout);
       if (ImGui::MenuItem("Reset Layout")) {
@@ -409,17 +419,6 @@ void EditorUI::drawHierarchy(EditorContext &ctx) {
     ImGui::Separator();
 
     auto &reg = ctx.scene.registry();
-
-    // Sun selection (ID 0)
-    bool sunSelected =
-        (s.selectedEntityId == 0 && !s.selectedEntities.empty() &&
-         s.selectedEntities[0] == 0);
-    if (ImGui::Selectable("Sun", sunSelected)) {
-      s.selectedEntities.clear();
-      s.selectedEntityId = 0;
-      s.selectedEntities.push_back(0);
-      s.lastClickedEntity = 0;
-    }
 
     // Filter helper
     auto passFilter = [&](const char *name) -> bool {
@@ -655,30 +654,461 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem("Sun")) {
-        ImGui::DragFloat3("Direction", &ctx.sun.sunDir.x, 0.01f, -1.0f, 1.0f);
+        bool sunMoved = false;
+        sunMoved |=
+            ImGui::SliderFloat("Azimuth", &ctx.sun.sunAzimuth, 0.0f, 360.0f);
+        sunMoved |= ImGui::SliderFloat("Elevation", &ctx.sun.sunElevation,
+                                       -90.0f, 90.0f);
+
+        if (sunMoved) {
+          float az = glm::radians(ctx.sun.sunAzimuth);
+          float el = glm::radians(ctx.sun.sunElevation);
+          // Convert spherical to cartesian direction (where +Y is up)
+          ctx.sun.sunDir = glm::normalize(
+              glm::vec3(std::cos(el) * std::sin(az), std::sin(el),
+                        std::cos(el) * std::cos(az)));
+          // Since rays travel *from* the sun, we negate it
+          ctx.sun.sunDir = -ctx.sun.sunDir;
+        }
+
         ImGui::ColorEdit3("Color", &ctx.sun.sunColor.x);
-        ImGui::SliderFloat("Intensity", &ctx.sun.sunSize, 0.1f, 10.0f);
+        ImGui::SliderFloat("Sun Size (deg)", &ctx.sun.sunSize, 0.2f, 1.0f,
+                           "%.2f");
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem("Sky")) {
         ImGui::ColorEdit3("Horizon", ctx.skyHorizon);
         ImGui::ColorEdit3("Top", ctx.skyTop);
+        ImGui::SeparatorText("Sun Style");
+        ImGui::SliderFloat("Sun Disc Intensity", &ctx.sky.sunDiscIntensity,
+                           1.0f, 20.0f, "%.1f");
+        ImGui::SliderFloat("Sun Halo Intensity", &ctx.sky.sunHaloIntensity,
+                           0.0f, 2.0f, "%.2f");
+        ImGui::SliderFloat("Sun Rays Intensity", &ctx.sky.sunRaysIntensity,
+                           0.0f, 1.0f, "%.2f");
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem("Clouds")) {
+        ImGui::Checkbox("Disable All Clouds", &ctx.disableClouds);
+        ImGui::Separator();
+
+        ImGui::SeparatorText("Sky Clouds (Lightweight)");
+        ImGui::Checkbox("Enable Sky Clouds", &ctx.sky.skyCloudsEnabled);
+        if (ctx.sky.skyCloudsEnabled) {
+          ImGui::SliderFloat("Cloud Scale##Sky", &ctx.sky.skyCloudScale, 0.5f,
+                             8.0f, "%.2f");
+          ImGui::SliderFloat("Coverage##Sky", &ctx.sky.skyCloudCoverage, 0.2f,
+                             0.9f, "%.2f");
+          ImGui::SliderFloat("Density##Sky", &ctx.sky.skyCloudDensity, 0.0f,
+                             1.4f, "%.2f");
+          ImGui::SliderFloat("Softness##Sky", &ctx.sky.skyCloudSoftness, 0.02f,
+                             0.45f, "%.2f");
+          ImGui::SliderFloat("Speed##Sky", &ctx.sky.skyCloudSpeed, 0.0f, 0.05f,
+                             "%.3f");
+          ImGui::ColorEdit3("Cloud Color##Sky", &ctx.sky.skyCloudColor.x);
+        }
+
+        ImGui::SeparatorText("Volumetric Clouds (Heavier)");
         ImGui::SliderFloat("Cover", &ctx.cloud.cover, 0.0f, 1.0f);
         ImGui::SliderFloat("Density", &ctx.cloud.density, 0.0f, 5.0f);
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem("Render")) {
         ImGui::Checkbox("Wireframe", &ctx.wireframe);
+        ImGui::SeparatorText("Fog");
+        ImGui::ColorEdit3("Fog Color", &ctx.fogColor.x);
+        ImGui::SliderFloat("Fog Density", &ctx.fogDensity, 0.0f, 0.01f,
+                           "%.4f");
 
         bool enableShadows = !ctx.disableShadows;
         if (ImGui::Checkbox("Enable Shadows", &enableShadows)) {
           ctx.disableShadows = !enableShadows;
         }
-        ImGui::Checkbox("Disable Clouds", &ctx.disableClouds);
+        ImGui::SeparatorText("Color Adjustment");
+        ImGui::SliderFloat("Brightness##Render", &ctx.postProcessor.brightness,
+                           0.0f, 3.0f, "%.2f");
+
         ImGui::Checkbox("Disable HDR", &ctx.disableHDR);
+        ImGui::SeparatorText("Bloom");
+        ImGui::SliderFloat("Threshold##Bloom",
+                           &ctx.postProcessor.bloomThreshold, 0.2f, 4.0f,
+                           "%.2f");
+        ImGui::SliderInt("Blur Iterations##Bloom",
+                         &ctx.postProcessor.blurIterations, 1, 20);
+        ImGui::SliderFloat("Intensity##Bloom",
+                           &ctx.postProcessor.bloomIntensity, 0.0f, 3.0f,
+                           "%.2f");
+
+        ImGui::SeparatorText("Anti-Aliasing");
+        ImGui::Checkbox("Enable TAA", &ctx.postProcessor.enableTAA);
+        if (ctx.postProcessor.enableTAA) {
+          ImGui::SliderFloat("History Blend##TAA",
+                             &ctx.postProcessor.taaHistoryBlend, 0.50f, 0.96f,
+                             "%.2f");
+          ImGui::SliderFloat("Jitter Scale##TAA",
+                             &ctx.postProcessor.taaJitterScale, 0.25f, 1.5f,
+                             "%.2f");
+          ImGui::SliderFloat("Motion Reset##TAA",
+                             &ctx.postProcessor.taaMotionReset, 0.05f, 2.0f,
+                             "%.2f");
+        }
+        ImGui::Checkbox("Enable FXAA", &ctx.postProcessor.enableFXAA);
+        if (ctx.postProcessor.enableFXAA) {
+          ImGui::SliderFloat("Span Max##FXAA", &ctx.postProcessor.fxaaSpanMax,
+                             2.0f, 16.0f, "%.1f");
+          ImGui::SliderFloat("Reduce Min##FXAA",
+                             &ctx.postProcessor.fxaaReduceMin, 1.0f / 256.0f,
+                             1.0f / 64.0f, "%.4f");
+          ImGui::SliderFloat("Reduce Mul##FXAA",
+                             &ctx.postProcessor.fxaaReduceMul, 1.0f / 16.0f,
+                             1.0f / 4.0f, "%.4f");
+        }
+
+        ImGui::SeparatorText("SSAO");
+        ImGui::Checkbox("Enable SSAO", &ctx.postProcessor.enableSSAO);
+        if (ctx.postProcessor.enableSSAO) {
+          ImGui::SliderFloat("Radius##SSAO", &ctx.postProcessor.ssaoRadius,
+                             0.1f, 2.0f, "%.2f");
+          ImGui::SliderFloat("Bias##SSAO", &ctx.postProcessor.ssaoBias, 0.001f,
+                             0.10f, "%.3f");
+          ImGui::SliderFloat("Power##SSAO", &ctx.postProcessor.ssaoPower, 0.5f,
+                             4.0f, "%.2f");
+        }
+
+        ImGui::SeparatorText("Volumetrics");
+        ImGui::Checkbox("Enable Volumetric Fog",
+                        &ctx.postProcessor.enableVolumetricFog);
+        if (ctx.postProcessor.enableVolumetricFog) {
+          ImGui::SliderFloat("Fog Density##Vol",
+                             &ctx.postProcessor.volumetricFogDensity, 0.001f,
+                             0.08f, "%.3f");
+          ImGui::SliderFloat("Light Exposure##Vol",
+                             &ctx.postProcessor.volumetricLightExposure, 0.0f,
+                             1.0f, "%.2f");
+          ImGui::SliderFloat("Light Weight##Vol",
+                             &ctx.postProcessor.volumetricLightWeight, 0.01f,
+                             0.25f, "%.3f");
+          ImGui::SliderFloat("Light Decay##Vol",
+                             &ctx.postProcessor.volumetricLightDecay, 0.80f,
+                             0.999f, "%.3f");
+        }
+
+        ImGui::SeparatorText("Performance Settings");
+        if (ctx.postProcessor.enableSSAO) {
+          ImGui::SliderInt("SSAO Samples##Perf", &ctx.postProcessor.ssaoSamples,
+                           8, 64);
+        }
+        if (ctx.postProcessor.enableVolumetricFog) {
+          ImGui::SliderInt("Volumetric Samples##Perf",
+                           &ctx.postProcessor.volumetricSamples, 8, 64);
+        }
+        ImGui::EndTabItem();
+      }
+      if (ImGui::BeginTabItem("Terrain")) {
+        if (ImGui::Checkbox("Enable Terrain", &ctx.terrainSettings.enabled)) {
+          if (ctx.terrainSettings.enabled) {
+            ctx.terrainSystem.init(ctx.terrainSettings, ctx.scene, &ctx.assets);
+          } else {
+            ctx.terrainSystem.shutdown();
+          }
+        }
+        if (ctx.terrainSettings.enabled) {
+          ImGui::Separator();
+          bool needsRegen = false;
+
+          int seed = (int)ctx.terrainSettings.seed;
+          if (ImGui::InputInt("Seed", &seed)) {
+            ctx.terrainSettings.seed = (uint32_t)seed;
+            needsRegen = true;
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Random")) {
+            ctx.terrainSettings.seed = (uint32_t)rand();
+            needsRegen = true;
+          }
+          if (ImGui::SliderFloat("Height", &ctx.terrainSettings.heightScale,
+                                 1.0f, 80.0f))
+            needsRegen = true;
+          if (ImGui::SliderFloat("Frequency",
+                                 &ctx.terrainSettings.noiseFrequency, 0.001f,
+                                 0.1f))
+            needsRegen = true;
+          if (ImGui::SliderInt("View Dist", &ctx.terrainSettings.viewDistance,
+                               1, 8))
+            needsRegen = true;
+          if (ImGui::SliderInt("Octaves", &ctx.terrainSettings.octaves, 1, 10))
+            needsRegen = true;
+          if (ImGui::Checkbox("Ridge Noise",
+                              &ctx.terrainSettings.useRidgeNoise))
+            needsRegen = true;
+
+          ImGui::Separator();
+          ImGui::Text("Biomes");
+          if (ImGui::SliderFloat("Biome Scale", &ctx.terrainSettings.biomeScale,
+                                 0.001f, 0.02f, "%.4f"))
+            needsRegen = true;
+          if (ImGui::SliderFloat("Tree Density",
+                                 &ctx.terrainSettings.treeDensity, 0.0f, 1.0f))
+            needsRegen = true;
+          if (ImGui::SliderFloat("Sea Level", &ctx.terrainSettings.seaLevel,
+                                 -10.0f, 0.0f))
+            needsRegen = true;
+          if (ImGui::SliderFloat("Rock Density",
+                                 &ctx.terrainSettings.rockDensity, 0.0f, 1.0f))
+            needsRegen = true;
+          if (ImGui::SliderFloat("Grass Density",
+                                 &ctx.terrainSettings.grassDensity, 0.0f, 1.0f))
+            needsRegen = true;
+
+          if (ImGui::Checkbox("Flip Custom Grass",
+                              &ctx.terrainSettings.flipCustomGrass))
+            needsRegen = true;
+          if (ImGui::Checkbox("Spawn Vegetation",
+                              &ctx.terrainSettings.spawnVegetation))
+            needsRegen = true;
+          ImGui::SameLine();
+          if (ImGui::Checkbox("Spawn Rocks", &ctx.terrainSettings.spawnRocks))
+            needsRegen = true;
+          if (ImGui::Checkbox("Spawn Water", &ctx.terrainSettings.spawnWater))
+            needsRegen = true;
+
+          if (needsRegen) {
+            ctx.terrainSystem.applySettings(ctx.terrainSettings);
+            ctx.terrainSystem.regenerate();
+          }
+
+          ImGui::Separator();
+          ImGui::Text("Terrain Material");
+          ImGui::Checkbox("Enable Custom Material",
+                          &ctx.terrainMaterial.enableCustom);
+          if (ctx.terrainMaterial.enableCustom) {
+            if (ImGui::Button("Reset Material Defaults")) {
+              ctx.terrainMaterial = TerrainMaterialSettings{};
+            }
+            ImGui::SliderFloat("Macro Scale##TerrainMat",
+                               &ctx.terrainMaterial.macroScale, 0.01f, 0.20f,
+                               "%.3f");
+            ImGui::SliderFloat("Detail Scale##TerrainMat",
+                               &ctx.terrainMaterial.detailScale, 0.25f, 3.0f,
+                               "%.2f");
+            ImGui::SliderFloat("Normal Detail##TerrainMat",
+                               &ctx.terrainMaterial.normalDetailScale, 0.5f,
+                               4.0f, "%.2f");
+            ImGui::SliderFloat("Normal Strength##TerrainMat",
+                               &ctx.terrainMaterial.normalStrength, 0.0f, 2.0f,
+                               "%.2f");
+            ImGui::SliderFloat("Macro Variation##TerrainMat",
+                               &ctx.terrainMaterial.macroVariationStrength,
+                               0.0f, 0.6f, "%.2f");
+            ImGui::SliderFloat("Cliff Desat##TerrainMat",
+                               &ctx.terrainMaterial.cliffDesatStrength, 0.0f,
+                               0.8f, "%.2f");
+
+            ImGui::Text("Blend Ranges");
+            ImGui::SliderFloat("Cliff Start##TerrainMat",
+                               &ctx.terrainMaterial.cliffStart, 0.0f, 1.0f,
+                               "%.2f");
+            ImGui::SliderFloat("Cliff End##TerrainMat",
+                               &ctx.terrainMaterial.cliffEnd, 0.01f, 1.0f,
+                               "%.2f");
+            ImGui::SliderFloat("Snow Start##TerrainMat",
+                               &ctx.terrainMaterial.snowStartHeight, -20.0f,
+                               60.0f, "%.1f");
+            ImGui::SliderFloat("Snow End##TerrainMat",
+                               &ctx.terrainMaterial.snowEndHeight, -20.0f,
+                               80.0f, "%.1f");
+            ImGui::SliderFloat("Low Start##TerrainMat",
+                               &ctx.terrainMaterial.lowStartHeight, -20.0f,
+                               20.0f, "%.1f");
+            ImGui::SliderFloat("Low End##TerrainMat",
+                               &ctx.terrainMaterial.lowEndHeight, -20.0f, 40.0f,
+                               "%.1f");
+
+            if (ctx.terrainMaterial.cliffEnd <=
+                ctx.terrainMaterial.cliffStart) {
+              ctx.terrainMaterial.cliffEnd =
+                  ctx.terrainMaterial.cliffStart + 0.01f;
+            }
+            if (ctx.terrainMaterial.snowEndHeight <=
+                ctx.terrainMaterial.snowStartHeight) {
+              ctx.terrainMaterial.snowEndHeight =
+                  ctx.terrainMaterial.snowStartHeight + 0.1f;
+            }
+            if (ctx.terrainMaterial.lowEndHeight <=
+                ctx.terrainMaterial.lowStartHeight) {
+              ctx.terrainMaterial.lowEndHeight =
+                  ctx.terrainMaterial.lowStartHeight + 0.1f;
+            }
+
+            ImGui::Text("Layer Colors");
+            ImGui::ColorEdit3("Grass A##TerrainMat",
+                              &ctx.terrainMaterial.grassA.x);
+            ImGui::ColorEdit3("Grass B##TerrainMat",
+                              &ctx.terrainMaterial.grassB.x);
+            ImGui::ColorEdit3("Dirt A##TerrainMat",
+                              &ctx.terrainMaterial.dirtA.x);
+            ImGui::ColorEdit3("Dirt B##TerrainMat",
+                              &ctx.terrainMaterial.dirtB.x);
+            ImGui::ColorEdit3("Rock A##TerrainMat",
+                              &ctx.terrainMaterial.rockA.x);
+            ImGui::ColorEdit3("Rock B##TerrainMat",
+                              &ctx.terrainMaterial.rockB.x);
+            ImGui::ColorEdit3("Sand A##TerrainMat",
+                              &ctx.terrainMaterial.sandA.x);
+            ImGui::ColorEdit3("Sand B##TerrainMat",
+                              &ctx.terrainMaterial.sandB.x);
+            ImGui::ColorEdit3("Snow A##TerrainMat",
+                              &ctx.terrainMaterial.snowA.x);
+            ImGui::ColorEdit3("Snow B##TerrainMat",
+                              &ctx.terrainMaterial.snowB.x);
+
+            ImGui::Text("Layer Roughness");
+            ImGui::SliderFloat("Grass Roughness##TerrainMat",
+                               &ctx.terrainMaterial.roughGrass, 0.0f, 1.0f,
+                               "%.2f");
+            ImGui::SliderFloat("Dirt Roughness##TerrainMat",
+                               &ctx.terrainMaterial.roughDirt, 0.0f, 1.0f,
+                               "%.2f");
+            ImGui::SliderFloat("Rock Roughness##TerrainMat",
+                               &ctx.terrainMaterial.roughRock, 0.0f, 1.0f,
+                               "%.2f");
+            ImGui::SliderFloat("Sand Roughness##TerrainMat",
+                               &ctx.terrainMaterial.roughSand, 0.0f, 1.0f,
+                               "%.2f");
+            ImGui::SliderFloat("Snow Roughness##TerrainMat",
+                               &ctx.terrainMaterial.roughSnow, 0.0f, 1.0f,
+                               "%.2f");
+
+            ImGui::SeparatorText("Stylized");
+            ImGui::Checkbox("Flat Green Terrain##TerrainMat",
+                            &ctx.terrainMaterial.flatGreenEnabled);
+            if (ctx.terrainMaterial.flatGreenEnabled) {
+              ImGui::ColorEdit3("Flat Green Color##TerrainMat",
+                                &ctx.terrainMaterial.flatGreenColor.x);
+            }
+          }
+
+          ImGui::Separator();
+          ImGui::Text("Custom Terrain Models (.obj/.fbx)");
+          ImGui::TextDisabled(
+              "Ground terrain remains procedural. Use Grass/Ground Cover for "
+              "custom ground clutter.");
+
+          auto drawTerrainModelField = [&](const char *label, const char *tag,
+                                           std::string &value) {
+            char pathBuf[512] = {};
+            std::snprintf(pathBuf, sizeof(pathBuf), "%s", value.c_str());
+            if (ImGui::InputText(label, pathBuf, sizeof(pathBuf))) {
+              value = pathBuf;
+            }
+            ImGui::SameLine();
+            const std::string buttonId = std::string("Browse##") + tag;
+            if (ImGui::Button(buttonId.c_str())) {
+              mBrowsePath = tag;
+              ImGui::OpenPopup("Select Terrain Asset");
+            }
+          };
+
+          drawTerrainModelField("Tree Model", "TerrainTree",
+                                ctx.terrainSettings.customTreeModelPath);
+          drawTerrainModelField("Rock Model", "TerrainRock",
+                                ctx.terrainSettings.customRockModelPath);
+          drawTerrainModelField("Grass/Ground Cover Model", "TerrainGrass",
+                                ctx.terrainSettings.customGrassModelPath);
+          drawTerrainModelField("Flower Model", "TerrainFlower",
+                                ctx.terrainSettings.customFlowerModelPath);
+          drawTerrainModelField("Cactus Model", "TerrainCactus",
+                                ctx.terrainSettings.customCactusModelPath);
+          drawTerrainModelField("Dead Tree Model", "TerrainDeadTree",
+                                ctx.terrainSettings.customDeadTreeModelPath);
+
+          // Handle the generic Asset Browser popup for Terrain System
+          if (ImGui::BeginPopupModal("Select Terrain Asset", NULL,
+                                     ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Browse Assets Directory:");
+            ImGui::InputText("##Search", mAssetSearch, sizeof(mAssetSearch));
+
+            ImGui::BeginChild("AssetList", ImVec2(400, 300), true);
+
+            // Collect valid extensions
+            std::vector<std::string> exts = {".obj", ".fbx"};
+
+            // Simple recursive dir iteration for the popup
+            std::vector<std::filesystem::path> assetRoots;
+            if (std::filesystem::exists("Assets"))
+              assetRoots.emplace_back("Assets");
+            if (std::filesystem::exists("assets"))
+              assetRoots.emplace_back("assets");
+
+            for (const auto &root : assetRoots) {
+              for (auto &p :
+                   std::filesystem::recursive_directory_iterator(root)) {
+                if (p.is_regular_file()) {
+                  std::string ext = p.path().extension().string();
+                  for (auto &c : ext)
+                    c = (char)std::tolower((unsigned char)c);
+
+                  bool match = false;
+                  for (const auto &validExt : exts) {
+                    if (ext == validExt)
+                      match = true;
+                  }
+
+                  if (match) {
+                    std::string pathStr = p.path().string();
+                    if (mAssetSearch[0] != '\0' &&
+                        pathStr.find(mAssetSearch) == std::string::npos) {
+                      continue;
+                    }
+
+                    if (ImGui::Selectable(pathStr.c_str())) {
+                      if (mBrowsePath == "TerrainTree") {
+                        ctx.terrainSettings.customTreeModelPath = pathStr;
+                      } else if (mBrowsePath == "TerrainRock") {
+                        ctx.terrainSettings.customRockModelPath = pathStr;
+                      } else if (mBrowsePath == "TerrainGrass") {
+                        ctx.terrainSettings.customGrassModelPath = pathStr;
+                      } else if (mBrowsePath == "TerrainFlower") {
+                        ctx.terrainSettings.customFlowerModelPath = pathStr;
+                      } else if (mBrowsePath == "TerrainCactus") {
+                        ctx.terrainSettings.customCactusModelPath = pathStr;
+                      } else if (mBrowsePath == "TerrainDeadTree") {
+                        ctx.terrainSettings.customDeadTreeModelPath = pathStr;
+                      }
+
+                      if (mBrowsePath.rfind("Terrain", 0) == 0) {
+                        ctx.terrainSystem.applySettings(ctx.terrainSettings);
+                        ctx.terrainSystem.regenerate();
+                      }
+                      ImGui::CloseCurrentPopup();
+                    }
+                  }
+                }
+              }
+            }
+            ImGui::EndChild();
+
+            if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+              ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+          }
+          ImGui::Separator();
+          ImGui::SameLine();
+          if (ImGui::Button("Focus Terrain")) {
+            ctx.editorCamera.focusOn(glm::vec3(0.0f, 0.0f, 0.0f));
+            ctx.editorCamera.distance = 80.0f;
+            ctx.editorCamera.pitch = 35.0f;
+          }
+          ImGui::Separator();
+          ImGui::Text("Stats");
+          auto &ts = ctx.terrainSystem.stats();
+          ImGui::Text("Chunks: %d | Trees: %d | Rocks: %d | Water: %d",
+                      ts.loadedChunks, ts.totalTreeEntities,
+                      ts.totalRockEntities, ts.totalWaterPlanes);
+          ImGui::Text("Verts: %d | Tris: %d", ts.verticesGenerated,
+                      ts.trianglesGenerated);
+        }
         ImGui::EndTabItem();
       }
       ImGui::EndTabBar();
@@ -822,8 +1252,76 @@ void EditorUI::drawStats(EditorContext &ctx) {
       row("Particles", "%d", ctx.particleCount);
       row("Drawn", "%d", ctx.visibleDrawn);
       row("Culled", "%d", ctx.visibleCulled);
+      row("Draw Calls (Main)", "%d", ctx.drawCallsMain);
+      row("Draw Calls (Shadow)", "%d", ctx.drawCallsShadow);
+      row("Instanced Calls (Main)", "%d", ctx.instancedDrawCallsMain);
+      row("Instanced Calls (Shadow)", "%d", ctx.instancedDrawCallsShadow);
+      row("Program Binds", "%d", ctx.glProgramBinds);
+      row("Texture Binds", "%d", ctx.glTextureBinds);
+      row("VAO Binds", "%d", ctx.glVaoBinds);
+      row("GL State Changes", "%d", ctx.glStateChanges);
+
+      const AssetStats as = ctx.assets.stats();
+      row("OBJ Assets", "%u", as.objLive);
+      row("Runtime OBJ", "%u", as.objRuntimeLive);
+      row("GLTF Assets", "%u", as.gltfLive);
+      row("FBX Assets", "%u", as.ufbxLive);
+      row("Shaders", "%u", as.shaderLive);
+      row("Import Queued", "%u", as.importQueued);
+      row("Import Failed", "%u", as.importFailed);
 
       ImGui::EndTable();
+    }
+  }
+  ImGui::End();
+}
+
+// =============================================================================
+// Profiler
+// =============================================================================
+void EditorUI::drawProfiler(EditorContext &ctx) {
+  ImGuiWindowFlags wf = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove;
+  if (ImGui::Begin("Profiler", &mShowProfiler, wf)) {
+    const float frameMs = ctx.dt * 1000.0f;
+    ImGui::Text("Frame: %.2f ms (%.1f FPS)", frameMs,
+                ctx.dt > 0.0f ? (1.0f / ctx.dt) : 0.0f);
+    ImGui::Text("GPU Frame: %.2f ms", ctx.gpuFrameMs);
+    ImGui::Text("GPU Shadow: %.2f ms", ctx.gpuShadowMs);
+    ImGui::Text("GPU Main: %.2f ms", ctx.gpuMainMs);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (!ctx.cpuSamples || ctx.cpuSamples->empty()) {
+      ImGui::TextDisabled("No CPU samples yet.");
+    } else {
+      std::vector<FrameProfiler::Sample> samples = *ctx.cpuSamples;
+      std::sort(samples.begin(), samples.end(),
+                [](const auto &a, const auto &b) { return a.ms > b.ms; });
+
+      if (ImGui::BeginTable("ProfilerTable", 3,
+                            ImGuiTableFlags_SizingStretchProp |
+                                ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("System");
+        ImGui::TableSetupColumn("ms");
+        ImGui::TableSetupColumn("% Frame");
+        ImGui::TableHeadersRow();
+
+        for (const auto &s : samples) {
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::TextUnformatted(s.name.c_str());
+          ImGui::TableNextColumn();
+          ImGui::Text("%.3f", s.ms);
+          ImGui::TableNextColumn();
+          const float pct = frameMs > 0.0f ? (float)(s.ms / frameMs * 100.0)
+                                           : 0.0f;
+          ImGui::Text("%.1f%%", pct);
+        }
+
+        ImGui::EndTable();
+      }
     }
   }
   ImGui::End();
@@ -921,6 +1419,50 @@ static bool ComponentHeader(const char *label, bool *open, bool canRemove,
   return *open;
 }
 
+static bool DrawTextureSlotEditor(const char *label, std::string &path,
+                                  GLuint &outTex) {
+  bool edited = false;
+  ImGui::PushID(label);
+
+  char pathBuf[512];
+  std::snprintf(pathBuf, sizeof(pathBuf), "%s", path.c_str());
+
+  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 112.0f);
+  if (ImGui::InputText("##Path", pathBuf, sizeof(pathBuf))) {
+    path = pathBuf;
+    outTex = path.empty() ? 0 : LoadTexture2DCached(path);
+    edited = true;
+  }
+
+  ImGui::SameLine();
+  if (ImGui::Button("Browse")) {
+    const char *patterns[] = {"*.png", "*.jpg", "*.jpeg", "*.tga", "*.bmp"};
+    const char *picked =
+        tinyfd_openFileDialog("Select Texture", path.c_str(),
+                              (int)(sizeof(patterns) / sizeof(patterns[0])),
+                              patterns, "Texture Files", 0);
+    if (picked) {
+      path = picked;
+      outTex = LoadTexture2DCached(path);
+      edited = true;
+    }
+  }
+
+  ImGui::SameLine();
+  if (ImGui::Button("Clear")) {
+    path.clear();
+    outTex = 0;
+    edited = true;
+  }
+
+  ImGui::TextDisabled("%s", label);
+  if (!path.empty())
+    ImGui::TextWrapped("%s", path.c_str());
+
+  ImGui::PopID();
+  return edited;
+}
+
 bool EditorUI::drawInspector(EditorContext &ctx) {
   bool edited = false;
   ImGuiWindowFlags wf = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove;
@@ -954,14 +1496,7 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
     }
 
     if (selectedEntityId == 0) {
-      if (!s.selectedEntities.empty() && s.selectedEntities[0] == 0) {
-        ImGui::Text("Sun Selected");
-        if (ImGui::Button("Open Environment Panel")) {
-          mShowEnvironment = true;
-        }
-      } else {
-        ImGui::TextDisabled("No entity selected.");
-      }
+      ImGui::TextDisabled("No entity selected.");
     } else {
       // ── Entity Header ──────────────────────────────────────────────────
       ImGui::Text("Entity %u", selectedEntityId);
@@ -1056,6 +1591,55 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
                         mc.ufbxModel->submeshCount());
           } else {
             ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Model: null");
+          }
+        }
+      }
+
+      // ── Material Override ───────────────────────────────────────────────
+      if (reg.has<MaterialOverrideComponent>(selectedEntityId)) {
+        bool open = false, wantRemove = false, wantReset = false;
+        ComponentHeader("Material Override", &open, true, &wantRemove,
+                        &wantReset);
+        if (wantRemove) {
+          reg.removeComponent<MaterialOverrideComponent>(selectedEntityId);
+        } else {
+          auto &mo = reg.get<MaterialOverrideComponent>(selectedEntityId);
+          if (wantReset) {
+            mo = MaterialOverrideComponent{};
+            mo.material.id =
+                "EntityOverride_" + std::to_string(selectedEntityId);
+            edited = true;
+          }
+          if (open) {
+            edited |= ImGui::Checkbox("Enabled##MaterialOverride", &mo.enabled);
+            edited |= ImGui::ColorEdit4("Base Color", &mo.material.baseColor.x);
+            edited |= ImGui::SliderFloat("Roughness", &mo.material.roughness,
+                                         0.0f, 1.0f);
+            edited |= ImGui::SliderFloat("Metallic", &mo.material.metallic,
+                                         0.0f, 1.0f);
+            edited |= ImGui::SliderFloat("AO", &mo.material.ao, 0.0f, 1.0f);
+
+            static const char *channelLabels[] = {"R", "G", "B", "A"};
+            edited |=
+                ImGui::Combo("Roughness Channel", &mo.material.roughnessChannel,
+                             channelLabels, 4);
+            edited |=
+                ImGui::Combo("Metallic Channel", &mo.material.metallicChannel,
+                             channelLabels, 4);
+            edited |= ImGui::Combo("AO Channel", &mo.material.aoChannel,
+                                   channelLabels, 4);
+
+            ImGui::SeparatorText("Texture Maps");
+            edited |= DrawTextureSlotEditor("Albedo", mo.albedoPath,
+                                            mo.material.texDiffuse);
+            edited |= DrawTextureSlotEditor("Normal", mo.normalPath,
+                                            mo.material.texNormal);
+            edited |= DrawTextureSlotEditor("Roughness", mo.roughnessPath,
+                                            mo.material.texRoughness);
+            edited |= DrawTextureSlotEditor("Metallic", mo.metallicPath,
+                                            mo.material.texMetallic);
+            edited |= DrawTextureSlotEditor("Ambient Occlusion", mo.aoPath,
+                                            mo.material.texAO);
           }
         }
       }
@@ -1366,6 +1950,13 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
           if (ImGui::MenuItem("Mesh"))
             reg.emplace<MeshComponent>(selectedEntityId);
         }
+        if (!reg.has<MaterialOverrideComponent>(selectedEntityId)) {
+          if (ImGui::MenuItem("Material Override")) {
+            auto &mo = reg.emplace<MaterialOverrideComponent>(selectedEntityId);
+            mo.material.id =
+                "EntityOverride_" + std::to_string(selectedEntityId);
+          }
+        }
         if (!reg.has<RigidbodyComponent>(selectedEntityId)) {
           if (ImGui::MenuItem("Rigidbody"))
             reg.emplace<RigidbodyComponent>(selectedEntityId);
@@ -1538,18 +2129,8 @@ bool EditorUI::drawGizmo(bool uiMode, const glm::mat4 &view,
 
   // Gizmo Logic
   if (s.selectedEntityId == 0) {
-    if (sunSelected) {
-      glm::mat4 model = glm::translate(glm::mat4(1.0f), sun.sunPos);
-      ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(projection),
-                           (ImGuizmo::OPERATION)s.gizmoOp,
-                           (ImGuizmo::MODE)s.gizmoMode, glm::value_ptr(model));
-      if (ImGuizmo::IsUsing()) {
-        float t[3], r[3], sc[3];
-        ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), t, r, sc);
-        sun.sunPos = {t[0], t[1], t[2]};
-        edited = true;
-      }
-    }
+    // The Sun is now infinitely far away, and controlled via azimuthal angles
+    // in Editor Settings menus.
     return edited;
   }
 

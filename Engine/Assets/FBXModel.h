@@ -27,7 +27,8 @@ class FBXModel {
 public:
   bool loadFromFile(const std::string &path);
   void draw(class Shader &shader, const glm::vec3 &pos, const glm::vec3 &rot,
-            const glm::vec3 &scale);
+            const glm::vec3 &scale,
+            const MaterialAsset *materialOverride = nullptr);
   void drawDepth(class Shader &shadowShader, const glm::vec3 &pos,
                  const glm::vec3 &rot, const glm::vec3 &scale);
   void shutdown();

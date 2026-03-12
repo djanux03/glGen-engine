@@ -51,7 +51,11 @@
 #include "AppState.h"
 #include "CoreAppLayer.h"
 #include "EditorSubsystem.h"
+#include "NetworkRuntimeSubsystem.h"
+#include "PhysicsRuntimeSubsystem.h"
 #include "RenderLoopSubsystem.h"
+#include "ScriptRuntimeSubsystem.h"
+#include "TerrainRuntimeSubsystem.h"
 #include "imgui.h"
 
 namespace {
@@ -170,6 +174,12 @@ bool initRuntimeSystems(AppState &s) {
       s.projectConfig.shaderPath(s.projectConfig.bloomExtractFragmentShader);
   const std::string ppBloomBlurFS =
       s.projectConfig.shaderPath(s.projectConfig.bloomBlurFragmentShader);
+  const std::string ppSSAOFS =
+      s.projectConfig.shaderPath(s.projectConfig.ssaoFragmentShader);
+  const std::string ppSSAOBlurFS =
+      s.projectConfig.shaderPath(s.projectConfig.ssaoBlurFragmentShader);
+  const std::string ppVolumetricFS =
+      s.projectConfig.shaderPath(s.projectConfig.volumetricFogFragmentShader);
   const std::string ppBloomCompositeFS =
       s.projectConfig.shaderPath(s.projectConfig.bloomCompositeFragmentShader);
 
@@ -179,7 +189,6 @@ bool initRuntimeSystems(AppState &s) {
     return false;
   }
 
-  s.sun.init();
   if (!s.sky.init(skyHdr, hdrVS, hdrFS))
     return false;
 
@@ -189,8 +198,9 @@ bool initRuntimeSystems(AppState &s) {
   }
   s.fire.setSize(1.0f);
 
-  s.postProcessor.init(ppQuadVS, ppBloomExtractFS, ppBloomBlurFS,
-                       ppBloomCompositeFS, s.scrW, s.scrH);
+  s.postProcessor.init(ppQuadVS, ppBloomExtractFS, ppBloomBlurFS, ppSSAOFS,
+                       ppSSAOBlurFS, ppVolumetricFS, ppBloomCompositeFS, s.scrW,
+                       s.scrH);
 
   if (!s.projectiles.init(projVS.c_str(), projFS.c_str()))
     return false;
@@ -240,6 +250,7 @@ public:
   explicit WindowSubsystem(AppState &state) : mState(state) {}
 
   std::string name() const override { return "Window"; }
+  SubsystemPhase phase() const override { return SubsystemPhase::Platform; }
   bool initialize() override { return initWindowAndImGui(mState); }
   void shutdown() override { shutdownWindowAndImGui(mState); }
 
@@ -252,6 +263,7 @@ public:
   explicit RuntimeSystemsSubsystem(AppState &state) : mState(state) {}
 
   std::string name() const override { return "RuntimeSystems"; }
+  SubsystemPhase phase() const override { return SubsystemPhase::Foundation; }
   std::vector<std::string> dependencies() const override { return {"Window"}; }
   bool initialize() override { return initRuntimeSystems(mState); }
   void shutdown() override { shutdownRuntimeSystems(mState); }
@@ -308,6 +320,17 @@ int App::run() {
 
   m->subsystems.registerSubsystem(std::make_unique<WindowSubsystem>(*m));
 
+  m->subsystems.registerSubsystem(
+      std::make_unique<RuntimeSystemsSubsystem>(*m));
+  m->subsystems.registerSubsystem(
+      std::make_unique<PhysicsRuntimeSubsystem>(*m));
+  m->subsystems.registerSubsystem(
+      std::make_unique<ScriptRuntimeSubsystem>(*m));
+  m->subsystems.registerSubsystem(
+      std::make_unique<NetworkRuntimeSubsystem>(*m));
+  m->subsystems.registerSubsystem(
+      std::make_unique<TerrainRuntimeSubsystem>(*m));
+
   auto editorSubsys = std::make_unique<EditorSubsystem>(*m);
   m->editorSubsystem = editorSubsys.get();
   m->subsystems.registerSubsystem(std::move(editorSubsys));
@@ -319,10 +342,10 @@ int App::run() {
   auto coreAppLayer = std::make_unique<CoreAppLayer>(*m);
   m->coreAppLayer = coreAppLayer.get();
   m->subsystems.registerSubsystem(std::move(coreAppLayer));
+  m->subsystems.registerProfile({"Editor", {"CoreAppLayer"}});
+  m->subsystems.registerProfile({"Runtime", {"RenderLoopSubsystem"}});
 
-  m->subsystems.registerSubsystem(
-      std::make_unique<RuntimeSystemsSubsystem>(*m));
-  if (!m->subsystems.initializeAll())
+  if (!m->subsystems.initializeProfile("Editor"))
     return -1;
 
   // ---- Main loop ----

@@ -92,6 +92,56 @@ inline void registerScriptBindings(sol::state &lua, Registry &registry,
       e.reg->get<TransformComponent>(e.id).rotation = {x, y, z};
   };
 
+  entityType["get_forward"] = [](const EntityProxy &e) -> glm::vec3 {
+    if (e.reg->has<TransformComponent>(e.id)) {
+      const auto &tr = e.reg->get<TransformComponent>(e.id);
+      const float yaw = glm::radians(tr.rotation.y);
+      const float pitch = glm::radians(tr.rotation.x);
+      glm::vec3 front;
+      front.x = -sin(yaw) * cos(pitch);
+      front.y = sin(pitch);
+      front.z = -cos(yaw) * cos(pitch);
+      return glm::normalize(front);
+    }
+    if (e.reg->has<CameraComponent>(e.id)) {
+      return e.reg->get<CameraComponent>(e.id).front;
+    }
+    return glm::vec3(0.0f, 0.0f, -1.0f);
+  };
+
+  entityType["get_forward_flat"] = [](const EntityProxy &e) -> glm::vec3 {
+    glm::vec3 f(0.0f, 0.0f, -1.0f);
+    if (e.reg->has<TransformComponent>(e.id)) {
+      const auto &tr = e.reg->get<TransformComponent>(e.id);
+      const float yaw = glm::radians(tr.rotation.y);
+      f = glm::vec3(-sin(yaw), 0.0f, -cos(yaw));
+    } else if (e.reg->has<CameraComponent>(e.id)) {
+      f = e.reg->get<CameraComponent>(e.id).front;
+    }
+    f.y = 0.0f;
+    if (glm::length(f) < 1e-4f)
+      return glm::vec3(0.0f, 0.0f, -1.0f);
+    return glm::normalize(f);
+  };
+
+  entityType["get_right_flat"] = [](const EntityProxy &e) -> glm::vec3 {
+    glm::vec3 f = glm::vec3(0.0f, 0.0f, -1.0f);
+    if (e.reg->has<TransformComponent>(e.id)) {
+      const auto &tr = e.reg->get<TransformComponent>(e.id);
+      const float yaw = glm::radians(tr.rotation.y);
+      f = glm::vec3(-sin(yaw), 0.0f, -cos(yaw));
+    } else if (e.reg->has<CameraComponent>(e.id)) {
+      f = e.reg->get<CameraComponent>(e.id).front;
+    }
+    f.y = 0.0f;
+    if (glm::length(f) < 1e-4f)
+      f = glm::vec3(0.0f, 0.0f, -1.0f);
+    else
+      f = glm::normalize(f);
+    // Right = cross(forward, up)
+    return glm::normalize(glm::cross(f, glm::vec3(0.0f, 1.0f, 0.0f)));
+  };
+
   entityType["get_scale"] = [](const EntityProxy &e) -> glm::vec3 {
     if (e.reg->has<TransformComponent>(e.id))
       return e.reg->get<TransformComponent>(e.id).scale;

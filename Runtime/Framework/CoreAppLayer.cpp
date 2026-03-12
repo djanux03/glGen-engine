@@ -17,6 +17,7 @@
 #include "Logger.h"
 #include "Mouse.h"
 #include "MousePicking.h"
+#include "Core/FrameProfiler.h"
 
 #include "imgui.h"
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -33,6 +34,87 @@
 namespace {
 void saveConfig(const AppState &s, const char *filename) {}
 void loadConfig(AppState &s, const char *filename) {}
+constexpr float kTerrainEdgeMargin = 0.2f;
+constexpr float kTerrainMinClearance = 0.15f;
+
+bool isEntityAlive(Registry &reg, EntityId e) {
+  if (!reg.has<LifecycleComponent>(e))
+    return true;
+  return reg.get<LifecycleComponent>(e).state == EntityLifecycleState::Alive;
+}
+
+float terrainClearanceForEntity(Registry &reg, EntityId e) {
+  float clearance = kTerrainMinClearance;
+  if (!reg.has<ColliderComponent>(e))
+    return clearance;
+
+  const auto &coll = reg.get<ColliderComponent>(e);
+  switch (coll.shape) {
+  case ColliderComponent::Shape::Box:
+    clearance = std::max(clearance, coll.dimensions.y * 0.5f + 0.05f);
+    break;
+  case ColliderComponent::Shape::Sphere:
+    clearance = std::max(clearance, coll.dimensions.x + 0.05f);
+    break;
+  case ColliderComponent::Shape::Capsule:
+    clearance =
+        std::max(clearance, coll.dimensions.y * 0.5f + coll.dimensions.x + 0.05f);
+    break;
+  }
+  return clearance;
+}
+
+float terrainSupportRadiusForEntity(Registry &reg, EntityId e) {
+  if (!reg.has<ColliderComponent>(e))
+    return 0.35f;
+
+  const auto &coll = reg.get<ColliderComponent>(e);
+  switch (coll.shape) {
+  case ColliderComponent::Shape::Box:
+    return std::max(0.25f, std::max(coll.dimensions.x, coll.dimensions.z) * 0.5f);
+  case ColliderComponent::Shape::Sphere:
+    return std::max(0.25f, coll.dimensions.x);
+  case ColliderComponent::Shape::Capsule:
+    return std::max(0.25f, coll.dimensions.x);
+  }
+  return 0.35f;
+}
+
+float terrainSupportHeightForEntity(AppState &state, Registry &reg, EntityId e,
+                                    float x, float z) {
+  float h = state.terrainSystem.getHeightAt(x, z);
+  const float r = terrainSupportRadiusForEntity(reg, e);
+  if (r <= 0.0f)
+    return h;
+
+  const float diag = r * 0.70710678f;
+  h = std::max(h, state.terrainSystem.getHeightAt(x + r, z));
+  h = std::max(h, state.terrainSystem.getHeightAt(x - r, z));
+  h = std::max(h, state.terrainSystem.getHeightAt(x, z + r));
+  h = std::max(h, state.terrainSystem.getHeightAt(x, z - r));
+  h = std::max(h, state.terrainSystem.getHeightAt(x + diag, z + diag));
+  h = std::max(h, state.terrainSystem.getHeightAt(x - diag, z + diag));
+  h = std::max(h, state.terrainSystem.getHeightAt(x + diag, z - diag));
+  h = std::max(h, state.terrainSystem.getHeightAt(x - diag, z - diag));
+  return h;
+}
+
+void clampEntityToTerrain(AppState &state, Registry &reg, EntityId e) {
+  if (!reg.has<TransformComponent>(e) || !isEntityAlive(reg, e))
+    return;
+
+  auto &tr = reg.get<TransformComponent>(e);
+  const glm::vec2 clampedXZ = state.terrainSystem.clampXZToLoadedRegion(
+      tr.position.x, tr.position.z, kTerrainEdgeMargin);
+  tr.position.x = clampedXZ.x;
+  tr.position.z = clampedXZ.y;
+
+  const float terrainY =
+      terrainSupportHeightForEntity(state, reg, e, tr.position.x, tr.position.z);
+  const float minY = terrainY + terrainClearanceForEntity(reg, e);
+  if (tr.position.y < minY)
+    tr.position.y = minY;
+}
 } // namespace
 
 bool CoreAppLayer::initialize() {
@@ -83,23 +165,10 @@ bool CoreAppLayer::initialize() {
 
   commitHistorySnapshot("Initial");
 
-  // Initialize Lua scripting
-  mState.scriptSystem.initialize(mState.scene.registry(),
-                                 &mState.physicsSystem);
-
-  // Initialize Jolt Physics
-  mState.physicsSystem.init();
-
-  // Initialize Laravel Networking Gateway
-  mState.networkSystem.init();
-
   return true;
 }
 
-void CoreAppLayer::shutdown() {
-  mState.physicsSystem.shutdown();
-  mState.networkSystem.shutdown();
-}
+void CoreAppLayer::shutdown() {}
 
 void CoreAppLayer::applyHistorySnapshot(int idx) {
   if (idx < 0 || idx >= (int)mState.history.historySnapshots.size())
@@ -163,6 +232,9 @@ void CoreAppLayer::commitHistorySnapshot(const std::string &label) {
 void CoreAppLayer::update(float dt, float nowT) {
   // Always in editor mode — cursor always visible
   mState.uiMode = true;
+  mState.profiler.beginFrame();
+  mState.profiler.setFrameMs(dt * 1000.0f);
+  GLStateCache::instance().resetCounters();
 
   if (mState.editorSubsystem)
     mState.editorSubsystem->beginFrame();
@@ -201,12 +273,17 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.cloud,
       mState.sky,
       mState.projectiles,
+      mState.postProcessor,
       mState.scene,
       mState.events,
       mState.projectConfig,
       mState.assets,
       mState.terrainSize,
       mState.terrainSpacing,
+      mState.terrainSettings,
+      mState.terrainMaterial,
+      mState.terrainSystem,
+      mState.editorCamera,
       mState.skyUI.solidSky,
       mState.skyUI.skyHorizon,
       mState.skyUI.skyTop,
@@ -214,6 +291,8 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.render.shadowFarPlane,
       mState.render.exposure,
       mState.render.gamma,
+      mState.render.fogDensity,
+      mState.render.fogColor,
       mState.render.wireframe,
       mState.render.disableShadows,
       mState.render.disableClouds,
@@ -224,6 +303,10 @@ void CoreAppLayer::update(float dt, float nowT) {
       (int)(mState.projectiles.count()),
       mState.renderSystem.stats().drawn,
       mState.renderSystem.stats().culled,
+      mState.renderSystem.stats().drawCallsMain,
+      mState.renderSystem.stats().drawCallsShadow,
+      mState.renderSystem.stats().instancedDrawCallsMain,
+      mState.renderSystem.stats().instancedDrawCallsShadow,
       mState.render.frustumCulling,
       &mState.lastRenderPassOrder,
       mState.hotReloadEnabled,
@@ -231,142 +314,181 @@ void CoreAppLayer::update(float dt, float nowT) {
       &mState.hotReloadMessages,
       &mState.history.historyLabels,
       mState.history.historyCursor,
+      &mState.profiler.samples(),
+      mState.gpuFrameMs,
+      mState.gpuShadowMs,
+      mState.gpuMainMs,
+      mState.glProgramBinds,
+      mState.glTextureBinds,
+      mState.glVaoBinds,
+      mState.glStateChanges,
       selState,
       (int &)mState.playState};
 
-  EditorUIOutput uiOut = mState.editor.draw(ctx);
+  EditorUIOutput uiOut{};
+  {
+    ScopedCpuTimer timer(mState.profiler, "Editor UI");
+    uiOut = mState.editor.draw(ctx);
+  }
   if (uiOut.sceneModified) {
     mState.history.pendingHistoryCommit = true;
     mState.history.pendingHistoryLabel = "Edit Scene";
   }
+
+  // Handle Play mode cursor locking and ESC to pause
+  static AppState::PlayState lastPlayState = AppState::PlayState::Stopped;
+  if (mState.playState == AppState::PlayState::Playing &&
+      lastPlayState != AppState::PlayState::Playing) {
+    glfwSetInputMode(mState.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+  } else if (mState.playState != AppState::PlayState::Playing &&
+             lastPlayState == AppState::PlayState::Playing) {
+    glfwSetInputMode(mState.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+  }
+
+  if (mState.playState == AppState::PlayState::Playing &&
+      Keyboard::keyWentDown(GLFW_KEY_ESCAPE)) {
+    mState.playState = AppState::PlayState::Paused;
+    glfwSetInputMode(mState.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+  }
+  lastPlayState = mState.playState;
+
   bool sceneMutatedByCommands = false;
-  if (mState.pending.requestSaveConfig) {
-    saveConfig(mState, "editor_state.bin");
-    mState.pending.requestSaveConfig = false;
-  }
-  if (mState.pending.requestLoadConfig) {
-    loadConfig(mState, "editor_state.bin");
-    mState.pending.requestLoadConfig = false;
-  }
-  if (mState.pending.requestSaveProjectConfig) {
-    if (!mState.projectConfig.saveToFile("project_config.json")) {
-      LOG_ERROR("Runtime", "Failed to save project_config.json");
+  {
+    ScopedCpuTimer timer(mState.profiler, "Commands/Scene");
+    if (mState.pending.requestSaveConfig) {
+      saveConfig(mState, "editor_state.bin");
+      mState.pending.requestSaveConfig = false;
     }
-    mState.pending.requestSaveProjectConfig = false;
-  }
-  if (!mState.pending.pendingSceneSavePath.empty()) {
-    if (!mState.scene.saveToFile(mState.pending.pendingSceneSavePath))
-      LOG_ERROR("Runtime",
-                "Failed to save scene: " + mState.pending.pendingSceneSavePath);
-    mState.pending.pendingSceneSavePath.clear();
-  }
-  if (!mState.pending.pendingSceneLoadPath.empty()) {
-    if (!mState.scene.loadFromFile(mState.pending.pendingSceneLoadPath))
-      LOG_ERROR("Runtime",
-                "Failed to load scene: " + mState.pending.pendingSceneLoadPath);
-    else {
-      mState.history.pendingHistoryCommit = true;
-      mState.history.pendingHistoryLabel = "Load Scene";
-      sceneMutatedByCommands = true;
-      mState.playerId = 0;
-      for (auto e : mState.scene.registry().view<CameraComponent>()) {
-        if (!mState.scene.registry().has<LifecycleComponent>(e) ||
-            mState.scene.registry().get<LifecycleComponent>(e).state ==
-                EntityLifecycleState::Alive) {
-          mState.playerId = e;
-          break;
+    if (mState.pending.requestLoadConfig) {
+      loadConfig(mState, "editor_state.bin");
+      mState.pending.requestLoadConfig = false;
+    }
+    if (mState.pending.requestSaveProjectConfig) {
+      if (!mState.projectConfig.saveToFile("project_config.json")) {
+        LOG_ERROR("Runtime", "Failed to save project_config.json");
+      }
+      mState.pending.requestSaveProjectConfig = false;
+    }
+    if (!mState.pending.pendingSceneSavePath.empty()) {
+      if (!mState.scene.saveToFile(mState.pending.pendingSceneSavePath))
+        LOG_ERROR(
+            "Runtime",
+            "Failed to save scene: " + mState.pending.pendingSceneSavePath);
+      mState.pending.pendingSceneSavePath.clear();
+    }
+    if (!mState.pending.pendingSceneLoadPath.empty()) {
+      if (!mState.scene.loadFromFile(mState.pending.pendingSceneLoadPath))
+        LOG_ERROR(
+            "Runtime",
+            "Failed to load scene: " + mState.pending.pendingSceneLoadPath);
+      else {
+        mState.history.pendingHistoryCommit = true;
+        mState.history.pendingHistoryLabel = "Load Scene";
+        sceneMutatedByCommands = true;
+        mState.playerId = 0;
+        for (auto e : mState.scene.registry().view<CameraComponent>()) {
+          if (!mState.scene.registry().has<LifecycleComponent>(e) ||
+              mState.scene.registry().get<LifecycleComponent>(e).state ==
+                  EntityLifecycleState::Alive) {
+            mState.playerId = e;
+            break;
+          }
         }
       }
+      mState.pending.pendingSceneLoadPath.clear();
     }
-    mState.pending.pendingSceneLoadPath.clear();
-  }
 
-  if (mState.history.requestHistoryJump >= 0) {
-    applyHistorySnapshot(mState.history.requestHistoryJump);
-    mState.history.requestHistoryJump = -1;
-    sceneMutatedByCommands = true;
-  } else if (mState.history.requestUndo) {
-    applyHistorySnapshot(mState.history.historyCursor - 1);
-    sceneMutatedByCommands = true;
-  } else if (mState.history.requestRedo) {
-    applyHistorySnapshot(mState.history.historyCursor + 1);
-    sceneMutatedByCommands = true;
-  }
-  mState.history.requestUndo = false;
-  mState.history.requestRedo = false;
-
-  if (mState.autoProcessImportQueue)
-    mState.assets.processImportQueue();
-  if (mState.hotReloadEnabled) {
-    mState.hotReloadMessages = mState.assets.pollHotReload();
-  } else {
-    mState.hotReloadMessages.clear();
-  }
-
-  for (const std::string &emptyName : mState.pending.pendingEmptyEntityNames) {
-    (void)mState.scene.createEmptyEntity(emptyName.empty() ? "Empty"
-                                                           : emptyName);
-    mState.history.pendingHistoryCommit = true;
-    mState.history.pendingHistoryLabel = "Create Entity";
-    sceneMutatedByCommands = true;
-  }
-  mState.pending.pendingEmptyEntityNames.clear();
-
-  for (uint32_t entityId : mState.pending.pendingDeleteEntityIds) {
-    if (entityId != 0) {
-      mState.scene.deleteEntity(entityId);
-      mState.history.pendingHistoryCommit = true;
-      mState.history.pendingHistoryLabel = "Delete Entity";
+    if (mState.history.requestHistoryJump >= 0) {
+      applyHistorySnapshot(mState.history.requestHistoryJump);
+      mState.history.requestHistoryJump = -1;
+      sceneMutatedByCommands = true;
+    } else if (mState.history.requestUndo) {
+      applyHistorySnapshot(mState.history.historyCursor - 1);
+      sceneMutatedByCommands = true;
+    } else if (mState.history.requestRedo) {
+      applyHistorySnapshot(mState.history.historyCursor + 1);
       sceneMutatedByCommands = true;
     }
-  }
-  mState.pending.pendingDeleteEntityIds.clear();
+    mState.history.requestUndo = false;
+    mState.history.requestRedo = false;
 
-  for (const std::string &path : mState.pending.pendingSpawnPaths) {
-    uint32_t spawnedId = 0;
-
-    // Intercept procedural primitives (__primitive_cube, etc.)
-    const std::string prefix = "__primitive_";
-    if (path.substr(0, prefix.size()) == prefix) {
-      std::string shape = path.substr(prefix.size());
-      spawnedId = mState.scene.spawnPrimitive(shape);
+    if (mState.autoProcessImportQueue)
+      mState.assets.processImportQueue();
+    if (mState.hotReloadEnabled) {
+      mState.hotReloadMessages = mState.assets.pollHotReload();
     } else {
-      spawnedId = mState.scene.spawnFromFile(path);
+      mState.hotReloadMessages.clear();
     }
 
-    if (spawnedId == 0) {
-      LOG_ERROR("Runtime", "Failed to spawn: " + path);
-    } else {
+    for (const std::string &emptyName :
+         mState.pending.pendingEmptyEntityNames) {
+      (void)mState.scene.createEmptyEntity(emptyName.empty() ? "Empty"
+                                                             : emptyName);
       mState.history.pendingHistoryCommit = true;
-      mState.history.pendingHistoryLabel = "Spawn Asset";
+      mState.history.pendingHistoryLabel = "Create Entity";
       sceneMutatedByCommands = true;
     }
-  }
-  mState.pending.pendingSpawnPaths.clear();
+    mState.pending.pendingEmptyEntityNames.clear();
 
-  if (!mState.pending.pendingDropPaths.empty()) {
-    for (const std::string &path : mState.pending.pendingDropPaths) {
-      const uint32_t spawnedId = mState.scene.spawnFromFile(path);
-      if (spawnedId == 0)
-        LOG_ERROR("Runtime", "Failed to load dropped model: " + path);
-      else {
+    for (uint32_t entityId : mState.pending.pendingDeleteEntityIds) {
+      if (entityId != 0) {
+        mState.scene.deleteEntity(entityId);
+        mState.history.pendingHistoryCommit = true;
+        mState.history.pendingHistoryLabel = "Delete Entity";
+        sceneMutatedByCommands = true;
+      }
+    }
+    mState.pending.pendingDeleteEntityIds.clear();
+
+    for (const std::string &path : mState.pending.pendingSpawnPaths) {
+      uint32_t spawnedId = 0;
+
+      // Intercept procedural primitives (__primitive_cube, etc.)
+      const std::string prefix = "__primitive_";
+      if (path.substr(0, prefix.size()) == prefix) {
+        std::string shape = path.substr(prefix.size());
+        spawnedId = mState.scene.spawnPrimitive(shape);
+      } else {
+        spawnedId = mState.scene.spawnFromFile(path);
+      }
+
+      if (spawnedId == 0) {
+        LOG_ERROR("Runtime", "Failed to spawn: " + path);
+      } else {
         mState.history.pendingHistoryCommit = true;
         mState.history.pendingHistoryLabel = "Spawn Asset";
         sceneMutatedByCommands = true;
       }
     }
-    mState.pending.pendingDropPaths.clear();
-  }
+    mState.pending.pendingSpawnPaths.clear();
 
-  const size_t entityCountBeforeFlush =
-      mState.scene.registry().view<TransformComponent>().size();
-  mState.scene.flushPendingDestroy();
-  const size_t entityCountAfterFlush =
-      mState.scene.registry().view<TransformComponent>().size();
-  if (entityCountAfterFlush != entityCountBeforeFlush) {
-    mState.history.pendingHistoryCommit = true;
-    mState.history.pendingHistoryLabel = "Destroy Entity";
-    sceneMutatedByCommands = true;
+    if (!mState.pending.pendingDropPaths.empty()) {
+      for (const std::string &path : mState.pending.pendingDropPaths) {
+        const uint32_t spawnedId = mState.scene.spawnFromFile(path);
+        if (spawnedId == 0)
+          LOG_ERROR("Runtime", "Failed to load dropped model: " + path);
+        else {
+          mState.history.pendingHistoryCommit = true;
+          mState.history.pendingHistoryLabel = "Spawn Asset";
+          sceneMutatedByCommands = true;
+        }
+      }
+      mState.pending.pendingDropPaths.clear();
+    }
+
+    const size_t entityCountBeforeFlush =
+        mState.scene.registry().view<TransformComponent>().size();
+    mState.scene.flushPendingDestroy();
+    const size_t entityCountAfterFlush =
+        mState.scene.registry().view<TransformComponent>().size();
+    if (entityCountAfterFlush != entityCountBeforeFlush) {
+      mState.history.pendingHistoryCommit = true;
+      mState.history.pendingHistoryLabel = "Destroy Entity";
+      sceneMutatedByCommands = true;
+    }
+
+    // Keep raw mesh pointers synchronized with authoritative asset handles.
+    mState.scene.refreshMeshReferences();
   }
 
   if (mState.render.wireframe)
@@ -376,13 +498,29 @@ void CoreAppLayer::update(float dt, float nowT) {
 
   // Run Lua scripts only when Playing
   if (mState.playState == AppState::PlayState::Playing) {
-    mState.scriptSystem.update(mState.scene.registry(), dt);
-    mState.physicsSystem.update(mState.scene.registry(), dt);
+    {
+      ScopedCpuTimer timer(mState.profiler, "Scripts");
+      mState.scriptSystem.update(mState.scene.registry(), dt);
+    }
+    {
+      ScopedCpuTimer timer(mState.profiler, "Physics");
+      mState.physicsSystem.update(mState.scene.registry(), dt);
+    }
+
+    if (mState.terrainSystem.isEnabled()) {
+      ScopedCpuTimer timer(mState.profiler, "Terrain Clamp");
+      auto &reg = mState.scene.registry();
+      for (auto e : reg.viewAll<TransformComponent, ScriptComponent>())
+        clampEntityToTerrain(mState, reg, e);
+    }
   }
 
   // ── Editor Camera (orbit / pan / zoom via mouse) ──
-  mState.editorCamera.update(mState.window,
-                             uiOut.wantCaptureMouse || ImGuizmo::IsUsing());
+  {
+    ScopedCpuTimer timer(mState.profiler, "Editor Camera");
+    mState.editorCamera.update(mState.window,
+                               uiOut.wantCaptureMouse || ImGuizmo::IsUsing());
+  }
 
   // F key: focus on selected entity
   if (Keyboard::key(GLFW_KEY_F) && !uiOut.wantCaptureKeyboard &&
@@ -405,6 +543,8 @@ void CoreAppLayer::update(float dt, float nowT) {
   if (mState.playState == AppState::PlayState::Playing) {
     auto &reg = mState.scene.registry();
     if (mState.playerId == 0 || !reg.has<CameraComponent>(mState.playerId)) {
+      mState.playerId =
+          0; // Reset — stays 0 if no CameraComponent entity exists
       for (auto e : reg.view<CameraComponent>()) {
         if (!reg.has<LifecycleComponent>(e) ||
             reg.get<LifecycleComponent>(e).state ==
@@ -416,7 +556,10 @@ void CoreAppLayer::update(float dt, float nowT) {
     }
 
     if (mState.playerId != 0 && reg.has<TransformComponent>(mState.playerId)) {
+      if (mState.terrainSystem.isEnabled())
+        clampEntityToTerrain(mState, reg, mState.playerId);
       auto &tr = reg.get<TransformComponent>(mState.playerId);
+
       cameraPos = tr.position;
 
       glm::vec3 front;
@@ -435,10 +578,22 @@ void CoreAppLayer::update(float dt, float nowT) {
     }
   }
 
+  // Update Terrain chunk loading around the camera
+  {
+    ScopedCpuTimer timer(mState.profiler, "Terrain Update");
+    mState.terrainSystem.update(cameraPos);
+  }
+
   int winW, winH;
   glfwGetWindowSize(mState.window, &winW, &winH);
   glm::mat4 projection = glm::perspective(
       glm::radians(mState.input.fov), (float)winW / (float)winH, 0.1f, 500.0f);
+  const bool allowTemporalJitter =
+      (mState.playState == AppState::PlayState::Playing);
+  if (!allowTemporalJitter)
+    mState.postProcessor.resetTemporalHistory();
+  glm::mat4 renderProjection =
+      mState.postProcessor.jitteredProjection(projection, allowTemporalJitter);
 
   if (mState.uiMode && Mouse::buttonWentDown(GLFW_MOUSE_BUTTON_LEFT) &&
       !uiOut.wantCaptureMouse && !ImGuizmo::IsUsing()) {
@@ -521,21 +676,31 @@ void CoreAppLayer::update(float dt, float nowT) {
     }
   }
 
-  bool editingSun = (mState.uiMode && mState.selection.selectedEntityId == 0 &&
-                     ImGuizmo::IsUsing());
-  if (!editingSun)
-    mState.sun.update(dt, renderTime);
-
-  mState.projectiles.update(dt);
-  mState.renderSystem.setViewProjection(projection * view);
+  {
+    ScopedCpuTimer timer(mState.profiler, "Projectiles");
+    mState.projectiles.update(dt);
+  }
+  mState.renderSystem.setViewProjection(renderProjection * view);
   mState.renderSystem.setCameraPosition(cameraPos);
   mState.renderSystem.setCullingEnabled(mState.render.frustumCulling);
+  mState.renderSystem.beginFrame();
 
   if (mState.renderLoopSubsystem) {
+    ScopedCpuTimer timer(mState.profiler, "Render CPU");
     mState.renderLoopSubsystem->executeRenderPasses(
-        view, projection, cameraPos, cameraFront, cameraUp, renderTime);
+        view, renderProjection, cameraPos, cameraFront, cameraUp, renderTime);
   }
 
-  if (mState.editorSubsystem)
+  if (mState.editorSubsystem) {
+    ScopedCpuTimer timer(mState.profiler, "ImGui End");
     mState.editorSubsystem->endFrame();
+  }
+
+  const auto glStats = GLStateCache::instance().counters();
+  mState.glProgramBinds = glStats.programBinds;
+  mState.glTextureBinds = glStats.textureBinds;
+  mState.glVaoBinds = glStats.vaoBinds;
+  mState.glStateChanges = glStats.stateChanges;
+
+  mState.profiler.endFrame();
 }

@@ -78,10 +78,11 @@ void Logger::log(Level level, const std::string &category,
   e.timestamp = nowString_();
   e.message = message;
 
-  mEntries.push_back(e);
+  mEntries.push_back(std::move(e));
   if (mEntries.size() > mMaxEntries) {
-    const size_t overflow = mEntries.size() - mMaxEntries;
-    mEntries.erase(mEntries.begin(), mEntries.begin() + (long)overflow);
+    // Only one entry over the limit since we add one at a time.
+    // swap-and-pop the oldest to avoid O(n) memmove.
+    mEntries.erase(mEntries.begin());
   }
 
   std::ostringstream line;
@@ -106,4 +107,3 @@ std::vector<Logger::Entry> Logger::recentEntries(size_t maxCount) const {
     return mEntries;
   return std::vector<Entry>(mEntries.end() - (long)maxCount, mEntries.end());
 }
-

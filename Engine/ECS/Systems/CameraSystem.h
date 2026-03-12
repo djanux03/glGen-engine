@@ -25,7 +25,7 @@ public:
       if (!cam.isPrimary)
         continue;
 
-      cam.yaw += xoff;
+      cam.yaw -= xoff; // Flipped from += to -= to fix horizontal inversion
       cam.pitch += yoff;
 
       // Clamp pitch

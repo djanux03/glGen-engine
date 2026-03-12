@@ -2,6 +2,7 @@
 
 #include "FBXModel.h"
 #include "OBJModel.h"
+#include "PrimitiveMeshGenerator.h"
 #include "Shader.h"
 #include "Texture.h"
 #include "UFBXModel.h"
@@ -19,6 +20,25 @@ std::string toLower(std::string s) {
   std::transform(s.begin(), s.end(), s.begin(),
                  [](unsigned char c) { return (char)std::tolower(c); });
   return s;
+}
+
+std::unique_ptr<OBJModel> makePrimitiveOBJ(const std::string &assetId) {
+  static const std::string kPrefix = "__primitive_";
+  if (assetId.rfind(kPrefix, 0) != 0)
+    return nullptr;
+
+  const std::string shape = assetId.substr(kPrefix.size());
+  if (shape == "cube")
+    return std::unique_ptr<OBJModel>(PrimitiveMeshGenerator::createCube());
+  if (shape == "sphere")
+    return std::unique_ptr<OBJModel>(PrimitiveMeshGenerator::createSphere());
+  if (shape == "plane")
+    return std::unique_ptr<OBJModel>(PrimitiveMeshGenerator::createPlane());
+  if (shape == "cylinder")
+    return std::unique_ptr<OBJModel>(PrimitiveMeshGenerator::createCylinder());
+  if (shape == "cone")
+    return std::unique_ptr<OBJModel>(PrimitiveMeshGenerator::createCone());
+  return nullptr;
 }
 } // namespace
 
@@ -102,13 +122,19 @@ OBJHandle AssetManager::loadOBJ(const std::string &path) {
 
   OBJRecord rec;
   rec.sourcePath = path;
-  rec.dependencies = {path};
-  rec.watchedTime = safeWriteTime_(path);
-  rec.asset = std::make_unique<OBJModel>();
-  const std::string cooked = cookedPathFor_(path);
-  const std::string loadPath = std::filesystem::exists(cooked) ? cooked : path;
-  if (!rec.asset->loadFromFile(loadPath)) {
-    return {};
+  rec.asset = makePrimitiveOBJ(path);
+  rec.runtimeAsset = false;
+
+  if (!rec.asset) {
+    rec.dependencies = {path};
+    rec.watchedTime = safeWriteTime_(path);
+    rec.asset = std::make_unique<OBJModel>();
+    const std::string cooked = cookedPathFor_(path);
+    const std::string loadPath =
+        std::filesystem::exists(cooked) ? cooked : path;
+    if (!rec.asset->loadFromFile(loadPath)) {
+      return {};
+    }
   }
 
   const uint32_t idx = (uint32_t)mOBJ.size();
@@ -163,6 +189,105 @@ UFBXHandle AssetManager::loadUFBX(const std::string &path) {
   mUFBX.push_back(std::move(rec));
   mUFBXByPath[path] = idx;
   return UFBXHandle{idx, mUFBX[idx].generation};
+}
+
+OBJHandle AssetManager::registerRuntimeOBJ(const std::string &assetId,
+                                           std::unique_ptr<OBJModel> model) {
+  if (assetId.empty() || !model)
+    return {};
+
+  const auto it = mOBJByPath.find(assetId);
+  if (it != mOBJByPath.end()) {
+    const uint32_t idx = it->second;
+    if (idx >= mOBJ.size())
+      return {};
+    auto &rec = mOBJ[idx];
+    rec.sourcePath = assetId;
+    rec.dependencies.clear();
+    rec.watchedTime = {};
+    rec.asset = std::move(model);
+    rec.runtimeAsset = true;
+    return OBJHandle{idx, rec.generation};
+  }
+
+  // Scan for a free (released) runtime slot to recycle instead of growing
+  // the vector unboundedly across terrain chunk load/unload cycles.
+  for (uint32_t i = 0; i < (uint32_t)mOBJ.size(); ++i) {
+    auto &slot = mOBJ[i];
+    if (!slot.asset && slot.runtimeAsset) {
+      slot.sourcePath = assetId;
+      slot.dependencies.clear();
+      slot.watchedTime = {};
+      slot.asset = std::move(model);
+      // slot.runtimeAsset already true
+      mOBJByPath[assetId] = i;
+      return OBJHandle{i, slot.generation};
+    }
+  }
+
+  // No free slot found — append as before
+  OBJRecord rec;
+  rec.sourcePath = assetId;
+  rec.dependencies.clear();
+  rec.watchedTime = {};
+  rec.asset = std::move(model);
+  rec.runtimeAsset = true;
+
+  const uint32_t idx = (uint32_t)mOBJ.size();
+  mOBJ.push_back(std::move(rec));
+  mOBJByPath[assetId] = idx;
+  return OBJHandle{idx, mOBJ[idx].generation};
+}
+
+bool AssetManager::releaseOBJ(const std::string &assetId) {
+  const auto it = mOBJByPath.find(assetId);
+  if (it == mOBJByPath.end())
+    return false;
+  const uint32_t idx = it->second;
+  mOBJByPath.erase(it);
+  if (idx >= mOBJ.size())
+    return false;
+
+  auto &rec = mOBJ[idx];
+  rec.asset.reset();
+  rec.dependencies.clear();
+  rec.watchedTime = {};
+  rec.runtimeAsset = false;
+  ++rec.generation;
+  return true;
+}
+
+AssetStats AssetManager::stats() const {
+  AssetStats s{};
+
+  for (const auto &rec : mOBJ) {
+    if (!rec.asset)
+      continue;
+    ++s.objLive;
+    if (rec.runtimeAsset)
+      ++s.objRuntimeLive;
+  }
+
+  for (const auto &rec : mGLTF)
+    if (rec.asset)
+      ++s.gltfLive;
+  for (const auto &rec : mUFBX)
+    if (rec.asset)
+      ++s.ufbxLive;
+  for (const auto &rec : mShaders)
+    if (rec.shader)
+      ++s.shaderLive;
+
+  for (const auto &job : mImportJobs) {
+    if (job.status == "Queued")
+      ++s.importQueued;
+    else if (job.status == "Imported")
+      ++s.importImported;
+    else if (job.status == "Failed")
+      ++s.importFailed;
+  }
+
+  return s;
 }
 
 OBJModel *AssetManager::getOBJ(OBJHandle h) {

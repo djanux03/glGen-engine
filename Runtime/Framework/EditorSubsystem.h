@@ -12,6 +12,7 @@ public:
   ~EditorSubsystem() override;
 
   std::string name() const override { return "EditorSubsystem"; }
+  SubsystemPhase phase() const override { return SubsystemPhase::Tooling; }
   std::vector<std::string> dependencies() const override { return {"Window"}; }
 
   bool initialize() override;

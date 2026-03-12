@@ -39,7 +39,7 @@ bool Renderer::initWithShadows(const char *vertexPath, const char *fragmentPath,
   mShader->setFloat("uShininess", 32.0f); // Lower shininess = larger highlights
 
   mShader->setInt("texture1", 0);
-  mShader->setInt("shadowCube", 1);
+  mShader->setInt("shadowMap", 1);
   mShader->setFloat("uSunIntensity", 1.0f);
   mShader->setFloat("uShadowStrength", 1.5f);
 
@@ -55,28 +55,26 @@ bool Renderer::initShadowResources_(const char *shadowVertPath,
                                     int shadowMapRes) {
   mShadowRes = shadowMapRes;
 
-  glGenTextures(1, &mShadowCubeTex);
-  glBindTexture(GL_TEXTURE_CUBE_MAP, mShadowCubeTex);
+  glGenTextures(1, &mShadowTex);
+  glBindTexture(GL_TEXTURE_2D, mShadowTex);
 
-  for (unsigned int i = 0; i < 6; ++i) {
-    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_DEPTH_COMPONENT,
-                 mShadowRes, mShadowRes, 0, GL_DEPTH_COMPONENT, GL_FLOAT,
-                 nullptr);
-  }
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, mShadowRes, mShadowRes, 0,
+               GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
 
   // VISUAL UPGRADE: Use GL_LINEAR for PCF (soft shadows) in shader
-  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+  float borderColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
+  glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
 
-  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-
-  glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+  glBindTexture(GL_TEXTURE_2D, 0);
 
   glGenFramebuffers(1, &mShadowFBO);
   glBindFramebuffer(GL_FRAMEBUFFER, mShadowFBO);
-  glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, mShadowCubeTex, 0);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
+                         mShadowTex, 0);
   glDrawBuffer(GL_NONE);
   glReadBuffer(GL_NONE);
 
@@ -95,12 +93,12 @@ bool Renderer::initShadowResources_(const char *shadowVertPath,
 }
 
 void Renderer::shutdownShadowResources_() {
-  if (mShadowCubeTex)
-    glDeleteTextures(1, &mShadowCubeTex);
+  if (mShadowTex)
+    glDeleteTextures(1, &mShadowTex);
   if (mShadowFBO)
     glDeleteFramebuffers(1, &mShadowFBO);
 
-  mShadowCubeTex = 0;
+  mShadowTex = 0;
   mShadowFBO = 0;
   mShadowShader.reset();
 }
@@ -120,40 +118,40 @@ void Renderer::setFrameUniforms(const glm::mat4 &view,
                                 float timeSec, const glm::vec3 &sunColor,
                                 float ambientStrength,
                                 const glm::vec3 &cameraPos, float sunIntensity,
-                                const glm::vec3 &lightPos, float farPlane,
-                                float shadowStrength) {
+                                const glm::vec3 &lightDir, float farPlane,
+                                float shadowStrength, const glm::vec3 &fogColor,
+                                float fogDensity) {
   ENGINE_ASSERT(mShader != nullptr,
                 "Renderer::setFrameUniforms called before shader init");
   mShader->activate();
 
   mShader->setMat4("view", view);
   mShader->setMat4("projection", projection);
-  mShader->setFloat("mixVal", mixVal);
   mShader->setFloat("uTime", timeSec);
+  mShader->setFloat("uMixVal", mixVal);
 
   mShader->setVec3("uSunColor", sunColor);
+  mShader->setFloat("uSunIntensity", sunIntensity);
   mShader->setFloat("uAmbient", ambientStrength);
   mShader->setVec3("uCameraPos", cameraPos);
-  mShader->setFloat("uSunIntensity", sunIntensity);
 
-  mShader->setVec3("uLightPos", lightPos);
+  mShader->setVec3("uLightDir", lightDir);
   mShader->setFloat("uFarPlane", farPlane);
   mShader->setFloat("uShadowStrength", shadowStrength);
 
-  // VISUAL UPGRADE: Fog
-  // (Ensure you add these uniforms to your Fragment Shader)
-  mShader->setVec3("uFogColor", glm::vec3(0.5f, 0.6f, 0.7f)); // Sky blue-ish
-  mShader->setFloat("uFogDensity", 0.005f); // Atmosphere thickness
+  // Fog
+  mShader->setVec3("uFogColor", fogColor);
+  mShader->setFloat("uFogDensity", fogDensity);
 
   glActiveTexture(GL_TEXTURE1);
-  glBindTexture(GL_TEXTURE_CUBE_MAP, mShadowCubeTex);
+  glBindTexture(GL_TEXTURE_2D, mShadowTex);
   glActiveTexture(GL_TEXTURE0);
 }
 
 void Renderer::beginShadowPass() {
   ENGINE_ASSERT(mShader != nullptr,
                 "Renderer::beginShadowPass called before init");
-  if (!mShadowFBO || !mShadowCubeTex || !mShadowShader)
+  if (!mShadowFBO || !mShadowTex || !mShadowShader)
     return;
 
   glGetIntegerv(GL_VIEWPORT, mPrevViewport);

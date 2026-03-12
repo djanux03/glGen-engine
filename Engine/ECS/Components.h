@@ -1,5 +1,6 @@
 #pragma once
 #include "AssetManager.h"
+#include "Rendering/Material.h"
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -49,7 +50,41 @@ struct MeshComponent {
   AssetType type = AssetType::None;
   bool visible = true;
   bool castsShadow = true;
+  bool isTerrain = false; // Terrain chunks get height-based biome coloring
 };
+
+struct MaterialOverrideComponent {
+  bool enabled = true;
+  MaterialAsset material{};
+
+  // Source texture paths used for scene serialization and editor display.
+  std::string albedoPath;
+  std::string normalPath;
+  std::string roughnessPath;
+  std::string metallicPath;
+  std::string aoPath;
+};
+
+struct InstancedMeshComponent {
+  MeshComponent::AssetType type = MeshComponent::AssetType::None;
+  class OBJModel *objModel = nullptr;
+  class UFBXModel *ufbxModel = nullptr;
+  OBJHandle objHandle{};
+  UFBXHandle ufbxHandle{};
+  std::vector<glm::mat4> instanceTransforms;
+  unsigned int instanceVBO = 0;
+  size_t instanceVBOCapacity = 0; // bytes currently allocated on GPU
+  float maxDrawDistance = 800.0f; // cull instances beyond this distance
+  // When true, instance fragments use terrain procedural shading path.
+  bool useTerrainShading = false;
+  bool isDirty = true;
+  bool visible = true;
+  bool castsShadow = true;
+};
+
+// Tags an entity so it is completely ignored by Scene serialization and
+// Scene::clear()
+struct TransientComponent {};
 
 enum class EntityLifecycleState : uint8_t {
   Alive = 0,

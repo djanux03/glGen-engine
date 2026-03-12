@@ -5,7 +5,7 @@
 #include "ECS/Components.h"
 #include "FBXModel.h"
 #include "OBJModel.h"
-#include "PrimitiveMeshGenerator.h"
+#include "Texture.h"
 #include "json.hpp"
 
 #include <algorithm>
@@ -125,37 +125,36 @@ Scene::EntityId Scene::spawnFromFile(const std::string &path) {
 }
 
 Scene::EntityId Scene::spawnPrimitive(const std::string &primitiveName) {
-  OBJModel *model = nullptr;
-  std::string displayName;
-
-  if (primitiveName == "cube") {
-    model = PrimitiveMeshGenerator::createCube();
-    displayName = "Cube";
-  } else if (primitiveName == "sphere") {
-    model = PrimitiveMeshGenerator::createSphere();
-    displayName = "Sphere";
-  } else if (primitiveName == "plane") {
-    model = PrimitiveMeshGenerator::createPlane();
-    displayName = "Plane";
-  } else if (primitiveName == "cylinder") {
-    model = PrimitiveMeshGenerator::createCylinder();
-    displayName = "Cylinder";
-  } else if (primitiveName == "cone") {
-    model = PrimitiveMeshGenerator::createCone();
-    displayName = "Cone";
-  } else {
+  if (!mAssets)
     return 0;
-  }
 
-  if (!model)
+  std::string displayName;
+  if (primitiveName == "cube")
+    displayName = "Cube";
+  else if (primitiveName == "sphere")
+    displayName = "Sphere";
+  else if (primitiveName == "plane")
+    displayName = "Plane";
+  else if (primitiveName == "cylinder")
+    displayName = "Cylinder";
+  else if (primitiveName == "cone")
+    displayName = "Cone";
+  else
+    return 0;
+
+  const std::string assetId = "__primitive_" + primitiveName;
+  auto h = mAssets->loadOBJ(assetId);
+  OBJModel *model = mAssets->getOBJ(h);
+  if (!h.valid() || !model)
     return 0;
 
   EntityId id = mRegistry.create();
   mRegistry.emplace<TransformComponent>(id);
 
   MeshComponent mesh(model);
-  mesh.assetId = "__primitive_" + primitiveName;
-  auto &mc = mRegistry.emplace<MeshComponent>(id, mesh);
+  mesh.assetId = assetId;
+  mesh.objHandle = h;
+  mRegistry.emplace<MeshComponent>(id, mesh);
 
   mRegistry.emplace<BoundsComponent>(id, BoundsComponent{2.0f});
   mRegistry.emplace<LifecycleComponent>(id);
@@ -260,7 +259,17 @@ void Scene::flushPendingDestroy() {
   }
 }
 
-void Scene::clear() { mRegistry = Registry{}; }
+void Scene::clear() {
+  std::vector<EntityId> toDestroy;
+  for (auto e : mRegistry.view<TransformComponent>()) {
+    if (!mRegistry.has<TransientComponent>(e)) {
+      toDestroy.push_back(e);
+    }
+  }
+  for (auto e : toDestroy) {
+    mRegistry.destroy(e);
+  }
+}
 
 bool Scene::saveToFile(const std::string &path) const {
   std::ofstream out(path);
@@ -286,6 +295,9 @@ std::string Scene::serializeToString() const {
 
   auto &reg = const_cast<Registry &>(mRegistry);
   for (auto e : reg.view<TransformComponent>()) {
+    if (reg.has<TransientComponent>(e))
+      continue;
+
     json ent;
     ent["id"] = e;
 
@@ -322,6 +334,27 @@ std::string Scene::serializeToString() const {
                      {"assetId", mc.assetId},
                      {"visible", mc.visible},
                      {"castsShadow", mc.castsShadow}};
+    }
+
+    if (reg.has<MaterialOverrideComponent>(e)) {
+      const auto &mo = reg.get<MaterialOverrideComponent>(e);
+      ent["materialOverride"] = {
+          {"enabled", mo.enabled},
+          {"baseColor",
+           {mo.material.baseColor.r, mo.material.baseColor.g,
+            mo.material.baseColor.b, mo.material.baseColor.a}},
+          {"roughness", mo.material.roughness},
+          {"metallic", mo.material.metallic},
+          {"ao", mo.material.ao},
+          {"roughnessChannel", mo.material.roughnessChannel},
+          {"metallicChannel", mo.material.metallicChannel},
+          {"aoChannel", mo.material.aoChannel},
+          {"albedoPath", mo.albedoPath},
+          {"normalPath", mo.normalPath},
+          {"roughnessPath", mo.roughnessPath},
+          {"metallicPath", mo.metallicPath},
+          {"aoPath", mo.aoPath},
+      };
     }
 
     if (reg.has<RigidbodyComponent>(e)) {
@@ -425,46 +458,19 @@ bool Scene::loadFromString(const std::string &jsonText) {
 
       if (!assetId.empty()) {
         if (type == "OBJ") {
-          const std::string prefix = "__primitive_";
-          if (assetId.substr(0, prefix.size()) == prefix) {
-            std::string shape = assetId.substr(prefix.size());
-            OBJModel *obj = nullptr;
-            if (shape == "cube")
-              obj = PrimitiveMeshGenerator::createCube();
-            else if (shape == "sphere")
-              obj = PrimitiveMeshGenerator::createSphere();
-            else if (shape == "plane")
-              obj = PrimitiveMeshGenerator::createPlane();
-            else if (shape == "cylinder")
-              obj = PrimitiveMeshGenerator::createCylinder();
-            else if (shape == "cone")
-              obj = PrimitiveMeshGenerator::createCone();
+          if (!mAssets)
+            continue;
+          auto h = mAssets->loadOBJ(assetId);
+          if (OBJModel *obj = mAssets->getOBJ(h)) {
+            auto &mc =
+                mRegistry.emplace<MeshComponent>(id, obj, visible, castsShadow);
+            mc.assetId = assetId;
+            mc.objHandle = h;
 
-            if (obj) {
-              auto &mc = mRegistry.emplace<MeshComponent>(id, obj, visible,
-                                                          castsShadow);
-              mc.assetId = assetId;
-              glm::vec3 minB, maxB;
-              if (obj->getGlobalBounds(minB, maxB)) {
-                float rad = glm::length(maxB - minB) * 0.5f;
-                mRegistry.get<BoundsComponent>(id).radius = rad;
-              }
-            }
-          } else {
-            if (!mAssets)
-              continue;
-            auto h = mAssets->loadOBJ(assetId);
-            if (OBJModel *obj = mAssets->getOBJ(h)) {
-              auto &mc = mRegistry.emplace<MeshComponent>(id, obj, visible,
-                                                          castsShadow);
-              mc.assetId = assetId;
-              mc.objHandle = h;
-
-              glm::vec3 minB, maxB;
-              if (obj->getGlobalBounds(minB, maxB)) {
-                float rad = glm::length(maxB - minB) * 0.5f;
-                mRegistry.get<BoundsComponent>(id).radius = rad;
-              }
+            glm::vec3 minB, maxB;
+            if (obj->getGlobalBounds(minB, maxB)) {
+              float rad = glm::length(maxB - minB) * 0.5f;
+              mRegistry.get<BoundsComponent>(id).radius = rad;
             }
           }
         } else if (type == "GLTF") {
@@ -501,6 +507,44 @@ bool Scene::loadFromString(const std::string &jsonText) {
           }
         }
       }
+    }
+
+    if (ent.contains("materialOverride")) {
+      const auto &moj = ent["materialOverride"];
+      auto &mo = mRegistry.emplace<MaterialOverrideComponent>(id);
+      mo.enabled = moj.value("enabled", true);
+
+      auto c = moj.value("baseColor", std::vector<float>{1, 1, 1, 1});
+      if (c.size() == 4) {
+        mo.material.baseColor = glm::vec4(c[0], c[1], c[2], c[3]);
+      }
+
+      mo.material.roughness = moj.value("roughness", 0.8f);
+      mo.material.metallic = moj.value("metallic", 0.0f);
+      mo.material.ao = moj.value("ao", 1.0f);
+      mo.material.roughnessChannel = moj.value("roughnessChannel", 0);
+      mo.material.metallicChannel = moj.value("metallicChannel", 0);
+      mo.material.aoChannel = moj.value("aoChannel", 0);
+
+      mo.albedoPath = moj.value("albedoPath", "");
+      mo.normalPath = moj.value("normalPath", "");
+      mo.roughnessPath = moj.value("roughnessPath", "");
+      mo.metallicPath = moj.value("metallicPath", "");
+      mo.aoPath = moj.value("aoPath", "");
+
+      mo.material.texDiffuse =
+          mo.albedoPath.empty() ? 0 : LoadTexture2DCached(mo.albedoPath);
+      mo.material.texNormal =
+          mo.normalPath.empty() ? 0 : LoadTexture2DCached(mo.normalPath);
+      mo.material.texRoughness = mo.roughnessPath.empty()
+                                     ? 0
+                                     : LoadTexture2DCached(mo.roughnessPath);
+      mo.material.texMetallic = mo.metallicPath.empty()
+                                    ? 0
+                                    : LoadTexture2DCached(mo.metallicPath);
+      mo.material.texAO =
+          mo.aoPath.empty() ? 0 : LoadTexture2DCached(mo.aoPath);
+      mo.material.id = "EntityOverride_" + std::to_string(id);
     }
 
     if (ent.contains("rigidbody")) {
@@ -557,4 +601,32 @@ bool Scene::loadFromString(const std::string &jsonText) {
   }
 
   return true;
+}
+
+void Scene::refreshMeshReferences() {
+  if (!mAssets)
+    return;
+
+  for (auto e : mRegistry.view<MeshComponent>()) {
+    auto &mc = mRegistry.get<MeshComponent>(e);
+    if (mc.type == MeshComponent::AssetType::OBJ && mc.objHandle.valid()) {
+      mc.objModel = mAssets->getOBJ(mc.objHandle);
+    } else if (mc.type == MeshComponent::AssetType::GLTF &&
+               mc.gltfHandle.valid()) {
+      mc.gltfModel = mAssets->getGLTF(mc.gltfHandle);
+    } else if (mc.type == MeshComponent::AssetType::FBX &&
+               mc.ufbxHandle.valid()) {
+      mc.ufbxModel = mAssets->getUFBX(mc.ufbxHandle);
+    }
+  }
+
+  for (auto e : mRegistry.view<InstancedMeshComponent>()) {
+    auto &inst = mRegistry.get<InstancedMeshComponent>(e);
+    if (inst.type == MeshComponent::AssetType::OBJ && inst.objHandle.valid()) {
+      inst.objModel = mAssets->getOBJ(inst.objHandle);
+    } else if (inst.type == MeshComponent::AssetType::FBX &&
+               inst.ufbxHandle.valid()) {
+      inst.ufbxModel = mAssets->getUFBX(inst.ufbxHandle);
+    }
+  }
 }

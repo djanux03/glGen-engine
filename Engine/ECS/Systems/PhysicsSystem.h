@@ -38,6 +38,19 @@ public:
   // Step the simulation forward and sync transforms to the ECS
   void update(Registry &registry, float dt);
 
+  // ── Terrain chunk collision ──────────────────────────────────────
+  // Registers a static HeightFieldShape body for a terrain chunk.
+  // heightSamples: row-major (sampleCount x sampleCount) height floats
+  // chunkOrigin  : world-space XZ origin of the chunk
+  // chunkWorldSize: world-space size of one chunk edge
+  // Returns the Jolt body ID (store in ChunkData, pass back to remove).
+  uint32_t addTerrainChunk(const std::vector<float> &heightSamples,
+                           uint32_t sampleCount, glm::vec2 chunkOrigin,
+                           float chunkWorldSize);
+
+  // Remove a previously registered terrain chunk body.
+  void removeTerrainChunk(uint32_t bodyId);
+
 private:
   // Jolt Physics core systems
   std::unique_ptr<JPH::PhysicsSystem> mPhysicsSystem;

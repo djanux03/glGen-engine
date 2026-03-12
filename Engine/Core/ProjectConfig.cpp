@@ -42,6 +42,13 @@ bool ProjectConfig::loadFromFile(const std::string &path) {
   loadString(j, "smokeBillboardFragmentShader", smokeBillboardFragmentShader);
   loadString(j, "projectileVertexShader", projectileVertexShader);
   loadString(j, "projectileFragmentShader", projectileFragmentShader);
+  loadString(j, "screenQuadVertexShader", screenQuadVertexShader);
+  loadString(j, "bloomExtractFragmentShader", bloomExtractFragmentShader);
+  loadString(j, "bloomBlurFragmentShader", bloomBlurFragmentShader);
+  loadString(j, "ssaoFragmentShader", ssaoFragmentShader);
+  loadString(j, "ssaoBlurFragmentShader", ssaoBlurFragmentShader);
+  loadString(j, "volumetricFogFragmentShader", volumetricFogFragmentShader);
+  loadString(j, "bloomCompositeFragmentShader", bloomCompositeFragmentShader);
 
   loadString(j, "grassSideTexture", grassSideTexture);
   loadString(j, "grassTopTexture", grassTopTexture);
@@ -68,6 +75,13 @@ bool ProjectConfig::saveToFile(const std::string &path) const {
   j["smokeBillboardFragmentShader"] = smokeBillboardFragmentShader;
   j["projectileVertexShader"] = projectileVertexShader;
   j["projectileFragmentShader"] = projectileFragmentShader;
+  j["screenQuadVertexShader"] = screenQuadVertexShader;
+  j["bloomExtractFragmentShader"] = bloomExtractFragmentShader;
+  j["bloomBlurFragmentShader"] = bloomBlurFragmentShader;
+  j["ssaoFragmentShader"] = ssaoFragmentShader;
+  j["ssaoBlurFragmentShader"] = ssaoBlurFragmentShader;
+  j["volumetricFogFragmentShader"] = volumetricFogFragmentShader;
+  j["bloomCompositeFragmentShader"] = bloomCompositeFragmentShader;
 
   j["grassSideTexture"] = grassSideTexture;
   j["grassTopTexture"] = grassTopTexture;
@@ -93,4 +107,3 @@ std::string ProjectConfig::assetPath(const std::string &rel) const {
 std::string ProjectConfig::projectPath(const std::string &rel) const {
   return joinPath(projectRoot, rel);
 }
-

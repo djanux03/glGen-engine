@@ -58,7 +58,9 @@ private:
   GLuint mId = 0;
   std::string mVertexPath;
   std::string mFragmentPath;
-  std::unordered_map<std::string, GLint> mUniformCache;
+  std::unordered_map<std::string, GLint> mUniformCache; // location cache
+  std::unordered_map<GLint, int> mIntCache;             // value de-dup
+  std::unordered_map<GLint, float> mFloatCache;         // value de-dup
 };
 
 #endif

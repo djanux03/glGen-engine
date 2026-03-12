@@ -36,6 +36,7 @@ public:
   bool loadFromFile(const std::string &path);
   std::string serializeToString() const;
   bool loadFromString(const std::string &jsonText);
+  void refreshMeshReferences();
   void clear();
 
   // Lifecycle state controls

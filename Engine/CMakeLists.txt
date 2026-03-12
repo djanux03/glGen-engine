@@ -8,6 +8,7 @@ file(GLOB_RECURSE ENGINE_SOURCES
     "Assets/*.cpp"
     "ECS/*.cpp"
     "Scripting/*.cpp"
+    "Terrain/*.cpp"
 )
 
 add_library(Engine STATIC ${ENGINE_SOURCES})
@@ -23,6 +24,7 @@ target_include_directories(Engine PUBLIC
     Assets
     ECS
     Scripting
+    Terrain
     ../ThirdParty/JoltPhysics
 )
 

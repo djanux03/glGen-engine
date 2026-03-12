@@ -10,6 +10,8 @@ class Shader;
 
 class OBJModel {
 public:
+  enum class UpAxis { X, Y, Z };
+
   bool loadFromFile(const std::string &objPath);
   void shutdown();
 
@@ -24,10 +26,17 @@ public:
 
   // Same signature your engine already uses:
   void draw(Shader &shader, const glm::vec3 &position, const glm::vec3 &rotDeg,
-            const glm::vec3 &scale);
+            const glm::vec3 &scale,
+            const MaterialAsset *materialOverride = nullptr);
+
+  void drawInstanced(Shader &shader, unsigned int instanceVBO,
+                     int instanceCount);
 
   void drawDepth(Shader &shadowShader, const glm::vec3 &position,
                  const glm::vec3 &rotDeg, const glm::vec3 &scale);
+
+  void drawDepthInstanced(Shader &shadowShader, unsigned int instanceVBO,
+                          int instanceCount);
 
   // Existing anchor query (material-based):
   bool getSubmeshCenterLocal(const std::string &materialName,
@@ -62,6 +71,11 @@ public:
 
   // Global AABB bounds for the entire loaded model
   bool getGlobalBounds(glm::vec3 &outMin, glm::vec3 &outMax) const;
+
+  // Re-centers all submesh vertices so the model base sits at the chosen
+  // up-axis minimum and the other two axes are centered at origin.
+  // Must be called BEFORE drawInstanced — it re-uploads dirty VBOs.
+  void centerAtOrigin(UpAxis upAxis = UpAxis::Y);
 
 private:
   struct Vertex {

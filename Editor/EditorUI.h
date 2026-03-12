@@ -1,5 +1,7 @@
 #pragma once
 #include "EditorToolbar.h"
+#include "Core/FrameProfiler.h"
+#include "Terrain/TerrainMaterialSettings.h"
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <string>
@@ -13,11 +15,15 @@ class HDRSky;
 class Scene;
 class OBJModel;
 class ProjectileSystem;
+class PostProcessor;
 class Registry;
 class EventBus;
 struct ProjectConfig;
 class AssetManager;
 struct VisibilityStats;
+struct TerrainSettings;
+class TerrainSystem;
+class EditorCamera;
 
 // ---------------------------------------------------------------------------
 // Selection state for outliner / gizmo
@@ -64,6 +70,7 @@ struct EditorContext {
   CloudFX &cloud;
   HDRSky &sky;
   ProjectileSystem &projectiles;
+  PostProcessor &postProcessor;
   Scene &scene;
   EventBus &events;
   ProjectConfig &projectConfig;
@@ -72,6 +79,10 @@ struct EditorContext {
   // Terrain
   int &terrainSize;
   float &terrainSpacing;
+  TerrainSettings &terrainSettings;
+  TerrainMaterialSettings &terrainMaterial;
+  TerrainSystem &terrainSystem;
+  EditorCamera &editorCamera;
 
   // Sky params stored in AppState
   bool &solidSky;
@@ -83,6 +94,8 @@ struct EditorContext {
   float &shadowFarPlane;
   float &exposure;
   float &gamma;
+  float &fogDensity;
+  glm::vec3 &fogColor;
 
   // Render debug toggles
   bool &wireframe;
@@ -97,6 +110,10 @@ struct EditorContext {
   int particleCount;
   int visibleDrawn = 0;
   int visibleCulled = 0;
+  int drawCallsMain = 0;
+  int drawCallsShadow = 0;
+  int instancedDrawCallsMain = 0;
+  int instancedDrawCallsShadow = 0;
   bool &cullingEnabled;
   const std::vector<std::string> *renderPassOrder = nullptr;
   bool &hotReloadEnabled;
@@ -104,6 +121,14 @@ struct EditorContext {
   const std::vector<std::string> *hotReloadMessages = nullptr;
   const std::vector<std::string> *historyLabels = nullptr;
   int historyIndex = -1;
+  const std::vector<FrameProfiler::Sample> *cpuSamples = nullptr;
+  float gpuFrameMs = 0.0f;
+  float gpuShadowMs = 0.0f;
+  float gpuMainMs = 0.0f;
+  int glProgramBinds = 0;
+  int glTextureBinds = 0;
+  int glVaoBinds = 0;
+  int glStateChanges = 0;
 
   // Selection State
   EditorSelectionState &selection;
@@ -169,6 +194,7 @@ private:
   bool mShowEnvironment = true;
   bool mShowLog = false;
   bool mShowStats = true;
+  bool mShowProfiler = true;
   bool mShowScriptEditor = false;
 
   // Script editor state
@@ -196,4 +222,5 @@ private:
   void drawEnvironment(EditorContext &ctx);
   void drawLog(EditorContext &ctx);
   void drawStats(EditorContext &ctx);
+  void drawProfiler(EditorContext &ctx);
 };

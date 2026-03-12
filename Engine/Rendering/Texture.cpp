@@ -1,6 +1,11 @@
 #include "Texture.h"
 #include "Logger.h"
 #include <stb/stb_image.h>
+#include <unordered_map>
+
+namespace {
+std::unordered_map<std::string, GLuint> gTextureCache;
+}
 
 GLuint LoadTexture2D(const std::string& path, bool flipY)
 {
@@ -37,6 +42,21 @@ GLuint LoadTexture2D(const std::string& path, bool flipY)
     glGenerateMipmap(GL_TEXTURE_2D);
 
     stbi_image_free(data);
+    return tex;
+}
+
+GLuint LoadTexture2DCached(const std::string& path, bool flipY)
+{
+    if (path.empty())
+        return 0;
+
+    auto it = gTextureCache.find(path);
+    if (it != gTextureCache.end())
+        return it->second;
+
+    GLuint tex = LoadTexture2D(path, flipY);
+    if (tex != 0)
+        gTextureCache[path] = tex;
     return tex;
 }
 

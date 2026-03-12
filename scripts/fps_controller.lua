@@ -3,7 +3,7 @@
 
 local speed = 10.0
 local sprint_mult = 2.0
-local sensitivity = 15.0 -- mouselook sensitivity
+local sensitivity = 4.5 -- mouselook sensitivity
 
 local pitch = 0.0
 local yaw = 0.0
@@ -25,7 +25,7 @@ function on_update(entity, dt)
     -- 1. Mouselook
     local dx = input.mouse_dx()
     local dy = input.mouse_dy()
-    yaw = yaw + dx * sensitivity * dt
+    yaw = yaw - dx * sensitivity * dt
     pitch = pitch + dy * sensitivity * dt
     
     -- Clamp pitch to prevent flipping backwards
@@ -39,20 +39,21 @@ function on_update(entity, dt)
     if input.key_down("LSHIFT") then current_speed = speed * sprint_mult end
     local move = current_speed * dt
     
-    local yaw_rad = math.rad(yaw)
-    local forward_x = math.sin(yaw_rad)
-    local forward_z = math.cos(yaw_rad)
-    
-    local right_x = math.sin(yaw_rad - math.pi / 2)
-    local right_z = math.cos(yaw_rad - math.pi / 2)
+    -- Use engine-consistent forward/right vectors
+    local f = entity:get_forward_flat()
+    local r = entity:get_right_flat()
+    local forward_x = f.x
+    local forward_z = f.z
+    local right_x = r.x
+    local right_z = r.z
     
     if input.key_down("W") then
-        pos.x = pos.x - forward_x * move
-        pos.z = pos.z - forward_z * move
-    end
-    if input.key_down("S") then
         pos.x = pos.x + forward_x * move
         pos.z = pos.z + forward_z * move
+    end
+    if input.key_down("S") then
+        pos.x = pos.x - forward_x * move
+        pos.z = pos.z - forward_z * move
     end
     if input.key_down("A") then
         pos.x = pos.x - right_x * move
@@ -76,10 +77,10 @@ function on_update(entity, dt)
         last_shot_time = 0.0
         
         -- Calculate accurate forward vector from pitch and yaw
-        local pitch_rad = math.rad(pitch)
-        local dir_x = -math.sin(yaw_rad) * math.cos(pitch_rad)
-        local dir_y = math.sin(pitch_rad)
-        local dir_z = -math.cos(yaw_rad) * math.cos(pitch_rad)
+        local f3 = entity:get_forward()
+        local dir_x = f3.x
+        local dir_y = f3.y
+        local dir_z = f3.z
         
         -- Raycast into the physics engine up to 1000 units away
         local hit = physics.raycast(pos.x, pos.y, pos.z, dir_x, dir_y, dir_z, 1000.0)

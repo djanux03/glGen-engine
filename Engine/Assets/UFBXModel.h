@@ -27,9 +27,15 @@ class UFBXModel {
 public:
   bool loadFromFile(const std::string &path);
   void draw(class Shader &shader, const glm::vec3 &pos, const glm::vec3 &rot,
-            const glm::vec3 &scale);
+            const glm::vec3 &scale,
+            const MaterialAsset *materialOverride = nullptr);
+  void drawInstanced(class Shader &shader, unsigned int instanceVBO,
+                     int instanceCount);
+
   void drawDepth(class Shader &shadowShader, const glm::vec3 &pos,
                  const glm::vec3 &rot, const glm::vec3 &scale);
+  void drawDepthInstanced(class Shader &shadowShader, unsigned int instanceVBO,
+                          int instanceCount);
   void shutdown();
   std::size_t submeshCount() const { return mSubmeshes.size(); }
 

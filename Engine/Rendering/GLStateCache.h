@@ -4,6 +4,13 @@
 
 class GLStateCache {
 public:
+  struct Counters {
+    int programBinds = 0;
+    int textureBinds = 0;
+    int vaoBinds = 0;
+    int stateChanges = 0;
+  };
+
   static GLStateCache &instance();
 
   void useProgram(GLuint program);
@@ -15,6 +22,9 @@ public:
   void setDepthMask(bool enabled);
   void setCullFace(GLenum mode);
   void setPolygonMode(GLenum mode);
+
+  void resetCounters();
+  Counters counters() const { return mCounters; }
 
 private:
   GLStateCache() = default;
@@ -28,5 +38,5 @@ private:
   GLenum mCullFace = GL_BACK;
   GLenum mPolygonMode = GL_FILL;
   GLuint mTex2D[32] = {};
+  Counters mCounters{};
 };
-

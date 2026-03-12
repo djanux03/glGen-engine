@@ -9,8 +9,8 @@ struct ProjectConfig {
 
   std::string mainVertexShader = "vertex_core.glsl";
   std::string mainFragmentShader = "fragment_core.glsl";
-  std::string shadowVertexShader = "point_shadow_depth.vert";
-  std::string shadowFragmentShader = "point_shadow_depth.frag";
+  std::string shadowVertexShader = "shadow_depth.vert";
+  std::string shadowFragmentShader = "shadow_depth.frag";
   std::string hdrSkyVertexShader = "hdr_sky.vert";
   std::string hdrSkyFragmentShader = "hdr_sky.frag";
   std::string fireBillboardVertexShader = "fire_billboard.vert";
@@ -22,6 +22,9 @@ struct ProjectConfig {
   std::string screenQuadVertexShader = "screen_quad.vert";
   std::string bloomExtractFragmentShader = "bloom_extract.frag";
   std::string bloomBlurFragmentShader = "bloom_blur.frag";
+  std::string ssaoFragmentShader = "ssao.frag";
+  std::string ssaoBlurFragmentShader = "ssao_blur.frag";
+  std::string volumetricFogFragmentShader = "volumetric_fog.frag";
   std::string bloomCompositeFragmentShader = "bloom_composite.frag";
 
   std::string grassSideTexture = "grass_side.png";

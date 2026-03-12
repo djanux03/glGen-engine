@@ -93,6 +93,8 @@ bool Shader::reload() {
     glDeleteProgram(mId);
   mId = newProgram;
   mUniformCache.clear();
+  mIntCache.clear();
+  mFloatCache.clear();
   return true;
 }
 std::string Shader::loadShaderSrc(const char *filename) {
@@ -150,14 +152,30 @@ void Shader::setMat4(const std::string &name, const glm::mat4 &value) {
   glUniformMatrix4fv(loc(name), 1, GL_FALSE, glm::value_ptr(value));
 }
 void Shader::setInt(const std::string &name, int value) {
-  glUniform1i(loc(name), value);
+  GLint l = loc(name);
+  auto it = mIntCache.find(l);
+  if (it != mIntCache.end() && it->second == value)
+    return;
+  mIntCache[l] = value;
+  glUniform1i(l, value);
 }
 void Shader::setFloat(const std::string &name, float value) {
-  glUniform1f(loc(name), value);
+  GLint l = loc(name);
+  auto it = mFloatCache.find(l);
+  if (it != mFloatCache.end() && it->second == value)
+    return;
+  mFloatCache[l] = value;
+  glUniform1f(l, value);
 }
 
 void Shader::setBool(const std::string &name, bool value) {
-  glUniform1i(loc(name), (int)value);
+  GLint l = loc(name);
+  int iv = (int)value;
+  auto it = mIntCache.find(l);
+  if (it != mIntCache.end() && it->second == iv)
+    return;
+  mIntCache[l] = iv;
+  glUniform1i(l, iv);
 }
 
 void Shader::setVec4(const std::string &name, const glm::vec4 &v) {

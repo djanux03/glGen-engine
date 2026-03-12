@@ -1,5 +1,8 @@
 {
   "assetRoot": "assets",
+  "bloomBlurFragmentShader": "bloom_blur.frag",
+  "bloomCompositeFragmentShader": "bloom_composite.frag",
+  "bloomExtractFragmentShader": "bloom_extract.frag",
   "fireBillboardFragmentShader": "fire_billboard.frag",
   "fireBillboardVertexShader": "fire_billboard.vert",
   "fireTexture": "pngtree-realistic-3d-fire-flame-effect-for-designs-png-image_13631567.png",
@@ -12,9 +15,13 @@
   "projectRoot": ".",
   "projectileFragmentShader": "projectile.frag",
   "projectileVertexShader": "projectile.vert",
+  "screenQuadVertexShader": "screen_quad.vert",
   "shaderRoot": "shaders/glsl",
-  "shadowFragmentShader": "point_shadow_depth.frag",
-  "shadowVertexShader": "point_shadow_depth.vert",
+  "shadowFragmentShader": "shadow_depth.frag",
+  "shadowVertexShader": "shadow_depth.vert",
   "skyHDR": "hdr/hdr_1/cloudy.hdr",
-  "smokeBillboardFragmentShader": "smoke_billboard.frag"
+  "smokeBillboardFragmentShader": "smoke_billboard.frag",
+  "ssaoBlurFragmentShader": "ssao_blur.frag",
+  "ssaoFragmentShader": "ssao.frag",
+  "volumetricFogFragmentShader": "volumetric_fog.frag"
 }

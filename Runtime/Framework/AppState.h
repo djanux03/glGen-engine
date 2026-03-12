@@ -25,6 +25,7 @@
 #include "EventBus.h"
 #include "FireFX.h"
 #include "HDRSky.h"
+#include "Core/FrameProfiler.h"
 #include "NetworkSubsystem.h"
 #include "PostProcessor.h"
 #include "ProjectConfig.h"
@@ -35,6 +36,8 @@
 #include "Scripting/ScriptSystem.h"
 #include "SubsystemManager.h"
 #include "SunFX.h"
+#include "Terrain/TerrainMaterialSettings.h"
+#include "Terrain/TerrainSystem.h"
 
 #include <memory>
 #include <string>
@@ -91,14 +94,18 @@ struct RenderSettings {
   float shadowFarPlane = 250.0f;
   float exposure = 1.0f;
   float gamma = 2.2f;
+  float fogDensity = 0.0025f;
+  glm::vec3 fogColor = glm::vec3(0.55f, 0.65f, 0.78f);
 
   bool wireframe = false;
   bool disableShadows = false;
-  bool disableClouds = false;
+  bool disableClouds = true; // Use lightweight sky-clouds by default
   bool disableHDR = true; // Off by default
   bool freezeTime = false;
   float frozenTime = 0.0f;
   bool frustumCulling = true;
+
+  glm::mat4 lightSpaceMatrix = glm::mat4(1.0f);
 };
 
 struct InputSettings {
@@ -198,6 +205,9 @@ struct AppState {
   // Terrain
   int terrainSize = 10;
   float terrainSpacing = 1.0f;
+  TerrainSettings terrainSettings;
+  TerrainSystem terrainSystem;
+  TerrainMaterialSettings terrainMaterial;
 
   // Fire
   bool hasFire = false;
@@ -229,6 +239,14 @@ struct AppState {
   CoreAppLayer *coreAppLayer = nullptr;
   SubsystemManager subsystems;
   AssetManager assets;
+  FrameProfiler profiler;
+  float gpuFrameMs = 0.0f;
+  float gpuShadowMs = 0.0f;
+  float gpuMainMs = 0.0f;
+  int glProgramBinds = 0;
+  int glTextureBinds = 0;
+  int glVaoBinds = 0;
+  int glStateChanges = 0;
 
   // Hot reload
   std::vector<std::string> hotReloadMessages;

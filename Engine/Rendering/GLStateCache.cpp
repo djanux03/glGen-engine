@@ -10,6 +10,7 @@ void GLStateCache::useProgram(GLuint program) {
     return;
   glUseProgram(program);
   mProgram = program;
+  ++mCounters.programBinds;
 }
 
 void GLStateCache::bindTexture2D(GLuint unit, GLuint tex) {
@@ -20,6 +21,7 @@ void GLStateCache::bindTexture2D(GLuint unit, GLuint tex) {
   glActiveTexture(GL_TEXTURE0 + unit);
   glBindTexture(GL_TEXTURE_2D, tex);
   mTex2D[unit] = tex;
+  ++mCounters.textureBinds;
 }
 
 void GLStateCache::bindVertexArray(GLuint vao) {
@@ -27,6 +29,7 @@ void GLStateCache::bindVertexArray(GLuint vao) {
     return;
   glBindVertexArray(vao);
   mVAO = vao;
+  ++mCounters.vaoBinds;
 }
 
 void GLStateCache::setBlend(bool enabled) {
@@ -37,6 +40,7 @@ void GLStateCache::setBlend(bool enabled) {
   else
     glDisable(GL_BLEND);
   mBlendEnabled = enabled;
+  ++mCounters.stateChanges;
 }
 
 void GLStateCache::setBlendFunc(GLenum src, GLenum dst) {
@@ -45,6 +49,7 @@ void GLStateCache::setBlendFunc(GLenum src, GLenum dst) {
   glBlendFunc(src, dst);
   mBlendSrc = src;
   mBlendDst = dst;
+  ++mCounters.stateChanges;
 }
 
 void GLStateCache::setDepthMask(bool enabled) {
@@ -52,6 +57,7 @@ void GLStateCache::setDepthMask(bool enabled) {
     return;
   glDepthMask(enabled ? GL_TRUE : GL_FALSE);
   mDepthMask = enabled;
+  ++mCounters.stateChanges;
 }
 
 void GLStateCache::setCullFace(GLenum mode) {
@@ -59,6 +65,7 @@ void GLStateCache::setCullFace(GLenum mode) {
     return;
   glCullFace(mode);
   mCullFace = mode;
+  ++mCounters.stateChanges;
 }
 
 void GLStateCache::setPolygonMode(GLenum mode) {
@@ -66,5 +73,7 @@ void GLStateCache::setPolygonMode(GLenum mode) {
     return;
   glPolygonMode(GL_FRONT_AND_BACK, mode);
   mPolygonMode = mode;
+  ++mCounters.stateChanges;
 }
 
+void GLStateCache::resetCounters() { mCounters = {}; }
