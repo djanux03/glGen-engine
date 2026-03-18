@@ -182,6 +182,10 @@ void Shader::setVec4(const std::string &name, const glm::vec4 &v) {
   glUniform4f(loc(name), v.x, v.y, v.z, v.w);
 }
 
+void Shader::setVec2(const std::string &name, const glm::vec2 &v) {
+  glUniform2f(loc(name), v.x, v.y);
+}
+
 void Shader::setVec3(const char *name, const glm::vec3 &v) {
   glUniform3fv(loc(name), 1, glm::value_ptr(v));
 }

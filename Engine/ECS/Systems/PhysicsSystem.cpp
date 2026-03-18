@@ -137,6 +137,7 @@ void ::PhysicsSystem::init() {
   mPhysicsSystem->Init(1024, 0, 1024, 1024, *mBroadPhaseLayerInterface,
                        *mObjectVsBroadphaseLayerFilter,
                        *mObjectVsObjectLayerFilter);
+  mPhysicsSystem->SetGravity(JPH::Vec3(0.0f, -9.8f, 0.0f));
 
   mDebugCube = PrimitiveMeshGenerator::createCube();
   mDebugSphere = PrimitiveMeshGenerator::createSphere(16, 16);
@@ -325,16 +326,21 @@ void ::PhysicsSystem::syncTransforms(Registry &registry) {
     if (bodyInterface.IsActive(id)) {
       JPH::RVec3 position = bodyInterface.GetCenterOfMassPosition(id);
       JPH::Quat rotation = bodyInterface.GetRotation(id);
+      JPH::Vec3 velocity = bodyInterface.GetLinearVelocity(id);
 
       auto &transform = registry.get<TransformComponent>(entity);
       transform.position =
           glm::vec3(position.GetX(), position.GetY(), position.GetZ());
 
-      glm::quat q(rotation.GetW(), rotation.GetX(), rotation.GetY(),
-                  rotation.GetZ());
-      glm::vec3 euler = glm::eulerAngles(q);
-      transform.rotation = glm::degrees(euler);
+      if (!rigidBody.lockRotation) {
+        glm::quat q(rotation.GetW(), rotation.GetX(), rotation.GetY(),
+                    rotation.GetZ());
+        glm::vec3 euler = glm::eulerAngles(q);
+        transform.rotation = glm::degrees(euler);
+      }
 
+      rigidBody.linearVelocity =
+          glm::vec3(velocity.GetX(), velocity.GetY(), velocity.GetZ());
       rigidBody.lastPosition = transform.position;
       rigidBody.lastRotation = transform.rotation;
     }
@@ -424,38 +430,75 @@ void ::PhysicsSystem::drawDebugColliders(Registry &reg, const glm::mat4 &view,
 }
 
 auto ::PhysicsSystem::raycast(glm::vec3 origin, glm::vec3 direction,
-                              float maxDistance) -> PhysicsRaycastResult {
+                              float maxDistance,
+                              uint32_t ignoreEntityId)
+    -> PhysicsRaycastResult {
   PhysicsRaycastResult result;
 
-  JPH::RVec3 jphOrigin(origin.x, origin.y, origin.z);
-  JPH::Vec3 jphDirection(direction.x * maxDistance, direction.y * maxDistance,
-                         direction.z * maxDistance);
-  JPH::RRayCast ray(jphOrigin, jphDirection);
+  glm::vec3 dir = direction;
+  if (glm::length(dir) < 1e-6f)
+    return result;
+  dir = glm::normalize(dir);
 
-  JPH::RayCastResult hit;
-  // Use default broad/object layer filters (accept everything)
-  bool hasHit = mPhysicsSystem->GetNarrowPhaseQuery().CastRay(ray, hit);
+  float remaining = maxDistance;
+  float traveled = 0.0f;
+  const float skipEps = 0.05f;
 
-  if (hasHit) {
-    result.hit = true;
-    result.distance = hit.mFraction * maxDistance;
+  for (int attempt = 0; attempt < 4 && remaining > 0.0f; ++attempt) {
+    JPH::RVec3 jphOrigin(origin.x, origin.y, origin.z);
+    JPH::Vec3 jphDirection(dir.x * remaining, dir.y * remaining,
+                           dir.z * remaining);
+    JPH::RRayCast ray(jphOrigin, jphDirection);
 
+    JPH::RayCastResult hit;
+    bool hasHit = mPhysicsSystem->GetNarrowPhaseQuery().CastRay(ray, hit);
+    if (!hasHit)
+      break;
+
+    const float hitDist = hit.mFraction * remaining;
     JPH::RVec3 hitPos = jphOrigin + hit.mFraction * jphDirection;
-    result.position = glm::vec3(hitPos.GetX(), hitPos.GetY(), hitPos.GetZ());
 
-    auto &bodyInterface = mPhysicsSystem->GetBodyInterface();
-    JPH::BodyLockRead lock(mPhysicsSystem->GetBodyLockInterface(), hit.mBodyID);
-    if (lock.Succeeded()) {
-      const JPH::Body &hitBody = lock.GetBody();
-      result.entityId = static_cast<uint32_t>(hitBody.GetUserData());
-
-      // Try to get normal
-      JPH::Vec3 normal = hitBody.GetShape()->GetSurfaceNormal(
-          hit.mSubShapeID2, hitPos - hitBody.GetPosition());
-      normal = hitBody.GetRotation() * normal;
-      result.normal = glm::vec3(normal.GetX(), normal.GetY(), normal.GetZ());
+    uint32_t hitEntity = 0;
+    glm::vec3 hitNormal(0.0f);
+    {
+      JPH::BodyLockRead lock(mPhysicsSystem->GetBodyLockInterface(),
+                             hit.mBodyID);
+      if (lock.Succeeded()) {
+        const JPH::Body &hitBody = lock.GetBody();
+        hitEntity = static_cast<uint32_t>(hitBody.GetUserData());
+        JPH::Vec3 normal = hitBody.GetShape()->GetSurfaceNormal(
+            hit.mSubShapeID2, hitPos - hitBody.GetPosition());
+        normal = hitBody.GetRotation() * normal;
+        hitNormal = glm::vec3(normal.GetX(), normal.GetY(), normal.GetZ());
+      }
     }
+
+    if (ignoreEntityId != 0 && hitEntity == ignoreEntityId) {
+      traveled += hitDist + skipEps;
+      remaining = maxDistance - traveled;
+      origin += dir * (hitDist + skipEps);
+      continue;
+    }
+
+    result.hit = true;
+    result.distance = traveled + hitDist;
+    result.position = glm::vec3(hitPos.GetX(), hitPos.GetY(), hitPos.GetZ());
+    result.normal = hitNormal;
+    result.entityId = hitEntity;
+    break;
   }
 
   return result;
+}
+
+void ::PhysicsSystem::removeBody(uint32_t bodyId) {
+  if (!mPhysicsSystem || bodyId == 0xFFFFFFFF)
+    return;
+
+  auto &bodyInterface = mPhysicsSystem->GetBodyInterface();
+  JPH::BodyID id(bodyId);
+  if (bodyInterface.IsAdded(id)) {
+    bodyInterface.RemoveBody(id);
+  }
+  bodyInterface.DestroyBody(id);
 }

@@ -24,6 +24,10 @@ public:
 	static bool buttonChanged(int button);
 	static bool buttonWentUp(int button);
 	static bool buttonWentDown(int button);
+	static void resetDeltas();
+	static void resetPosition(double x, double y);
+	static void setDeltas(double dx, double dy);
+	static void setManualMode(bool enabled);
 
 private:
 	static double x;

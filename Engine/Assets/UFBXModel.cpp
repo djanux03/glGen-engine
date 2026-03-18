@@ -320,7 +320,7 @@ void UFBXModel::draw(Shader &shader, const glm::vec3 &pos, const glm::vec3 &rot,
   glm::mat4 modelMatrix = buildTRS(pos, rot, scale);
   shader.setMat4("model", modelMatrix);
 
-  for (const auto &sm : mSubmeshes) {
+  for (auto &sm : mSubmeshes) {
     if (sm.vao == 0)
       continue;
     if (materialOverride) {
@@ -339,7 +339,7 @@ void UFBXModel::drawDepth(Shader &shadowShader, const glm::vec3 &pos,
   glm::mat4 modelMatrix = buildTRS(pos, rot, scale);
   shadowShader.setMat4("model", modelMatrix);
 
-  for (const auto &sm : mSubmeshes) {
+  for (auto &sm : mSubmeshes) {
     if (sm.vao == 0 || sm.indexCount <= 0)
       continue;
     GLStateCache::instance().bindVertexArray(sm.vao);
@@ -350,44 +350,39 @@ void UFBXModel::drawDepth(Shader &shadowShader, const glm::vec3 &pos,
 
 void UFBXModel::drawInstanced(Shader &shader, unsigned int instanceVBO,
                               int instanceCount) {
-  for (const auto &sm : mSubmeshes) {
+  for (auto &sm : mSubmeshes) {
     if (sm.vao == 0)
       continue;
 
     sm.material.apply(shader);
     GLStateCache::instance().bindVertexArray(sm.vao);
 
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    std::size_t vec4Size = sizeof(glm::vec4);
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size, (void *)0);
-    glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                          (void *)(1 * vec4Size));
-    glEnableVertexAttribArray(5);
-    glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                          (void *)(2 * vec4Size));
-    glEnableVertexAttribArray(6);
-    glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                          (void *)(3 * vec4Size));
+    if (!sm.instancingReady || sm.instancedVBO != instanceVBO) {
+      glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+      std::size_t vec4Size = sizeof(glm::vec4);
+      glEnableVertexAttribArray(3);
+      glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
+                            (void *)0);
+      glEnableVertexAttribArray(4);
+      glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
+                            (void *)(1 * vec4Size));
+      glEnableVertexAttribArray(5);
+      glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
+                            (void *)(2 * vec4Size));
+      glEnableVertexAttribArray(6);
+      glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
+                            (void *)(3 * vec4Size));
 
-    glVertexAttribDivisor(3, 1);
-    glVertexAttribDivisor(4, 1);
-    glVertexAttribDivisor(5, 1);
-    glVertexAttribDivisor(6, 1);
+      glVertexAttribDivisor(3, 1);
+      glVertexAttribDivisor(4, 1);
+      glVertexAttribDivisor(5, 1);
+      glVertexAttribDivisor(6, 1);
+      sm.instancedVBO = instanceVBO;
+      sm.instancingReady = true;
+    }
 
     glDrawElementsInstanced(GL_TRIANGLES, sm.indexCount, GL_UNSIGNED_INT, 0,
                             instanceCount);
-
-    glVertexAttribDivisor(3, 0);
-    glVertexAttribDivisor(4, 0);
-    glVertexAttribDivisor(5, 0);
-    glVertexAttribDivisor(6, 0);
-
-    glDisableVertexAttribArray(3);
-    glDisableVertexAttribArray(4);
-    glDisableVertexAttribArray(5);
-    glDisableVertexAttribArray(6);
   }
   GLStateCache::instance().bindVertexArray(0);
 }
@@ -395,43 +390,38 @@ void UFBXModel::drawInstanced(Shader &shader, unsigned int instanceVBO,
 void UFBXModel::drawDepthInstanced(Shader &shadowShader,
                                    unsigned int instanceVBO,
                                    int instanceCount) {
-  for (const auto &sm : mSubmeshes) {
+  for (auto &sm : mSubmeshes) {
     if (sm.vao == 0 || sm.indexCount <= 0)
       continue;
 
     GLStateCache::instance().bindVertexArray(sm.vao);
 
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    std::size_t vec4Size = sizeof(glm::vec4);
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size, (void *)0);
-    glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                          (void *)(1 * vec4Size));
-    glEnableVertexAttribArray(5);
-    glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                          (void *)(2 * vec4Size));
-    glEnableVertexAttribArray(6);
-    glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                          (void *)(3 * vec4Size));
+    if (!sm.instancingReady || sm.instancedVBO != instanceVBO) {
+      glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+      std::size_t vec4Size = sizeof(glm::vec4);
+      glEnableVertexAttribArray(3);
+      glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
+                            (void *)0);
+      glEnableVertexAttribArray(4);
+      glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
+                            (void *)(1 * vec4Size));
+      glEnableVertexAttribArray(5);
+      glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
+                            (void *)(2 * vec4Size));
+      glEnableVertexAttribArray(6);
+      glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
+                            (void *)(3 * vec4Size));
 
-    glVertexAttribDivisor(3, 1);
-    glVertexAttribDivisor(4, 1);
-    glVertexAttribDivisor(5, 1);
-    glVertexAttribDivisor(6, 1);
+      glVertexAttribDivisor(3, 1);
+      glVertexAttribDivisor(4, 1);
+      glVertexAttribDivisor(5, 1);
+      glVertexAttribDivisor(6, 1);
+      sm.instancedVBO = instanceVBO;
+      sm.instancingReady = true;
+    }
 
     glDrawElementsInstanced(GL_TRIANGLES, sm.indexCount, GL_UNSIGNED_INT, 0,
                             instanceCount);
-
-    glVertexAttribDivisor(3, 0);
-    glVertexAttribDivisor(4, 0);
-    glVertexAttribDivisor(5, 0);
-    glVertexAttribDivisor(6, 0);
-
-    glDisableVertexAttribArray(3);
-    glDisableVertexAttribArray(4);
-    glDisableVertexAttribArray(5);
-    glDisableVertexAttribArray(6);
   }
   GLStateCache::instance().bindVertexArray(0);
 }

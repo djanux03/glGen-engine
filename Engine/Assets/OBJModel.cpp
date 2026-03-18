@@ -909,38 +909,31 @@ void OBJModel::drawInstanced(Shader &shader, unsigned int instanceVBO,
     sm.material.apply(shader);
     GLStateCache::instance().bindVertexArray(sm.vao);
 
-    // Setup instanced attributes
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                          (void *)0);
-    glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                          (void *)(sizeof(glm::vec4)));
-    glEnableVertexAttribArray(5);
-    glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                          (void *)(2 * sizeof(glm::vec4)));
-    glEnableVertexAttribArray(6);
-    glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                          (void *)(3 * sizeof(glm::vec4)));
+    if (!sm.instancingReady || sm.instancedVBO != instanceVBO) {
+      // Setup instanced attributes once per VAO/VBO pair
+      glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+      glEnableVertexAttribArray(3);
+      glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                            (void *)0);
+      glEnableVertexAttribArray(4);
+      glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                            (void *)(sizeof(glm::vec4)));
+      glEnableVertexAttribArray(5);
+      glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                            (void *)(2 * sizeof(glm::vec4)));
+      glEnableVertexAttribArray(6);
+      glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                            (void *)(3 * sizeof(glm::vec4)));
 
-    glVertexAttribDivisor(3, 1);
-    glVertexAttribDivisor(4, 1);
-    glVertexAttribDivisor(5, 1);
-    glVertexAttribDivisor(6, 1);
+      glVertexAttribDivisor(3, 1);
+      glVertexAttribDivisor(4, 1);
+      glVertexAttribDivisor(5, 1);
+      glVertexAttribDivisor(6, 1);
+      sm.instancedVBO = instanceVBO;
+      sm.instancingReady = true;
+    }
 
     glDrawArraysInstanced(GL_TRIANGLES, 0, sm.vertexCount, instanceCount);
-
-    // Cleanup divisors so regular drawing isn't broken
-    glVertexAttribDivisor(3, 0);
-    glVertexAttribDivisor(4, 0);
-    glVertexAttribDivisor(5, 0);
-    glVertexAttribDivisor(6, 0);
-
-    glDisableVertexAttribArray(3);
-    glDisableVertexAttribArray(4);
-    glDisableVertexAttribArray(5);
-    glDisableVertexAttribArray(6);
   }
 
   GLStateCache::instance().bindVertexArray(0);
@@ -957,38 +950,31 @@ void OBJModel::drawDepthInstanced(Shader &shadowShader,
 
     GLStateCache::instance().bindVertexArray(sm.vao);
 
-    // Setup instanced attributes
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                          (void *)0);
-    glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                          (void *)(sizeof(glm::vec4)));
-    glEnableVertexAttribArray(5);
-    glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                          (void *)(2 * sizeof(glm::vec4)));
-    glEnableVertexAttribArray(6);
-    glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                          (void *)(3 * sizeof(glm::vec4)));
+    if (!sm.instancingReady || sm.instancedVBO != instanceVBO) {
+      // Setup instanced attributes once per VAO/VBO pair
+      glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+      glEnableVertexAttribArray(3);
+      glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                            (void *)0);
+      glEnableVertexAttribArray(4);
+      glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                            (void *)(sizeof(glm::vec4)));
+      glEnableVertexAttribArray(5);
+      glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                            (void *)(2 * sizeof(glm::vec4)));
+      glEnableVertexAttribArray(6);
+      glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                            (void *)(3 * sizeof(glm::vec4)));
 
-    glVertexAttribDivisor(3, 1);
-    glVertexAttribDivisor(4, 1);
-    glVertexAttribDivisor(5, 1);
-    glVertexAttribDivisor(6, 1);
+      glVertexAttribDivisor(3, 1);
+      glVertexAttribDivisor(4, 1);
+      glVertexAttribDivisor(5, 1);
+      glVertexAttribDivisor(6, 1);
+      sm.instancedVBO = instanceVBO;
+      sm.instancingReady = true;
+    }
 
     glDrawArraysInstanced(GL_TRIANGLES, 0, sm.vertexCount, instanceCount);
-
-    // Cleanup divisors
-    glVertexAttribDivisor(3, 0);
-    glVertexAttribDivisor(4, 0);
-    glVertexAttribDivisor(5, 0);
-    glVertexAttribDivisor(6, 0);
-
-    glDisableVertexAttribArray(3);
-    glDisableVertexAttribArray(4);
-    glDisableVertexAttribArray(5);
-    glDisableVertexAttribArray(6);
   }
 
   GLStateCache::instance().bindVertexArray(0);

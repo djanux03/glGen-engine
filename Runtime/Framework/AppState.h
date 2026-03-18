@@ -30,6 +30,7 @@
 #include "PostProcessor.h"
 #include "ProjectConfig.h"
 #include "ProjectileSystem.h"
+#include "FireflySystem.h"
 #include "RenderGraph.h"
 #include "Renderer.h"
 #include "Scene.h"
@@ -92,10 +93,27 @@ struct RenderSettings {
   float mixVal = 0.5f;
   float shadowStrength = 1.5f;
   float shadowFarPlane = 250.0f;
+  int shadowUpdateInterval = 1; // frames between shadow map updates
+  float shadowUpdateDistance = 0.5f; // meters
+  float shadowUpdateAngle = 2.0f; // degrees
   float exposure = 1.0f;
   float gamma = 2.2f;
   float fogDensity = 0.0025f;
   glm::vec3 fogColor = glm::vec3(0.55f, 0.65f, 0.78f);
+  bool toonEnabled = false;
+  int toonSteps = 4;
+  float toonMin = 0.12f;
+  bool shadowBandEnabled = false;
+  int shadowBandSteps = 3;
+  float shadowBandSoftness = 0.2f;
+  bool ambientRampEnabled = false;
+  float ambientRampStrength = 0.6f;
+  glm::vec3 ambientRampTop = glm::vec3(0.70f, 0.82f, 0.95f);
+  glm::vec3 ambientRampBottom = glm::vec3(0.20f, 0.25f, 0.28f);
+  bool rimEnabled = false;
+  float rimPower = 2.0f;
+  float rimStrength = 0.6f;
+  glm::vec3 rimColor = glm::vec3(0.9f, 0.95f, 1.0f);
 
   bool wireframe = false;
   bool disableShadows = false;
@@ -104,6 +122,7 @@ struct RenderSettings {
   bool freezeTime = false;
   float frozenTime = 0.0f;
   bool frustumCulling = true;
+  bool shadowCameraCulling = true;
 
   glm::mat4 lightSpaceMatrix = glm::mat4(1.0f);
 };
@@ -140,8 +159,41 @@ struct SelectionState {
 
 struct SkySettings {
   bool solidSky = true;
+  // Manual sky colors (used when day/night disabled)
   float skyHorizon[3] = {0.70f, 0.80f, 0.95f};
   float skyTop[3] = {0.12f, 0.20f, 0.45f};
+  // Day/Night cycle
+  bool dayNightEnabled = false;
+  float timeOfDay = 0.35f;  // 0..1 (0=midnight, 0.25=sunrise, 0.5=noon)
+  float cycleSpeed = 0.02f; // cycles per minute (set 0 for manual)
+  float dayHorizon[3] = {0.70f, 0.80f, 0.95f};
+  float dayTop[3] = {0.12f, 0.20f, 0.45f};
+  float nightHorizon[3] = {0.02f, 0.03f, 0.08f};
+  float nightTop[3] = {0.01f, 0.01f, 0.04f};
+  glm::vec3 sunDayColor = glm::vec3(1.0f, 0.95f, 0.85f);
+  glm::vec3 sunDuskColor = glm::vec3(1.0f, 0.55f, 0.25f);
+  glm::vec3 sunNightColor = glm::vec3(0.1f, 0.15f, 0.3f);
+  bool minimalSky = true;
+  float skyBackdropBlend = 0.85f;
+  float skyFeatureVisibility = 0.08f;
+  // Fireflies (night-only)
+  bool firefliesEnabled = true;
+  int fireflyCount = 120;
+  float fireflyRadius = 28.0f;
+  float fireflyHeightMin = 0.6f;
+  float fireflyHeightMax = 4.0f;
+  float fireflySize = 6.0f;
+  float fireflyIntensity = 1.2f;
+  glm::vec3 fireflyColor = glm::vec3(0.90f, 1.00f, 0.65f);
+};
+
+struct TerrainBrushSettings {
+  bool enabled = false;
+  int mode = 0;   // 0=Raise,1=Lower,2=Add,3=Remove
+  int target = 0; // 0=Tree,1=Rock,2=Grass
+  float radius = 6.0f;
+  float strength = 2.0f; // units per second
+  int scatterCount = 6;
 };
 
 struct PendingActions {
@@ -149,6 +201,7 @@ struct PendingActions {
   std::vector<std::string> pendingSpawnPaths;
   std::vector<uint32_t> pendingDeleteEntityIds;
   std::vector<std::string> pendingEmptyEntityNames;
+  std::vector<std::string> pendingConsoleCommands;
 
   bool requestSaveConfig = false;
   bool requestLoadConfig = false;
@@ -188,6 +241,7 @@ struct AppState {
   PostProcessor postProcessor;
   EditorUI editor;
   ProjectileSystem projectiles;
+  FireflySystem fireflies;
 
   // ECS Systems
   RenderSystem renderSystem;
@@ -198,9 +252,15 @@ struct AppState {
   NetworkSubsystem networkSystem;
   RenderGraph renderGraph;
   std::vector<std::string> lastRenderPassOrder;
+  std::unique_ptr<Shader> terrainFlatShader;
 
   // Player ID
   uint32_t playerId = 0;
+  int woodCount = 0;
+  uint32_t axeEntity = 0;
+  float lastPlayerYaw = 0.0f;
+  float lastPlayerPitch = 0.0f;
+  bool hasLastPlayerRot = false;
 
   // Terrain
   int terrainSize = 10;
@@ -208,6 +268,7 @@ struct AppState {
   TerrainSettings terrainSettings;
   TerrainSystem terrainSystem;
   TerrainMaterialSettings terrainMaterial;
+  TerrainBrushSettings terrainBrush;
 
   // Fire
   bool hasFire = false;
@@ -218,6 +279,41 @@ struct AppState {
   // UI mode
   bool uiMode = true;
   bool escWasDown = false;
+
+  // Viewmodel (axe)
+  bool axeEnabled = true;
+  glm::vec3 axeOffset = glm::vec3(0.06f, -0.15f, 0.24f);
+  glm::vec3 axeRotation = glm::vec3(117.5f, 84.5f, 2.0f); // degrees
+  glm::vec3 axeScale = glm::vec3(0.66f);
+  std::string axePath = "assets/playerassets/axe.obj";
+  bool usePlayerCameraInEdit = true;
+  // Debug: last mouse deltas + camera rotation
+  float debugMouseDX = 0.0f;
+  float debugMouseDY = 0.0f;
+  float debugYaw = 0.0f;
+  float debugPitch = 0.0f;
+  glm::vec3 debugCamFront = glm::vec3(0.0f, 0.0f, -1.0f);
+  glm::vec3 debugCamUp = glm::vec3(0.0f, 1.0f, 0.0f);
+
+  // Magic wand grab (play mode)
+  uint32_t grabbedEntityId = 0;
+  float grabbedDistance = 3.0f;
+  bool grabbedHadRigidbody = false;
+  int grabbedPrevBodyType = 0;
+  bool grabbedIsTreeInstance = false;
+  std::string grabbedPrefab;
+  uint32_t grabbedInstanceIndex = 0;
+  glm::mat4 grabbedBaseMatrix = glm::mat4(1.0f);
+  glm::vec3 grabbedOffset = glm::vec3(0.0f);
+  glm::vec3 grabbedReleaseVelocity = glm::vec3(0.0f);
+  bool grabbedReleased = false;
+  // Debug: last grab raycast
+  uint32_t debugGrabHitId = 0;
+  float debugGrabHitDist = 0.0f;
+  std::string debugGrabHitName;
+  std::string debugGrabPrefab;
+  int debugGrabInstance = -1;
+  bool debugGrabMoved = false;
 
   // Play state (controls Lua script execution)
   enum class PlayState { Stopped, Playing, Paused };
@@ -252,4 +348,5 @@ struct AppState {
   std::vector<std::string> hotReloadMessages;
   bool hotReloadEnabled = true;
   bool autoProcessImportQueue = false;
+  bool iconFontLoaded = false;
 };

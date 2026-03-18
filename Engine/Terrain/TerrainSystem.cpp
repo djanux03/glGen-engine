@@ -6,10 +6,12 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <future>
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <glm/gtx/matrix_decompose.hpp>
 
 // ═══════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -23,6 +25,36 @@ static constexpr int SPHERE_RINGS = 4;
 static constexpr int SPHERE_SECTORS = 6;
 static constexpr int ROCK_SEGMENTS = 6;
 static constexpr int WATER_RESOLUTION = 16;
+
+static void applyVegetationCullProfile(const std::string &prefabName,
+                                       InstancedMeshComponent &inst) {
+  inst.maxDrawDistance = 220.0f;
+  inst.shadowMaxDrawDistance = 140.0f;
+  inst.instanceCullRadius = 6.0f;
+
+  if (prefabName == "prefab_pine" || prefabName == "prefab_oak" ||
+      prefabName == "prefab_birch" || prefabName == "prefab_deadtree") {
+    inst.maxDrawDistance = 320.0f;
+    inst.shadowMaxDrawDistance = 200.0f;
+    inst.instanceCullRadius = 9.0f;
+  } else if (prefabName == "prefab_rock") {
+    inst.maxDrawDistance = 180.0f;
+    inst.shadowMaxDrawDistance = 110.0f;
+    inst.instanceCullRadius = 4.0f;
+  } else if (prefabName == "prefab_grass" || prefabName == "prefab_flower") {
+    inst.maxDrawDistance = 90.0f;
+    inst.shadowMaxDrawDistance = 45.0f;
+    inst.instanceCullRadius = 1.4f;
+  } else if (prefabName == "prefab_bush") {
+    inst.maxDrawDistance = 140.0f;
+    inst.shadowMaxDrawDistance = 85.0f;
+    inst.instanceCullRadius = 2.8f;
+  } else if (prefabName == "prefab_cactus") {
+    inst.maxDrawDistance = 240.0f;
+    inst.shadowMaxDrawDistance = 150.0f;
+    inst.instanceCullRadius = 5.5f;
+  }
+}
 
 // Generate a tapered cylinder (trunk shapes)
 static void addCylinder(std::vector<OBJModel::VertexData> &verts,
@@ -211,6 +243,11 @@ void TerrainSystem::init(const TerrainSettings &settings, Scene &scene,
 }
 
 void TerrainSystem::applySettings(const TerrainSettings &settings) {
+  if (settings.chunkSize != mSettings.chunkSize ||
+      std::abs(settings.chunkWorldSize - mSettings.chunkWorldSize) > 0.001f) {
+    mHeightOffsets.clear();
+    mPaintedInstances.clear();
+  }
   mSettings = settings;
 }
 
@@ -264,6 +301,9 @@ void TerrainSystem::shutdown() {
 // ═══════════════════════════════════════════════════════════════
 
 BiomeType TerrainSystem::getBiome(float worldX, float worldZ) const {
+  if (mSettings.singleBiomeOnly)
+    return BiomeType::Plains;
+
   float bs = mSettings.biomeScale;
   float temp = mTempNoise.fbm(worldX * bs, worldZ * bs, 4, 2.0f, 0.5f);
   float moist = mMoistNoise.fbm(worldX * bs, worldZ * bs, 4, 2.0f, 0.5f);
@@ -387,6 +427,44 @@ float TerrainSystem::sampleHeight(float worldX, float worldZ) const {
       mDetailNoise.noise(worldX * freq * 16.0f, worldZ * freq * 16.0f) * 0.02f;
   h += erosion + micro + fine;
 
+  // Apply sculpted height offsets if any exist for this chunk.
+  if (!mHeightOffsets.empty()) {
+    const float ws = mSettings.chunkWorldSize;
+    if (ws > 0.0f) {
+      const int cx = (int)std::floor(worldX / ws);
+      const int cz = (int)std::floor(worldZ / ws);
+      auto it = mHeightOffsets.find({cx, cz});
+      if (it != mHeightOffsets.end()) {
+        const auto &data = it->second;
+        const uint32_t sc = data.sampleCount;
+        if (sc >= 2 && data.offsets.size() == (size_t)sc * sc) {
+          const float originX = cx * ws;
+          const float originZ = cz * ws;
+          const float gridSize = (float)(sc - 1);
+          const float fx = (worldX - originX) / ws * gridSize;
+          const float fz = (worldZ - originZ) / ws * gridSize;
+          const int ix = std::clamp((int)std::floor(fx), 0, (int)sc - 1);
+          const int iz = std::clamp((int)std::floor(fz), 0, (int)sc - 1);
+          const int ix1 = std::min(ix + 1, (int)sc - 1);
+          const int iz1 = std::min(iz + 1, (int)sc - 1);
+          const float tx = fx - (float)ix;
+          const float tz = fz - (float)iz;
+          const size_t i00 = (size_t)iz * sc + (size_t)ix;
+          const size_t i10 = (size_t)iz * sc + (size_t)ix1;
+          const size_t i01 = (size_t)iz1 * sc + (size_t)ix;
+          const size_t i11 = (size_t)iz1 * sc + (size_t)ix1;
+          const float h00 = data.offsets[i00];
+          const float h10 = data.offsets[i10];
+          const float h01 = data.offsets[i01];
+          const float h11 = data.offsets[i11];
+          const float h0 = h00 + (h10 - h00) * tx;
+          const float h1 = h01 + (h11 - h01) * tx;
+          h += h0 + (h1 - h0) * tz;
+        }
+      }
+    }
+  }
+
   return h;
 }
 
@@ -479,6 +557,220 @@ glm::vec2 TerrainSystem::clampXZToLoadedRegion(float worldX, float worldZ,
   return {bestX, bestZ};
 }
 
+bool TerrainSystem::applyHeightBrush(const glm::vec3 &center, float radius,
+                                     float delta) {
+  if (!mSettings.enabled || radius <= 0.0f || delta == 0.0f)
+    return false;
+
+  const float ws = mSettings.chunkWorldSize;
+  if (ws <= 0.0f)
+    return false;
+  const int size = mSettings.chunkSize;
+  const float step = ws / (float)size;
+  const uint32_t sc = (uint32_t)(size + 1);
+
+  const int minCx = (int)std::floor((center.x - radius) / ws);
+  const int maxCx = (int)std::floor((center.x + radius) / ws);
+  const int minCz = (int)std::floor((center.z - radius) / ws);
+  const int maxCz = (int)std::floor((center.z + radius) / ws);
+
+  bool changed = false;
+  for (int cz = minCz; cz <= maxCz; ++cz) {
+    for (int cx = minCx; cx <= maxCx; ++cx) {
+      HeightOffsetData &data = mHeightOffsets[{cx, cz}];
+      if (data.sampleCount != sc) {
+        data.sampleCount = sc;
+        data.offsets.assign((size_t)sc * sc, 0.0f);
+      }
+      const float ox = cx * ws;
+      const float oz = cz * ws;
+      const int minX = std::clamp(
+          (int)std::floor((center.x - radius - ox) / step), 0, size);
+      const int maxX = std::clamp(
+          (int)std::floor((center.x + radius - ox) / step), 0, size);
+      const int minZ = std::clamp(
+          (int)std::floor((center.z - radius - oz) / step), 0, size);
+      const int maxZ = std::clamp(
+          (int)std::floor((center.z + radius - oz) / step), 0, size);
+
+      for (int z = minZ; z <= maxZ; ++z) {
+        for (int x = minX; x <= maxX; ++x) {
+          float wx = ox + x * step;
+          float wz = oz + z * step;
+          float dx = wx - center.x;
+          float dz = wz - center.z;
+          float dist = std::sqrt(dx * dx + dz * dz);
+          if (dist > radius)
+            continue;
+          float falloff = 1.0f - (dist / radius);
+          data.offsets[(size_t)z * sc + x] += delta * falloff;
+          changed = true;
+        }
+      }
+      if (changed && mChunks.find({cx, cz}) != mChunks.end())
+        rebuildChunkTerrain(cx, cz);
+    }
+  }
+
+  return changed;
+}
+
+bool TerrainSystem::applyVegetationBrush(const glm::vec3 &center, float radius,
+                                         const std::string &prefabName,
+                                         bool add, int count) {
+  if (!mSettings.enabled || radius <= 0.0f || prefabName.empty())
+    return false;
+  if (!mScene)
+    return false;
+  auto itPrefab = mPrefabs.find(prefabName);
+  if (itPrefab == mPrefabs.end())
+    return false;
+
+  const float ws = mSettings.chunkWorldSize;
+  if (ws <= 0.0f)
+    return false;
+
+  const int minCx = (int)std::floor((center.x - radius) / ws);
+  const int maxCx = (int)std::floor((center.x + radius) / ws);
+  const int minCz = (int)std::floor((center.z - radius) / ws);
+  const int maxCz = (int)std::floor((center.z + radius) / ws);
+
+  bool changed = false;
+  auto &reg = mScene->registry();
+
+  if (!add) {
+    for (int cz = minCz; cz <= maxCz; ++cz) {
+      for (int cx = minCx; cx <= maxCx; ++cx) {
+        auto itChunk = mChunks.find({cx, cz});
+        if (itChunk == mChunks.end())
+          continue;
+        ChunkData &cd = itChunk->second;
+        auto itM = cd.prefabInstanceMatrices.find(prefabName);
+        if (itM == cd.prefabInstanceMatrices.end())
+          continue;
+        auto &mats = itM->second;
+        auto &ents = cd.prefabInstanceEntities[prefabName];
+
+        std::vector<glm::mat4> newMats;
+        std::vector<uint32_t> newEnts;
+        newMats.reserve(mats.size());
+        newEnts.reserve(ents.size());
+
+        for (size_t i = 0; i < mats.size(); ++i) {
+          glm::vec3 pos = glm::vec3(mats[i][3]);
+          float dx = pos.x - center.x;
+          float dz = pos.z - center.z;
+          float dist = std::sqrt(dx * dx + dz * dz);
+          bool remove = dist <= radius;
+          if (remove) {
+            if (i < ents.size()) {
+              uint32_t eid = ents[i];
+              if (eid != 0) {
+                if (mPhysicsSystem && reg.has<RigidbodyComponent>(eid)) {
+                  auto &rb = reg.get<RigidbodyComponent>(eid);
+                  mPhysicsSystem->removeBody(rb.bodyID);
+                }
+                mScene->deleteEntity(eid);
+              }
+            }
+            if (prefabName == "prefab_pine") {
+              if (cd.treeCount > 0)
+                cd.treeCount--;
+              if (mStats.totalTreeEntities > 0)
+                mStats.totalTreeEntities--;
+            } else if (prefabName == "prefab_rock") {
+              if (cd.rockCount > 0)
+                cd.rockCount--;
+              if (mStats.totalRockEntities > 0)
+                mStats.totalRockEntities--;
+            }
+            changed = true;
+          } else {
+            newMats.push_back(mats[i]);
+            if (i < ents.size())
+              newEnts.push_back(ents[i]);
+          }
+        }
+
+        mats.swap(newMats);
+        ents.swap(newEnts);
+        cd.prefabInstanceCounts[prefabName] = (int)mats.size();
+        // Update painted cache for this chunk
+        auto itPaint = mPaintedInstances.find({cx, cz});
+        if (itPaint != mPaintedInstances.end()) {
+          auto itPM = itPaint->second.prefabMatrices.find(prefabName);
+          if (itPM != itPaint->second.prefabMatrices.end()) {
+            std::vector<glm::mat4> newPainted;
+            newPainted.reserve(itPM->second.size());
+            for (const auto &pm : itPM->second) {
+              glm::vec3 pos = glm::vec3(pm[3]);
+              float dx = pos.x - center.x;
+              float dz = pos.z - center.z;
+              float dist = std::sqrt(dx * dx + dz * dz);
+              if (dist > radius)
+                newPainted.push_back(pm);
+              else
+                changed = true;
+            }
+            itPM->second.swap(newPainted);
+            if (itPM->second.empty())
+              itPaint->second.prefabMatrices.erase(itPM);
+            if (itPaint->second.prefabMatrices.empty())
+              mPaintedInstances.erase(itPaint);
+          }
+        }
+      }
+    }
+  } else {
+    const int spawnCount = std::max(1, count);
+    for (int i = 0; i < spawnCount; ++i) {
+      float a = ((float)std::rand() / (float)RAND_MAX) * TWO_PI;
+      float r = std::sqrt((float)std::rand() / (float)RAND_MAX) * radius;
+      float wx = center.x + std::cos(a) * r;
+      float wz = center.z + std::sin(a) * r;
+      if (!isChunkLoadedAt(wx, wz))
+        continue;
+      if (isUnderwater(wx, wz))
+        continue;
+      int cx = (int)std::floor(wx / ws);
+      int cz = (int)std::floor(wz / ws);
+      auto itChunk = mChunks.find({cx, cz});
+      if (itChunk == mChunks.end())
+        continue;
+      ChunkData &cd = itChunk->second;
+      float wy = getHeightAt(wx, wz);
+      glm::vec3 pos(wx, wy, wz);
+      glm::vec3 scale(1.0f);
+      glm::vec3 rot(0.0f);
+      size_t idx = addPrefabInstance(prefabName, pos, scale, rot, cd);
+      if (idx == std::numeric_limits<size_t>::max())
+        continue;
+      auto itInst =
+          reg.has<InstancedMeshComponent>(itPrefab->second.entity)
+              ? &reg.get<InstancedMeshComponent>(itPrefab->second.entity)
+              : nullptr;
+      if (itInst && idx < itInst->instanceTransforms.size()) {
+        mPaintedInstances[{cx, cz}]
+            .prefabMatrices[prefabName]
+            .push_back(itInst->instanceTransforms[idx]);
+      }
+      if (prefabName == "prefab_pine") {
+        registerTreeInstance(prefabName, idx, pos, scale, cx, cz, &cd);
+        cd.treeCount++;
+        mStats.totalTreeEntities++;
+      } else if (prefabName == "prefab_rock") {
+        cd.rockCount++;
+        mStats.totalRockEntities++;
+      }
+      changed = true;
+    }
+  }
+
+  if (changed)
+    rebuildPrefabInstances(prefabName);
+  return changed;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // CHUNK MANAGEMENT
 // ═══════════════════════════════════════════════════════════════
@@ -538,7 +830,18 @@ void TerrainSystem::update(const glm::vec3 &cameraPos) {
   for (auto &coord : desired) {
     if (mChunks.find(coord) == mChunks.end() &&
         mInFlight.find(coord) == mInFlight.end())
-      loadChunkAsync(coord.x, coord.z);
+      loadChunkAsync(coord.x, coord.z,
+                     computeChunkLod(cx, cz, coord.x, coord.z));
+  }
+
+  // Existing loaded chunks can move between LOD bands as the camera crosses
+  // chunk boundaries. Rebuild render meshes only; collision stays full-res.
+  for (auto &[coord, data] : mChunks) {
+    const int desiredLod = computeChunkLod(cx, cz, coord.x, coord.z);
+    if (desiredLod == data.terrainLod)
+      continue;
+    data.terrainLod = desiredLod;
+    rebuildChunkTerrain(coord.x, coord.z, false);
   }
 }
 
@@ -548,7 +851,13 @@ void TerrainSystem::update(const glm::vec3 &cameraPos) {
 
 std::vector<OBJModel::VertexData> TerrainSystem::generateChunkMesh(int cx,
                                                                    int cz) {
-  int size = mSettings.chunkSize;
+  return generateChunkMeshLod(cx, cz, 0);
+}
+
+std::vector<OBJModel::VertexData> TerrainSystem::generateChunkMeshLod(int cx,
+                                                                      int cz,
+                                                                      int lod) {
+  int size = lodResolution(lod);
   float worldSize = mSettings.chunkWorldSize;
   float step = worldSize / (float)size;
   float originX = cx * worldSize;
@@ -616,6 +925,23 @@ std::vector<OBJModel::VertexData> TerrainSystem::generateChunkMesh(int cx,
   return verts;
 }
 
+int TerrainSystem::computeChunkLod(int cameraChunkX, int cameraChunkZ,
+                                   int chunkX, int chunkZ) const {
+  const int dist = std::max(std::abs(chunkX - cameraChunkX),
+                            std::abs(chunkZ - cameraChunkZ));
+  if (dist <= 1)
+    return 0;
+  if (dist <= 2)
+    return 1;
+  return 2;
+}
+
+int TerrainSystem::lodResolution(int lod) const {
+  const int base = std::max(4, mSettings.chunkSize);
+  const int shift = std::clamp(lod, 0, 2);
+  return std::max(4, base >> shift);
+}
+
 // ═══════════════════════════════════════════════════════════════
 // WATER PLANE GENERATION
 // ═══════════════════════════════════════════════════════════════
@@ -669,6 +995,7 @@ void TerrainSystem::clearPrefabs() {
     }
   }
   mPrefabs.clear();
+  mPrefabInstanceEntities.clear();
 }
 
 void TerrainSystem::addPrefabFromVerts(
@@ -701,6 +1028,7 @@ void TerrainSystem::addPrefabFromVerts(
   inst.useTerrainShading = true;
   inst.visible = true;
   inst.castsShadow = true;
+  applyVegetationCullProfile(name, inst);
 
   PrefabData pd;
   pd.entity = eid;
@@ -709,17 +1037,18 @@ void TerrainSystem::addPrefabFromVerts(
   mPrefabs[name] = std::move(pd);
 }
 
-void TerrainSystem::addPrefabInstance(const std::string &name,
-                                      const glm::vec3 &pos,
-                                      const glm::vec3 &scale,
-                                      const glm::vec3 &rot, ChunkData &chunk) {
+size_t TerrainSystem::addPrefabInstance(const std::string &name,
+                                        const glm::vec3 &pos,
+                                        const glm::vec3 &scale,
+                                        const glm::vec3 &rot,
+                                        ChunkData &chunk) {
   auto it = mPrefabs.find(name);
   if (it == mPrefabs.end())
-    return;
+    return std::numeric_limits<size_t>::max();
 
   auto &reg = mScene->registry();
   if (!reg.has<InstancedMeshComponent>(it->second.entity))
-    return;
+    return std::numeric_limits<size_t>::max();
 
   auto &inst = reg.get<InstancedMeshComponent>(it->second.entity);
   const PrefabData &pd = it->second;
@@ -743,6 +1072,325 @@ void TerrainSystem::addPrefabInstance(const std::string &name,
   inst.isDirty = true;
 
   chunk.prefabInstanceCounts[name]++;
+  chunk.prefabInstanceMatrices[name].push_back(m);
+  return inst.instanceTransforms.size() - 1;
+}
+
+void TerrainSystem::registerTreeInstance(const std::string &prefabName,
+                                         size_t instanceIndex,
+                                         const glm::vec3 &pos,
+                                         const glm::vec3 &scale, int cx,
+                                         int cz, ChunkData *chunk) {
+  if (!mScene)
+    return;
+
+  auto &reg = mScene->registry();
+  EntityId eid = mScene->createEmptyEntity("Tree");
+  reg.emplace<TransientComponent>(eid);
+  reg.emplace<NameComponent>(eid, "Tree");
+
+  auto &tr = reg.get<TransformComponent>(eid);
+  tr.position = pos;
+  tr.rotation = glm::vec3(0.0f);
+  tr.scale = glm::vec3(1.0f);
+
+  auto &rb = reg.emplace<RigidbodyComponent>(eid);
+  rb.type = RigidbodyComponent::Type::Static;
+
+  auto &col = reg.emplace<ColliderComponent>(eid);
+  col.shape = ColliderComponent::Shape::Capsule;
+
+  glm::vec3 bMin(-0.5f), bMax(0.5f);
+  glm::vec3 center(0.0f);
+  glm::vec3 extents(1.0f);
+
+  auto itPrefab = mPrefabs.find(prefabName);
+  if (itPrefab != mPrefabs.end() &&
+      reg.has<InstancedMeshComponent>(itPrefab->second.entity)) {
+    const auto &inst =
+        reg.get<InstancedMeshComponent>(itPrefab->second.entity);
+    bool hasBounds = false;
+    if (inst.type == MeshComponent::AssetType::OBJ && inst.objModel) {
+      hasBounds = inst.objModel->getGlobalBounds(bMin, bMax);
+    } else if (inst.type == MeshComponent::AssetType::FBX && inst.ufbxModel) {
+      hasBounds = inst.ufbxModel->getGlobalBounds(bMin, bMax);
+    }
+    if (hasBounds) {
+      center = (bMin + bMax) * 0.5f;
+      extents = (bMax - bMin);
+    }
+  }
+
+  glm::vec3 finalScale = scale;
+  if (itPrefab != mPrefabs.end()) {
+    finalScale *= itPrefab->second.autoScale;
+  }
+
+  const float height = std::max(0.5f, extents.y * finalScale.y);
+  const float radius =
+      std::max(0.15f, 0.25f * std::max(extents.x * finalScale.x,
+                                       extents.z * finalScale.z));
+  const float cylinderHeight = std::max(0.1f, height - radius * 2.0f);
+  col.dimensions = glm::vec3(radius, cylinderHeight, radius);
+
+  tr.position = pos + glm::vec3(0.0f, center.y * finalScale.y, 0.0f);
+
+  auto &tree = reg.emplace<TreeComponent>(eid);
+  tree.health = 3.0f;
+  tree.instanceIndex = static_cast<uint32_t>(instanceIndex);
+  tree.prefabName = prefabName;
+  tree.chunkX = cx;
+  tree.chunkZ = cz;
+
+  auto &vec = mPrefabInstanceEntities[prefabName];
+  if (vec.size() <= instanceIndex)
+    vec.resize(instanceIndex + 1, 0);
+  vec[instanceIndex] = eid;
+  if (chunk) {
+    chunk->prefabInstanceEntities[prefabName].push_back(eid);
+  }
+}
+
+void TerrainSystem::removeLastPrefabInstances(const std::string &prefabName,
+                                              size_t count) {
+  if (!mScene || count == 0)
+    return;
+
+  auto it = mPrefabInstanceEntities.find(prefabName);
+  if (it == mPrefabInstanceEntities.end())
+    return;
+
+  auto &vec = it->second;
+  auto &reg = mScene->registry();
+  size_t removeCount = std::min(count, vec.size());
+  for (size_t i = 0; i < removeCount; ++i) {
+    uint32_t eid = vec.back();
+    vec.pop_back();
+    if (eid == 0)
+      continue;
+    if (mPhysicsSystem && reg.has<RigidbodyComponent>(eid)) {
+      auto &rb = reg.get<RigidbodyComponent>(eid);
+      mPhysicsSystem->removeBody(rb.bodyID);
+    }
+    mScene->deleteEntity(eid);
+  }
+}
+
+bool TerrainSystem::chopTree(EntityId treeEntity) {
+  if (!mScene || !mScene->registry().has<TreeComponent>(treeEntity))
+    return false;
+
+  auto &reg = mScene->registry();
+  auto &tree = reg.get<TreeComponent>(treeEntity);
+  tree.health -= 1.0f;
+  if (tree.health > 0.0f)
+    return false;
+
+  auto itPrefab = mPrefabs.find(tree.prefabName);
+  if (itPrefab == mPrefabs.end())
+    return false;
+  if (!reg.has<InstancedMeshComponent>(itPrefab->second.entity))
+    return false;
+
+  auto &inst = reg.get<InstancedMeshComponent>(itPrefab->second.entity);
+  auto &map = mPrefabInstanceEntities[tree.prefabName];
+  const size_t idx = tree.instanceIndex;
+  const size_t last = inst.instanceTransforms.empty()
+                          ? 0
+                          : inst.instanceTransforms.size() - 1;
+
+  if (idx < inst.instanceTransforms.size()) {
+    inst.instanceTransforms[idx] = inst.instanceTransforms[last];
+    inst.instanceTransforms.pop_back();
+    inst.isDirty = true;
+  }
+
+  if (idx < map.size() && !map.empty()) {
+    uint32_t swappedEntity = map[last];
+    map[idx] = swappedEntity;
+    map.pop_back();
+    if (swappedEntity != 0 && reg.has<TreeComponent>(swappedEntity)) {
+      reg.get<TreeComponent>(swappedEntity).instanceIndex =
+          static_cast<uint32_t>(idx);
+    }
+  }
+
+  auto itChunk = mChunks.find({tree.chunkX, tree.chunkZ});
+  if (itChunk != mChunks.end()) {
+    auto &cd = itChunk->second;
+    auto itCount = cd.prefabInstanceCounts.find(tree.prefabName);
+    if (itCount != cd.prefabInstanceCounts.end() && itCount->second > 0)
+      itCount->second--;
+    if (cd.treeCount > 0)
+      cd.treeCount--;
+    auto itEnts = cd.prefabInstanceEntities.find(tree.prefabName);
+    auto itMats = cd.prefabInstanceMatrices.find(tree.prefabName);
+    if (itEnts != cd.prefabInstanceEntities.end() &&
+        itMats != cd.prefabInstanceMatrices.end()) {
+      auto &ents = itEnts->second;
+      auto &mats = itMats->second;
+      for (size_t i = 0; i < ents.size(); ++i) {
+        if (ents[i] == treeEntity) {
+          const size_t lastIdx = ents.size() - 1;
+          ents[i] = ents[lastIdx];
+          ents.pop_back();
+          if (i < mats.size() && lastIdx < mats.size()) {
+            mats[i] = mats[lastIdx];
+            mats.pop_back();
+          } else if (!mats.empty()) {
+            mats.pop_back();
+          }
+          break;
+        }
+      }
+    }
+  }
+  if (mStats.totalTreeEntities > 0)
+    mStats.totalTreeEntities--;
+
+  if (mPhysicsSystem && reg.has<RigidbodyComponent>(treeEntity)) {
+    auto &rb = reg.get<RigidbodyComponent>(treeEntity);
+    mPhysicsSystem->removeBody(rb.bodyID);
+  }
+  mScene->deleteEntity(treeEntity);
+  return true;
+}
+
+bool TerrainSystem::movePrefabInstance(const std::string &prefabName,
+                                       size_t instanceIndex,
+                                       const glm::vec3 &delta) {
+  if (!mScene)
+    return false;
+  auto it = mPrefabs.find(prefabName);
+  if (it == mPrefabs.end())
+    return false;
+  auto &reg = mScene->registry();
+  if (!reg.has<InstancedMeshComponent>(it->second.entity))
+    return false;
+  auto &inst = reg.get<InstancedMeshComponent>(it->second.entity);
+  if (instanceIndex >= inst.instanceTransforms.size())
+    return false;
+  inst.instanceTransforms[instanceIndex][3] += glm::vec4(delta, 0.0f);
+  inst.isDirty = true;
+  return true;
+}
+
+bool TerrainSystem::getPrefabInstanceMatrix(const std::string &prefabName,
+                                            size_t instanceIndex,
+                                            glm::mat4 &out) const {
+  auto it = mPrefabs.find(prefabName);
+  if (it == mPrefabs.end())
+    return false;
+  if (!mScene)
+    return false;
+  auto &reg = mScene->registry();
+  if (!reg.has<InstancedMeshComponent>(it->second.entity))
+    return false;
+  auto &inst = reg.get<InstancedMeshComponent>(it->second.entity);
+  if (instanceIndex >= inst.instanceTransforms.size())
+    return false;
+  out = inst.instanceTransforms[instanceIndex];
+  return true;
+}
+
+bool TerrainSystem::setPrefabInstanceMatrix(const std::string &prefabName,
+                                            size_t instanceIndex,
+                                            const glm::mat4 &m) {
+  auto it = mPrefabs.find(prefabName);
+  if (it == mPrefabs.end())
+    return false;
+  if (!mScene)
+    return false;
+  auto &reg = mScene->registry();
+  if (!reg.has<InstancedMeshComponent>(it->second.entity))
+    return false;
+  auto &inst = reg.get<InstancedMeshComponent>(it->second.entity);
+  if (instanceIndex >= inst.instanceTransforms.size())
+    return false;
+  inst.instanceTransforms[instanceIndex] = m;
+  inst.isDirty = true;
+  return true;
+}
+
+bool TerrainSystem::convertTreeToEntity(EntityId treeEntity) {
+  if (!mScene || !mScene->registry().has<TreeComponent>(treeEntity))
+    return false;
+
+  auto &reg = mScene->registry();
+  auto &tree = reg.get<TreeComponent>(treeEntity);
+  auto itPrefab = mPrefabs.find(tree.prefabName);
+  if (itPrefab == mPrefabs.end())
+    return false;
+  if (!reg.has<InstancedMeshComponent>(itPrefab->second.entity))
+    return false;
+
+  auto &inst = reg.get<InstancedMeshComponent>(itPrefab->second.entity);
+  auto &map = mPrefabInstanceEntities[tree.prefabName];
+  const size_t idx = tree.instanceIndex;
+  const size_t last = inst.instanceTransforms.empty()
+                          ? 0
+                          : inst.instanceTransforms.size() - 1;
+  glm::mat4 instM(1.0f);
+  if (idx < inst.instanceTransforms.size())
+    instM = inst.instanceTransforms[idx];
+
+  if (idx < inst.instanceTransforms.size()) {
+    inst.instanceTransforms[idx] = inst.instanceTransforms[last];
+    inst.instanceTransforms.pop_back();
+    inst.isDirty = true;
+  }
+
+  if (idx < map.size() && !map.empty()) {
+    uint32_t swappedEntity = map[last];
+    map[idx] = swappedEntity;
+    map.pop_back();
+    if (swappedEntity != 0 && reg.has<TreeComponent>(swappedEntity)) {
+      reg.get<TreeComponent>(swappedEntity).instanceIndex =
+          static_cast<uint32_t>(idx);
+    }
+  }
+
+  auto itChunk = mChunks.find({tree.chunkX, tree.chunkZ});
+  if (itChunk != mChunks.end()) {
+    auto &cd = itChunk->second;
+    auto itCount = cd.prefabInstanceCounts.find(tree.prefabName);
+    if (itCount != cd.prefabInstanceCounts.end() && itCount->second > 0)
+      itCount->second--;
+    if (cd.treeCount > 0)
+      cd.treeCount--;
+  }
+  if (mStats.totalTreeEntities > 0)
+    mStats.totalTreeEntities--;
+
+  // Update transform from instance matrix so physics matches render.
+  {
+    auto &tr = reg.get<TransformComponent>(treeEntity);
+    glm::vec3 skew;
+    glm::vec4 persp;
+    glm::quat rot;
+    glm::vec3 scale;
+    glm::vec3 translation = glm::vec3(instM[3]);
+    if (glm::decompose(instM, scale, rot, translation, skew, persp)) {
+      tr.position = translation;
+      tr.rotation = glm::degrees(glm::eulerAngles(rot));
+      tr.scale = scale;
+    } else {
+      tr.position = translation;
+    }
+  }
+
+  // Add renderable mesh to the tree entity (un-instanced).
+  if (!reg.has<MeshComponent>(treeEntity)) {
+    if (inst.type == MeshComponent::AssetType::OBJ && inst.objModel) {
+      auto &mc = reg.emplace<MeshComponent>(treeEntity, inst.objModel);
+      mc.assetId = itPrefab->second.assetId;
+    } else if (inst.type == MeshComponent::AssetType::FBX && inst.ufbxModel) {
+      auto &mc = reg.emplace<MeshComponent>(treeEntity, inst.ufbxModel);
+      mc.assetId = itPrefab->second.assetId;
+    }
+  }
+  tree.instanceIndex = std::numeric_limits<uint32_t>::max();
+  return true;
 }
 
 void TerrainSystem::initPrefabs() {
@@ -831,6 +1479,7 @@ void TerrainSystem::initPrefabs() {
       inst.useTerrainShading = false;
       inst.visible = true;
       inst.castsShadow = true;
+      applyVegetationCullProfile(prefabName, inst);
 
       PrefabData pd;
       pd.entity = eid;
@@ -914,6 +1563,7 @@ void TerrainSystem::initPrefabs() {
     inst.useTerrainShading = false;
     inst.visible = true;
     inst.castsShadow = true;
+    applyVegetationCullProfile(prefabName, inst);
 
     PrefabData pd;
     pd.entity = eid;
@@ -999,6 +1649,17 @@ void TerrainSystem::initPrefabs() {
     verts.clear();
   }
 
+  // Bush — low-poly rounded shrub
+  if (mPrefabs.find("prefab_bush") == mPrefabs.end()) {
+    addSphere(verts, {0, 0.1f, 0}, 0.6f, SPHERE_RINGS, SPHERE_SECTORS, 0.25f);
+    addSphere(verts, {0.5f, 0.0f, 0.2f}, 0.4f, SPHERE_RINGS, SPHERE_SECTORS,
+              0.25f);
+    addSphere(verts, {-0.4f, 0.05f, -0.3f}, 0.35f, SPHERE_RINGS,
+              SPHERE_SECTORS, 0.25f);
+    addPrefabFromVerts("prefab_bush", verts);
+    verts.clear();
+  }
+
   // Flower — only if no custom flower was loaded
   if (mPrefabs.find("prefab_flower") == mPrefabs.end()) {
     addCylinder(verts, {0, 0, 0}, 0.02f, 0.02f, 0.8f, CYLINDER_SEGMENTS, 0.2f);
@@ -1025,7 +1686,9 @@ void TerrainSystem::spawnTreesForest(int cx, int cz, ChunkData &chunk) {
       float wx = ox + (gx + 0.5f) * spacing;
       float wz = oz + (gz + 0.5f) * spacing;
 
-      if (getBiome(wx, wz) != BiomeType::Forest)
+      BiomeType biome = getBiome(wx, wz);
+      if (biome != BiomeType::Forest &&
+          !(mSettings.singleBiomeOnly && biome == BiomeType::Plains))
         continue;
 
       float treeVal = mTreeNoise.noise(wx * 0.3f, wz * 0.3f) * 0.5f + 0.5f;
@@ -1052,14 +1715,29 @@ void TerrainSystem::spawnTreesForest(int cx, int cz, ChunkData &chunk) {
                          std::to_string(gz);
       float sizeVar = treeVal;
 
-      // Slight random tilt for natural look (±3 degrees on X and Z)
-      float tiltX = mTreeNoise.noise(wx * 5.3f + 100.0f, wz * 4.7f) * 3.0f;
-      float tiltZ = mTreeNoise.noise(wx * 4.1f + 200.0f, wz * 5.9f) * 3.0f;
-      glm::vec3 treeRot(tiltX, 0.0f, tiltZ);
+      // Random Y rotation for natural variety; occasional tilt for realism.
+      float rotY = mTreeNoise.noise(wx * 1.1f, wz * 1.1f) * TWO_PI;
+      float tiltMask =
+          mTreeNoise.noise(wx * 0.9f + 11.0f, wz * 0.9f - 22.0f) * 0.5f + 0.5f;
+      float tiltX = 0.0f;
+      float tiltZ = 0.0f;
+      if (tiltMask > 0.78f) {
+        float tiltAmt =
+            2.0f + (tiltMask - 0.78f) * (8.0f / 0.22f); // 2..10 deg
+        tiltX = mTreeNoise.noise(wx * 5.3f + 100.0f, wz * 4.7f) * tiltAmt;
+        tiltZ = mTreeNoise.noise(wx * 4.1f + 200.0f, wz * 5.9f) * tiltAmt;
+      }
+      glm::vec3 treeRot(tiltX, rotY, tiltZ);
 
       if (type == TreeType::Pine) {
-        addPrefabInstance("prefab_pine", {wx, groundY, wz},
-                          glm::vec3(1.0f + sizeVar), treeRot, chunk);
+        size_t idx = addPrefabInstance("prefab_pine", {wx, groundY, wz},
+                                       glm::vec3(1.0f + sizeVar), treeRot,
+                                       chunk);
+        if (idx != std::numeric_limits<size_t>::max()) {
+          registerTreeInstance("prefab_pine", idx,
+                               glm::vec3(wx, groundY, wz),
+                               glm::vec3(1.0f + sizeVar), cx, cz, &chunk);
+        }
 
       } else if (type == TreeType::Oak) {
         addPrefabInstance("prefab_oak", {wx, groundY, wz},
@@ -1194,10 +1872,8 @@ void TerrainSystem::spawnRocksMountain(int cx, int cz, ChunkData &chunk) {
   float spacing = 8.0f;
   int grid = (int)(ws / spacing);
   float biomeUV = 0.8f; // Mountains = 4/5
-  float rockDensity = mSettings.rockDensity;
-  if (rockDensity <= 0.0001f)
-    rockDensity = 0.2f;
-  rockDensity = std::clamp(rockDensity, 0.0f, 1.0f);
+  float rockDensity = std::clamp(mSettings.rockDensity, 0.0f, 1.0f);
+  float rockScale = std::max(0.1f, mSettings.rockScale);
 
   for (int gz = 0; gz < grid; ++gz) {
     for (int gx = 0; gx < grid; ++gx) {
@@ -1210,9 +1886,10 @@ void TerrainSystem::spawnRocksMountain(int cx, int cz, ChunkData &chunk) {
           b != BiomeType::Forest && b != BiomeType::Plains)
         continue;
 
+      if (rockDensity <= 0.0001f)
+        continue;
+
       float val = mRockNoise.noise(wx * 0.25f, wz * 0.25f) * 0.5f + 0.5f;
-      // Bias noise so low densities still spawn a few rocks.
-      val = val * val;
       if (val > rockDensity)
         continue;
 
@@ -1227,13 +1904,21 @@ void TerrainSystem::spawnRocksMountain(int cx, int cz, ChunkData &chunk) {
       if (groundY < mSettings.seaLevel)
         continue;
 
-      float sr = 0.5f + mRockNoise.noise(wx * 3.0f, wz * 3.0f) * 1.5f;
+      float sizeJitter =
+          0.7f +
+          (mRockNoise.noise(wx * 0.9f + 77.0f, wz * 0.9f - 33.0f) * 0.5f +
+           0.5f) *
+              0.8f;
+      float sr =
+          (0.5f + mRockNoise.noise(wx * 3.0f, wz * 3.0f) * 1.5f) * rockScale *
+          sizeJitter;
       sr = std::max(
-          0.4f, sr); // Clamp scale so they don't corrupt matrices by inverting
+          0.2f, sr); // Clamp scale so they don't corrupt matrices by inverting
 
+      float rotY = mRockNoise.noise(wx * 0.6f, wz * 0.6f) * TWO_PI;
       addPrefabInstance("prefab_rock", {wx, groundY - sr * 0.3f, wz},
                         glm::vec3(sr * 1.2f, sr * 0.8f, sr * 1.1f),
-                        glm::vec3(0), chunk);
+                        glm::vec3(0, rotY, 0), chunk);
 
       chunk.rockCount++;
       mStats.totalRockEntities++;
@@ -1252,6 +1937,8 @@ void TerrainSystem::spawnPlainsGrass(int cx, int cz, ChunkData &chunk) {
   float spacing = 6.0f;
   int grid = (int)(ws / spacing);
   float biomeUV = 0.2f; // Plains = 1/5
+  float grassDensity = std::clamp(mSettings.grassDensity, 0.0f, 1.0f);
+  float grassScale = std::max(0.1f, mSettings.grassScale);
 
   for (int gz = 0; gz < grid; ++gz) {
     for (int gx = 0; gx < grid; ++gx) {
@@ -1261,9 +1948,12 @@ void TerrainSystem::spawnPlainsGrass(int cx, int cz, ChunkData &chunk) {
       if (getBiome(wx, wz) != BiomeType::Plains)
         continue;
 
+      if (grassDensity <= 0.0001f)
+        continue;
+
       float val =
           mDetailNoise.noise(wx * 0.4f + 500.0f, wz * 0.4f) * 0.5f + 0.5f;
-      if (val > mSettings.grassDensity)
+      if (val > grassDensity)
         continue;
 
       float jx = mDetailNoise.noise(wx * 2.0f, wz * 2.5f) * spacing * 0.3f;
@@ -1282,7 +1972,13 @@ void TerrainSystem::spawnPlainsGrass(int cx, int cz, ChunkData &chunk) {
       std::vector<OBJModel::VertexData> verts;
 
       // Bush cluster — small sphere
-      float bushR = (0.15f + val * 0.3f) * 3.0f; // SCALE UP 3x
+      float sizeJitter =
+          0.7f +
+          (mDetailNoise.noise(wx * 1.1f + 120.0f, wz * 1.1f - 90.0f) * 0.5f +
+           0.5f) *
+              0.9f;
+      float bushR =
+          (0.15f + val * 0.3f) * 3.0f * grassScale * sizeJitter; // SCALE UP 3x
       // addSphere(verts, {wx, groundY + bushR * 0.6f, wz}, bushR, 3, 4,
       // biomeUV);
       addPrefabInstance("prefab_grass", {wx, groundY, wz},
@@ -1290,11 +1986,24 @@ void TerrainSystem::spawnPlainsGrass(int cx, int cz, ChunkData &chunk) {
 
       // Occasional tall flower (narrow cone)
       if (val > 0.15f) {
-        float fScale = 0.8f + val * 0.5f;
+        float fScale = (0.8f + val * 0.5f) * grassScale * sizeJitter;
         float flowerX = wx + (val - 0.5f) * 0.3f;
         float flowerZ = wz + (val * 2.0f - 1.0f) * 0.2f;
         addPrefabInstance("prefab_flower", {flowerX, groundY, flowerZ},
                           glm::vec3(fScale), glm::vec3(0), chunk);
+      }
+
+      // Occasional low poly bush
+      float bushVal =
+          mDetailNoise.noise(wx * 0.2f + 900.0f, wz * 0.2f - 600.0f) * 0.5f +
+          0.5f;
+      if (bushVal < grassDensity * 0.6f) {
+        float bushScale =
+            (0.6f + bushVal * 0.8f) * grassScale * sizeJitter;
+        float bushX = wx + (bushVal - 0.5f) * 0.8f;
+        float bushZ = wz + (0.5f - bushVal) * 0.7f;
+        addPrefabInstance("prefab_bush", {bushX, groundY, bushZ},
+                          glm::vec3(bushScale), glm::vec3(0), chunk);
       }
     }
   }
@@ -1310,21 +2019,26 @@ void TerrainSystem::spawnVegetation(int cx, int cz, ChunkData &chunk) {
 
   BiomeType dominant = chunk.dominantBiome;
 
-  switch (dominant) {
-  case BiomeType::Forest:
+  if (mSettings.singleBiomeOnly) {
     spawnTreesForest(cx, cz, chunk);
-    break;
-  case BiomeType::Desert:
-    spawnDesertCacti(cx, cz, chunk);
-    break;
-  case BiomeType::Tundra:
-    spawnTundraDecor(cx, cz, chunk);
-    break;
-  case BiomeType::Plains:
     spawnPlainsGrass(cx, cz, chunk);
-    break;
-  default:
-    break;
+  } else {
+    switch (dominant) {
+    case BiomeType::Forest:
+      spawnTreesForest(cx, cz, chunk);
+      break;
+    case BiomeType::Desert:
+      spawnDesertCacti(cx, cz, chunk);
+      break;
+    case BiomeType::Tundra:
+      spawnTundraDecor(cx, cz, chunk);
+      break;
+    case BiomeType::Plains:
+      spawnPlainsGrass(cx, cz, chunk);
+      break;
+    default:
+      break;
+    }
   }
 
   // Rocks are biome-filtered inside spawnRocksMountain(); invoke every chunk so
@@ -1339,7 +2053,7 @@ void TerrainSystem::spawnVegetation(int cx, int cz, ChunkData &chunk) {
 // CHUNK LOAD / UNLOAD
 // ═══════════════════════════════════════════════════════════════
 
-void TerrainSystem::loadChunkAsync(int cx, int cz) {
+void TerrainSystem::loadChunkAsync(int cx, int cz, int lod) {
   mInFlight[{cx, cz}] = true;
 
   // Capture noise objects by VALUE so the lambda is thread-safe.
@@ -1361,6 +2075,13 @@ void TerrainSystem::loadChunkAsync(int cx, int cz) {
                             settings.lacunarity, settings.gain);
     float ridgeH = noise.ridgeNoise(wx * freq, wz * freq, settings.octaves,
                                     settings.lacunarity, settings.gain);
+    if (settings.singleBiomeOnly) {
+      float h = baseH * 0.3f * settings.heightScale;
+      h += noise.noise(wx * freq * 4.0f, wz * freq * 4.0f) * 0.15f +
+           detailNoise.noise(wx * freq * 8.0f, wz * freq * 8.0f) * 0.06f +
+           detailNoise.noise(wx * freq * 16.0f, wz * freq * 16.0f) * 0.02f;
+      return h;
+    }
     float bs = settings.biomeScale;
     float temp = tempNoise.fbm(wx * bs, wz * bs, 4, 2.0f, 0.5f) * 0.5f + 0.5f;
     float moist = moistNoise.fbm(wx * bs, wz * bs, 4, 2.0f, 0.5f) * 0.5f + 0.5f;
@@ -1434,20 +2155,27 @@ void TerrainSystem::loadChunkAsync(int cx, int cz) {
   auto pending = std::make_shared<PendingChunk>();
   pending->cx = cx;
   pending->cz = cz;
+  pending->terrainLod = lod;
 
   auto fut = std::async(std::launch::async, [pending, cx, cz, settings, noise,
                                              tempNoise, moistNoise, treeNoise,
                                              rockNoise, detailNoise, sampleH,
+                                             lod,
                                              self]() mutable {
     // ── 1. Terrain mesh (pure CPU) ──────────────────────────
-    int siz = settings.chunkSize;
+    int renderSiz = std::max(4, settings.chunkSize >> std::clamp(lod, 0, 2));
+    int physicsSiz = settings.chunkSize;
     float ws = settings.chunkWorldSize;
-    float step = ws / (float)siz;
+    float renderStep = ws / (float)renderSiz;
+    float physicsStep = ws / (float)physicsSiz;
     float ox = cx * ws;
     float oz = cz * ws;
-    float uvS = 1.0f / (float)siz;
+    float uvS = 1.0f / (float)renderSiz;
 
     auto classifyBiome = [&](float wx, float wz) -> BiomeType {
+      if (settings.singleBiomeOnly)
+        return BiomeType::Plains;
+
       float freq = settings.noiseFrequency;
       float bs = settings.biomeScale;
 
@@ -1480,11 +2208,13 @@ void TerrainSystem::loadChunkAsync(int cx, int cz) {
     BiomeType dom = classifyBiome(midX, midZ);
     pending->dominantBiome = dom;
 
-    std::vector<std::vector<float>> hGrid(siz + 1, std::vector<float>(siz + 1));
-    std::vector<std::vector<float>> bGrid(siz + 1, std::vector<float>(siz + 1));
-    for (int z = 0; z <= siz; ++z)
-      for (int x = 0; x <= siz; ++x) {
-        float wx = ox + x * step, wz = oz + z * step;
+    std::vector<std::vector<float>> hGrid(renderSiz + 1,
+                                          std::vector<float>(renderSiz + 1));
+    std::vector<std::vector<float>> bGrid(renderSiz + 1,
+                                          std::vector<float>(renderSiz + 1));
+    for (int z = 0; z <= renderSiz; ++z)
+      for (int x = 0; x <= renderSiz; ++x) {
+        float wx = ox + x * renderStep, wz = oz + z * renderStep;
         BiomeType biomeAtVertex = classifyBiome(wx, wz);
         hGrid[z][x] = sampleH(wx, wz);
         bGrid[z][x] = (float)(int)biomeAtVertex / 5.0f;
@@ -1492,17 +2222,18 @@ void TerrainSystem::loadChunkAsync(int cx, int cz) {
 
     auto getNorm = [&](int x, int z) -> glm::vec3 {
       float hL = (x > 0) ? hGrid[z][x - 1] : hGrid[z][x];
-      float hR = (x < siz) ? hGrid[z][x + 1] : hGrid[z][x];
+      float hR = (x < renderSiz) ? hGrid[z][x + 1] : hGrid[z][x];
       float hD = (z > 0) ? hGrid[z - 1][x] : hGrid[z][x];
-      float hU = (z < siz) ? hGrid[z + 1][x] : hGrid[z][x];
-      return glm::normalize(glm::vec3(-(hR - hL), 2.0f * step, -(hU - hD)));
+      float hU = (z < renderSiz) ? hGrid[z + 1][x] : hGrid[z][x];
+      return glm::normalize(
+          glm::vec3(-(hR - hL), 2.0f * renderStep, -(hU - hD)));
     };
 
-    pending->terrainVerts.reserve(siz * siz * 6);
-    for (int z = 0; z < siz; ++z)
-      for (int x = 0; x < siz; ++x) {
-        float wx0 = ox + x * step, wx1 = ox + (x + 1) * step;
-        float wz0 = oz + z * step, wz1 = oz + (z + 1) * step;
+    pending->terrainVerts.reserve(renderSiz * renderSiz * 6);
+    for (int z = 0; z < renderSiz; ++z)
+      for (int x = 0; x < renderSiz; ++x) {
+        float wx0 = ox + x * renderStep, wx1 = ox + (x + 1) * renderStep;
+        float wz0 = oz + z * renderStep, wz1 = oz + (z + 1) * renderStep;
         glm::vec3 p00(wx0, hGrid[z][x], wz0);
         glm::vec3 p10(wx1, hGrid[z][x + 1], wz0);
         glm::vec3 p01(wx0, hGrid[z + 1][x], wz1);
@@ -1523,12 +2254,15 @@ void TerrainSystem::loadChunkAsync(int cx, int cz) {
 
     // Flatten hGrid into a row-major float array for HeightFieldShape.
     // HeightFieldShape expects samples[z * sampleCount + x].
-    const uint32_t sc = (uint32_t)(siz + 1);
+    const uint32_t sc = (uint32_t)(physicsSiz + 1);
     pending->heightSamples.resize((size_t)sc * sc);
     pending->heightSampleCount = sc;
-    for (int z = 0; z <= siz; ++z)
-      for (int x = 0; x <= siz; ++x)
-        pending->heightSamples[(size_t)z * sc + x] = hGrid[z][x];
+    for (int z = 0; z <= physicsSiz; ++z)
+      for (int x = 0; x <= physicsSiz; ++x) {
+        float wx = ox + x * physicsStep;
+        float wz = oz + z * physicsStep;
+        pending->heightSamples[(size_t)z * sc + x] = sampleH(wx, wz);
+      }
 
     // ── 2. Water plane (pure CPU) ────────────────────────────
     if (settings.spawnWater && dom == BiomeType::Ocean) {
@@ -1575,13 +2309,21 @@ void TerrainSystem::loadChunkAsync(int cx, int cz) {
           if (groundY < settings.seaLevel)
             continue;
           float sv = 1.0f + tv;
-          // Slight random tilt for natural look (±3 degrees)
+          float rotY = treeNoise.noise(wx * 1.1f, wz * 1.1f) * TWO_PI;
+          float tiltMask =
+              treeNoise.noise(wx * 0.9f + 11.0f, wz * 0.9f - 22.0f) * 0.5f +
+              0.5f;
+          float tiltAmt = 0.0f;
+          if (tiltMask > 0.78f) {
+            tiltAmt = glm::radians(2.0f + (tiltMask - 0.78f) * (8.0f / 0.22f));
+          }
           float tiltX = treeNoise.noise(wx * 5.3f + 100.0f, wz * 4.7f) *
-                        glm::radians(3.0f);
+                        tiltAmt;
           float tiltZ = treeNoise.noise(wx * 4.1f + 200.0f, wz * 5.9f) *
-                        glm::radians(3.0f);
+                        tiltAmt;
           glm::mat4 m(1.0f);
           m = glm::translate(m, glm::vec3(wx, groundY, wz));
+          m = glm::rotate(m, rotY, glm::vec3(0, 1, 0));
           m = glm::rotate(m, tiltX, glm::vec3(1, 0, 0));
           m = glm::rotate(m, tiltZ, glm::vec3(0, 0, 1));
           m = glm::scale(m, glm::vec3(sv));
@@ -1654,6 +2396,7 @@ void TerrainSystem::flushPendingChunks() {
     ChunkData cd;
     cd.entity = eid;
     cd.terrainAssetId = name;
+    cd.terrainLod = pc.terrainLod;
     cd.dominantBiome = pc.dominantBiome;
 
     // GPU upload — water plane
@@ -1680,6 +2423,7 @@ void TerrainSystem::flushPendingChunks() {
         wmesh.visible = true;
         wmesh.castsShadow = false;
         wmesh.isTerrain = true;
+        wmesh.isWater = true;
         wmesh.assetId = wname;
         cd.waterEntity = weid;
         cd.waterAssetId = wname;
@@ -1709,8 +2453,17 @@ void TerrainSystem::flushPendingChunks() {
         m = glm::scale(m, glm::vec3(pd.autoScale));
         inst.instanceTransforms.push_back(m);
         cd.prefabInstanceCounts[prefabName]++;
-        cd.treeCount++;
-        mStats.totalTreeEntities++;
+        cd.prefabInstanceMatrices[prefabName].push_back(m);
+        if (prefabName == "prefab_pine") {
+          size_t idx = inst.instanceTransforms.size() - 1;
+          glm::vec3 pos = glm::vec3(m[3]);
+          glm::vec3 scale(glm::length(glm::vec3(m[0])),
+                          glm::length(glm::vec3(m[1])),
+                          glm::length(glm::vec3(m[2])));
+          registerTreeInstance(prefabName, idx, pos, scale, pc.cx, pc.cz, &cd);
+          cd.treeCount++;
+          mStats.totalTreeEntities++;
+        }
       }
       inst.isDirty = true;
     }
@@ -1723,6 +2476,41 @@ void TerrainSystem::flushPendingChunks() {
       // Forest async path already injects trees via instanceMatrices; still add
       // biome-filtered rocks for this chunk.
       spawnRocksMountain(pc.cx, pc.cz, cd);
+
+    // Apply painted instances for this chunk (persist across regeneration).
+    auto itPaint = mPaintedInstances.find({pc.cx, pc.cz});
+    if (itPaint != mPaintedInstances.end()) {
+      for (auto &[prefabName, matrices] : itPaint->second.prefabMatrices) {
+        auto itP = mPrefabs.find(prefabName);
+        if (itP == mPrefabs.end())
+          continue;
+        if (!mScene->registry().has<InstancedMeshComponent>(itP->second.entity))
+          continue;
+        auto &inst = mScene->registry().get<InstancedMeshComponent>(
+            itP->second.entity);
+
+        for (const auto &m : matrices) {
+          inst.instanceTransforms.push_back(m);
+          cd.prefabInstanceCounts[prefabName]++;
+          cd.prefabInstanceMatrices[prefabName].push_back(m);
+          if (prefabName == "prefab_pine") {
+            size_t idx = inst.instanceTransforms.size() - 1;
+            glm::vec3 pos = glm::vec3(m[3]);
+            glm::vec3 scale(glm::length(glm::vec3(m[0])),
+                            glm::length(glm::vec3(m[1])),
+                            glm::length(glm::vec3(m[2])));
+            registerTreeInstance(prefabName, idx, pos, scale, pc.cx, pc.cz,
+                                 &cd);
+            cd.treeCount++;
+            mStats.totalTreeEntities++;
+          } else if (prefabName == "prefab_rock") {
+            cd.rockCount++;
+            mStats.totalRockEntities++;
+          }
+        }
+        inst.isDirty = true;
+      }
+    }
 
     // Register terrain collision with Jolt (HeightFieldShape)
     if (mPhysicsSystem && !pc.heightSamples.empty()) {
@@ -1744,7 +2532,20 @@ void TerrainSystem::unloadChunk(int cx, int cz) {
   if (it == mChunks.end())
     return;
 
-  auto &cd = it->second;
+  ChunkData cd = std::move(it->second);
+
+  // Remove tree entities belonging to this chunk
+  for (auto &[prefabName, entities] : cd.prefabInstanceEntities) {
+    for (auto eid : entities) {
+      if (eid == 0)
+        continue;
+      if (mPhysicsSystem && mScene->registry().has<RigidbodyComponent>(eid)) {
+        auto &rb = mScene->registry().get<RigidbodyComponent>(eid);
+        mPhysicsSystem->removeBody(rb.bodyID);
+      }
+      mScene->deleteEntity(eid);
+    }
+  }
 
   // Remove terrain collision body from Jolt
   if (mPhysicsSystem && cd.physicsBodyId != 0xFFFFFFFF) {
@@ -1752,27 +2553,61 @@ void TerrainSystem::unloadChunk(int cx, int cz) {
     cd.physicsBodyId = 0xFFFFFFFF;
   }
 
-  // Remove instances from prefabs instead of deleting entities
-  for (const auto &[prefabName, count] : cd.prefabInstanceCounts) {
-    auto itPrefab = mPrefabs.find(prefabName);
-    if (itPrefab != mPrefabs.end() && mScene) {
-      if (mScene->registry().has<InstancedMeshComponent>(
-              itPrefab->second.entity)) {
-        auto &inst = mScene->registry().get<InstancedMeshComponent>(
-            itPrefab->second.entity);
+  // Remove instances from prefabs by rebuilding from remaining chunks.
+  std::vector<std::string> affectedPrefabs;
+  for (const auto &[prefabName, _] : cd.prefabInstanceMatrices) {
+    affectedPrefabs.push_back(prefabName);
+  }
 
-        // Remove 'count' instances from the end of the array.
-        // (Since chunks unload in bulk, this is a simple way to prune instances
-        // without tracking exact indices. In a real game, you would track exact
-        // indices per chunk or regenerate the instance buffer from active
-        // chunks).
-        if (inst.instanceTransforms.size() >= count) {
-          inst.instanceTransforms.resize(inst.instanceTransforms.size() -
-                                         count);
-          inst.isDirty = true;
+  // Remove the chunk entry before rebuild so it won't be included.
+  mChunks.erase(it);
+
+  for (const auto &prefabName : affectedPrefabs) {
+    auto itPrefab = mPrefabs.find(prefabName);
+    if (itPrefab == mPrefabs.end() || !mScene)
+      continue;
+    if (!mScene->registry().has<InstancedMeshComponent>(
+            itPrefab->second.entity))
+      continue;
+    auto &inst = mScene->registry().get<InstancedMeshComponent>(
+        itPrefab->second.entity);
+    inst.instanceTransforms.clear();
+
+    std::vector<uint32_t> newEntityMap;
+    size_t newIndex = 0;
+    for (auto &[coord, cdata] : mChunks) {
+      auto itM = cdata.prefabInstanceMatrices.find(prefabName);
+      if (itM == cdata.prefabInstanceMatrices.end())
+        continue;
+      const auto &mats = itM->second;
+      inst.instanceTransforms.insert(inst.instanceTransforms.end(), mats.begin(),
+                                     mats.end());
+
+      auto itE = cdata.prefabInstanceEntities.find(prefabName);
+      if (itE != cdata.prefabInstanceEntities.end()) {
+        const auto &ents = itE->second;
+        const size_t count = mats.size();
+        const size_t assignCount = std::min(count, ents.size());
+        for (size_t i = 0; i < assignCount; ++i) {
+          const auto eid = ents[i];
+          if (eid != 0 && mScene->registry().has<TreeComponent>(eid)) {
+            mScene->registry().get<TreeComponent>(eid).instanceIndex =
+                static_cast<uint32_t>(newIndex);
+          }
+          newEntityMap.push_back(eid);
+          newIndex++;
         }
+        for (size_t i = assignCount; i < count; ++i) {
+          newEntityMap.push_back(0);
+          newIndex++;
+        }
+      } else {
+        newIndex += mats.size();
       }
     }
+    inst.isDirty = true;
+    if (!newEntityMap.empty())
+      mPrefabInstanceEntities[prefabName] = std::move(newEntityMap);
   }
 
   // Remove water entity
@@ -1794,6 +2629,105 @@ void TerrainSystem::unloadChunk(int cx, int cz) {
   mStats.biomeCounts[(int)cd.dominantBiome]--;
   mStats.totalTreeEntities -= cd.treeCount;
   mStats.totalRockEntities -= cd.rockCount;
+}
 
-  mChunks.erase(it);
+void TerrainSystem::rebuildPrefabInstances(const std::string &prefabName) {
+  if (!mScene)
+    return;
+  auto itPrefab = mPrefabs.find(prefabName);
+  if (itPrefab == mPrefabs.end())
+    return;
+  if (!mScene->registry().has<InstancedMeshComponent>(
+          itPrefab->second.entity))
+    return;
+
+  auto &reg = mScene->registry();
+  auto &inst =
+      reg.get<InstancedMeshComponent>(itPrefab->second.entity);
+  inst.instanceTransforms.clear();
+
+  auto &entityMap = mPrefabInstanceEntities[prefabName];
+  entityMap.clear();
+
+  size_t newIndex = 0;
+  for (auto &[coord, cdata] : mChunks) {
+    auto itM = cdata.prefabInstanceMatrices.find(prefabName);
+    if (itM == cdata.prefabInstanceMatrices.end())
+      continue;
+    auto &mats = itM->second;
+    auto &ents = cdata.prefabInstanceEntities[prefabName];
+
+    const size_t count = mats.size();
+    inst.instanceTransforms.insert(inst.instanceTransforms.end(), mats.begin(),
+                                   mats.end());
+
+    const size_t assignCount = std::min(count, ents.size());
+    for (size_t i = 0; i < assignCount; ++i) {
+      const auto eid = ents[i];
+      if (eid != 0 && reg.has<TreeComponent>(eid)) {
+        reg.get<TreeComponent>(eid).instanceIndex =
+            static_cast<uint32_t>(newIndex);
+      }
+      entityMap.push_back(eid);
+      newIndex++;
+    }
+    for (size_t i = assignCount; i < count; ++i) {
+      entityMap.push_back(0);
+      newIndex++;
+    }
+  }
+
+  inst.isDirty = true;
+}
+
+void TerrainSystem::rebuildChunkTerrain(int cx, int cz, bool rebuildPhysics) {
+  auto it = mChunks.find({cx, cz});
+  if (it == mChunks.end() || !mScene || !mAssets)
+    return;
+
+  ChunkData &cd = it->second;
+  const std::string name =
+      "terrain_" + std::to_string(cx) + "_" + std::to_string(cz);
+
+  auto model = std::make_unique<OBJModel>();
+  model->loadFromVertices(generateChunkMeshLod(cx, cz, cd.terrainLod), name);
+  OBJHandle handle = mAssets->registerRuntimeOBJ(name, std::move(model));
+  OBJModel *terrainModel = mAssets->getOBJ(handle);
+  if (!handle.valid() || !terrainModel)
+    return;
+
+  auto &reg = mScene->registry();
+  if (cd.entity != 0 && reg.has<MeshComponent>(cd.entity)) {
+    auto &mesh = reg.get<MeshComponent>(cd.entity);
+    mesh.objModel = terrainModel;
+    mesh.objHandle = handle;
+    mesh.type = MeshComponent::AssetType::OBJ;
+    mesh.visible = true;
+    mesh.castsShadow = true;
+    mesh.isTerrain = true;
+  }
+  cd.terrainAssetId = name;
+
+  if (mPhysicsSystem && rebuildPhysics) {
+    if (cd.physicsBodyId != 0xFFFFFFFF) {
+      mPhysicsSystem->removeTerrainChunk(cd.physicsBodyId);
+      cd.physicsBodyId = 0xFFFFFFFF;
+    }
+    const int size = mSettings.chunkSize;
+    const float ws = mSettings.chunkWorldSize;
+    const float step = ws / (float)size;
+    const float ox = cx * ws;
+    const float oz = cz * ws;
+    const uint32_t sc = (uint32_t)(size + 1);
+    std::vector<float> heightSamples((size_t)sc * sc);
+    for (int z = 0; z <= size; ++z) {
+      for (int x = 0; x <= size; ++x) {
+        float wx = ox + x * step;
+        float wz = oz + z * step;
+        heightSamples[(size_t)z * sc + x] = sampleHeight(wx, wz);
+      }
+    }
+    cd.physicsBodyId = mPhysicsSystem->addTerrainChunk(
+        heightSamples, sc, glm::vec2(ox, oz), ws);
+  }
 }

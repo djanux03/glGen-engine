@@ -74,9 +74,14 @@ void PostProcessor::init(
   mSSAOShader->activate();
   mSSAOShader->setInt("depthTex", 0);
   mSSAOShader->setInt("noiseTex", 1);
+  mSSAOShader->setVec2("uSsaoResolution", glm::vec2(1.0f));
 
   mSSAOBlurShader->activate();
   mSSAOBlurShader->setInt("ssaoInput", 0);
+  mSSAOBlurShader->setInt("depthTex", 1);
+  mSSAOBlurShader->setFloat("uUpscale", 0.0f);
+  mSSAOBlurShader->setFloat("uNearPlane", 0.1f);
+  mSSAOBlurShader->setFloat("uFarPlane", 500.0f);
 
   mVolumetricShader->activate();
   mVolumetricShader->setInt("depthTex", 0);
@@ -86,6 +91,7 @@ void PostProcessor::init(
   mCompositeShader->setInt("bloomBlur", 1);
   mCompositeShader->setInt("ssaoTex", 2);
   mCompositeShader->setInt("volumetricTex", 3);
+  mCompositeShader->setInt("depthTex", 4);
 
   mTAAShader->activate();
   mTAAShader->setInt("uCurrentColor", 0);
@@ -150,8 +156,24 @@ void PostProcessor::shutdown() {
 }
 
 void PostProcessor::resize(int width, int height) {
-  if (mWidth == width && mHeight == height)
+  const float bloomScaleClamped = std::clamp(bloomScale, 0.25f, 1.0f);
+  const float ssaoScaleClamped =
+      mForceSsaoFullRes ? 1.0f : std::clamp(ssaoScale, 0.25f, 1.0f);
+  const float volScaleClamped = std::clamp(volumetricScale, 0.25f, 1.0f);
+  const int bloomW = std::max(1, (int)std::lround(width * bloomScaleClamped));
+  const int bloomH = std::max(1, (int)std::lround(height * bloomScaleClamped));
+  const int ssaoW = std::max(1, (int)std::lround(width * ssaoScaleClamped));
+  const int ssaoH = std::max(1, (int)std::lround(height * ssaoScaleClamped));
+  const int volW = std::max(1, (int)std::lround(width * volScaleClamped));
+  const int volH = std::max(1, (int)std::lround(height * volScaleClamped));
+  if (mWidth == width && mHeight == height && mBloomWidth == bloomW &&
+      mBloomHeight == bloomH && mSSAOWidth == ssaoW &&
+      mSSAOHeight == ssaoH && mVolumetricWidth == volW &&
+      mVolumetricHeight == volH && mLastBloomScale == bloomScaleClamped &&
+      mLastSSAOScale == ssaoScaleClamped &&
+      mLastVolumetricScale == volScaleClamped) {
     return;
+  }
   destroyBuffers_();
   createBuffers_(width, height);
   resetTemporalHistory();
@@ -198,8 +220,12 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
                                   const glm::vec3 &lightDir,
                                   const glm::vec3 &sunColor, float nearPlane,
                                   float farPlane, float timeSec) {
+  GLint prevViewport[4];
+  glGetIntegerv(GL_VIEWPORT, prevViewport);
+
   // 1) Bloom extraction
   glBindFramebuffer(GL_FRAMEBUFFER, mPingPongFBO[0]);
+  glViewport(0, 0, mBloomWidth, mBloomHeight);
   mExtractShader->activate();
   mExtractShader->setFloat("threshold", bloomThreshold);
   glActiveTexture(GL_TEXTURE0);
@@ -211,6 +237,7 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
   mBlurShader->activate();
   for (int i = 0; i < blurIterations; i++) {
     glBindFramebuffer(GL_FRAMEBUFFER, mPingPongFBO[horizontal]);
+    glViewport(0, 0, mBloomWidth, mBloomHeight);
     mBlurShader->setBool("horizontal", horizontal);
     glBindTexture(GL_TEXTURE_2D, first_iteration ? mPingPongTex[0]
                                                  : mPingPongTex[!horizontal]);
@@ -221,14 +248,21 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
   }
 
   // 3) SSAO generation + blur
+  glViewport(0, 0, mWidth, mHeight);
   if (enableSSAO) {
     glBindFramebuffer(GL_FRAMEBUFFER, mSSAOFBO);
+    glViewport(0, 0, mSSAOWidth, mSSAOHeight);
     glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
     mSSAOShader->activate();
-    mSSAOShader->setFloat("radius", ssaoRadius);
-    mSSAOShader->setFloat("bias", ssaoBias);
+    mSSAOShader->setVec2("uSsaoResolution",
+                         glm::vec2((float)mSSAOWidth, (float)mSSAOHeight));
+    float scaleRatio = 1.0f;
+    if (ssaoScaleRadius && mWidth > 0)
+      scaleRatio = (float)mSSAOWidth / (float)mWidth;
+    mSSAOShader->setFloat("radius", ssaoRadius * scaleRatio);
+    mSSAOShader->setFloat("bias", ssaoBias * scaleRatio);
     mSSAOShader->setFloat("power", ssaoPower);
     mSSAOShader->setInt("sampleCount", ssaoSamples);
     mSSAOShader->setMat4("uProjection", projection);
@@ -241,18 +275,26 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
     renderQuad_();
 
     glBindFramebuffer(GL_FRAMEBUFFER, mSSAOBlurFBO);
+    glViewport(0, 0, mWidth, mHeight);
     glClear(GL_COLOR_BUFFER_BIT);
     mSSAOBlurShader->activate();
+    mSSAOBlurShader->setFloat("uUpscale", 1.0f);
+    mSSAOBlurShader->setFloat("uNearPlane", nearPlane);
+    mSSAOBlurShader->setFloat("uFarPlane", farPlane);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, mSSAOTex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, mDepthTex);
     renderQuad_();
   } else {
     glBindFramebuffer(GL_FRAMEBUFFER, mSSAOBlurFBO);
+    glViewport(0, 0, mWidth, mHeight);
     glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
   }
 
   // 4) Volumetric fog + shafts
+  glViewport(0, 0, mVolumetricWidth, mVolumetricHeight);
   if (enableVolumetricFog) {
     glm::vec3 sunWorldPos = cameraPos - glm::normalize(lightDir) * 1000.0f;
     glm::vec4 sunClip = projection * view * glm::vec4(sunWorldPos, 1.0f);
@@ -296,6 +338,7 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
   }
 
   // 5) Composite to intermediate HDR buffer
+  glViewport(0, 0, mWidth, mHeight);
   glBindFramebuffer(GL_FRAMEBUFFER, mCompositeFBO);
   glClear(GL_COLOR_BUFFER_BIT);
   mCompositeShader->activate();
@@ -303,6 +346,28 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
   mCompositeShader->setFloat("uBrightness", brightness);
   mCompositeShader->setBool("uEnableSSAO", enableSSAO);
   mCompositeShader->setBool("uEnableVolumetric", enableVolumetricFog);
+  mCompositeShader->setBool("uEnableOutline", enableOutline);
+  mCompositeShader->setFloat("uOutlineStrength", outlineStrength);
+  mCompositeShader->setFloat("uOutlineThreshold", outlineThreshold);
+  mCompositeShader->setFloat("uOutlineThickness", outlineThickness);
+  mCompositeShader->setVec3("uOutlineColor", outlineColor);
+  mCompositeShader->setFloat("uInvResolutionX", 1.0f / std::max(1, mWidth));
+  mCompositeShader->setFloat("uInvResolutionY", 1.0f / std::max(1, mHeight));
+  mCompositeShader->setBool("uEnableDistanceTint", enableDistanceTint);
+  mCompositeShader->setFloat("uDistanceTintStart", distanceTintStart);
+  mCompositeShader->setFloat("uDistanceTintEnd", distanceTintEnd);
+  mCompositeShader->setVec3("uDistanceTintColor", distanceTintColor);
+  mCompositeShader->setFloat("uNearPlane", nearPlane);
+  mCompositeShader->setFloat("uFarPlane", farPlane);
+  mCompositeShader->setBool("uEnableColorGrade", enableColorGrade);
+  mCompositeShader->setFloat("uGradeSaturation", gradeSaturation);
+  mCompositeShader->setFloat("uGradeContrast", gradeContrast);
+  mCompositeShader->setFloat("uGradeLift", gradeLift);
+  mCompositeShader->setFloat("uGradeGamma", gradeGamma);
+  mCompositeShader->setFloat("uGradeGain", gradeGain);
+  mCompositeShader->setVec3("uGradeTint", gradeTint);
+  mCompositeShader->setBool("uEnablePalette", enablePaletteQuantize);
+  mCompositeShader->setInt("uPaletteSteps", paletteSteps);
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, mColorTex);
@@ -312,6 +377,8 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
   glBindTexture(GL_TEXTURE_2D, mSSAOBlurTex);
   glActiveTexture(GL_TEXTURE3);
   glBindTexture(GL_TEXTURE_2D, mVolumetricTex);
+  glActiveTexture(GL_TEXTURE4);
+  glBindTexture(GL_TEXTURE_2D, mDepthTex);
 
   glDisable(GL_DEPTH_TEST);
   renderQuad_();
@@ -367,9 +434,10 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
 
   // 7) Final output (FXAA or pass-through) to backbuffer
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glViewport(0, 0, mWidth, mHeight);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   mFXAAShader->activate();
-  mFXAAShader->setBool("uEnableFXAA", enableFXAA);
+  mFXAAShader->setBool("uEnableFXAA", enableFXAA && !enableTAA);
   mFXAAShader->setFloat("uInvResolutionX", 1.0f / std::max(1, mWidth));
   mFXAAShader->setFloat("uInvResolutionY", 1.0f / std::max(1, mHeight));
   mFXAAShader->setFloat("uSpanMax", fxaaSpanMax);
@@ -385,6 +453,8 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
   ++mFrameIndex;
 
   glEnable(GL_DEPTH_TEST);
+  glViewport(prevViewport[0], prevViewport[1], prevViewport[2],
+             prevViewport[3]);
 }
 
 void PostProcessor::buildSSAOKernel_() {
@@ -428,6 +498,17 @@ void PostProcessor::buildSSAOKernel_() {
 void PostProcessor::createBuffers_(int width, int height) {
   mWidth = width;
   mHeight = height;
+  mLastBloomScale = std::clamp(bloomScale, 0.25f, 1.0f);
+  mLastSSAOScale = std::clamp(ssaoScale, 0.25f, 1.0f);
+  mLastVolumetricScale = std::clamp(volumetricScale, 0.25f, 1.0f);
+  mBloomWidth = std::max(1, (int)std::lround(width * mLastBloomScale));
+  mBloomHeight = std::max(1, (int)std::lround(height * mLastBloomScale));
+  mSSAOWidth = std::max(1, (int)std::lround(width * mLastSSAOScale));
+  mSSAOHeight = std::max(1, (int)std::lround(height * mLastSSAOScale));
+  mVolumetricWidth =
+      std::max(1, (int)std::lround(width * mLastVolumetricScale));
+  mVolumetricHeight =
+      std::max(1, (int)std::lround(height * mLastVolumetricScale));
 
   glGenFramebuffers(1, &mHDRFBO);
   glBindFramebuffer(GL_FRAMEBUFFER, mHDRFBO);
@@ -445,15 +526,22 @@ void PostProcessor::createBuffers_(int width, int height) {
 
   glGenTextures(1, &mDepthTex);
   glBindTexture(GL_TEXTURE_2D, mDepthTex);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0,
-               GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0,
+               GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
-                         GL_TEXTURE_2D, mDepthTex, 0);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
+                         mDepthTex, 0);
+
+  glGenRenderbuffers(1, &mStencilRBO);
+  glBindRenderbuffer(GL_RENDERBUFFER, mStencilRBO);
+  glRenderbufferStorage(GL_RENDERBUFFER, GL_STENCIL_INDEX8, width, height);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT,
+                            GL_RENDERBUFFER, mStencilRBO);
+  glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
   GLuint attachments[1] = {GL_COLOR_ATTACHMENT0};
   glDrawBuffers(1, attachments);
@@ -465,8 +553,8 @@ void PostProcessor::createBuffers_(int width, int height) {
   for (unsigned int i = 0; i < 2; i++) {
     glBindFramebuffer(GL_FRAMEBUFFER, mPingPongFBO[i]);
     glBindTexture(GL_TEXTURE_2D, mPingPongTex[i]);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA,
-                 GL_FLOAT, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, mBloomWidth, mBloomHeight, 0,
+                 GL_RGBA, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -482,8 +570,8 @@ void PostProcessor::createBuffers_(int width, int height) {
   glBindFramebuffer(GL_FRAMEBUFFER, mSSAOFBO);
   glGenTextures(1, &mSSAOTex);
   glBindTexture(GL_TEXTURE_2D, mSSAOTex);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width, height, 0, GL_RED,
-               GL_UNSIGNED_BYTE, nullptr);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_R16F, mSSAOWidth, mSSAOHeight, 0, GL_RED,
+               GL_FLOAT, nullptr);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -497,8 +585,8 @@ void PostProcessor::createBuffers_(int width, int height) {
   glBindFramebuffer(GL_FRAMEBUFFER, mSSAOBlurFBO);
   glGenTextures(1, &mSSAOBlurTex);
   glBindTexture(GL_TEXTURE_2D, mSSAOBlurTex);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width, height, 0, GL_RED,
-               GL_UNSIGNED_BYTE, nullptr);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_R16F, width, height, 0, GL_RED, GL_FLOAT,
+               nullptr);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -512,7 +600,8 @@ void PostProcessor::createBuffers_(int width, int height) {
   glBindFramebuffer(GL_FRAMEBUFFER, mVolumetricFBO);
   glGenTextures(1, &mVolumetricTex);
   glBindTexture(GL_TEXTURE_2D, mVolumetricTex);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA,
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, mVolumetricWidth,
+               mVolumetricHeight, 0, GL_RGBA,
                GL_FLOAT, nullptr);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -574,6 +663,8 @@ void PostProcessor::destroyBuffers_() {
     glDeleteTextures(1, &mColorTex);
   if (mDepthTex)
     glDeleteTextures(1, &mDepthTex);
+  if (mStencilRBO)
+    glDeleteRenderbuffers(1, &mStencilRBO);
 
   if (mPingPongFBO[0])
     glDeleteFramebuffers(2, mPingPongFBO);
@@ -606,6 +697,7 @@ void PostProcessor::destroyBuffers_() {
   mHDRFBO = 0;
   mColorTex = 0;
   mDepthTex = 0;
+  mStencilRBO = 0;
   mPingPongFBO[0] = mPingPongFBO[1] = 0;
   mPingPongTex[0] = mPingPongTex[1] = 0;
   mSSAOFBO = 0;

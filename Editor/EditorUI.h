@@ -83,19 +83,64 @@ struct EditorContext {
   TerrainMaterialSettings &terrainMaterial;
   TerrainSystem &terrainSystem;
   EditorCamera &editorCamera;
+  bool &terrainBrushEnabled;
+  int &terrainBrushMode;
+  int &terrainBrushTarget;
+  float &terrainBrushRadius;
+  float &terrainBrushStrength;
+  int &terrainBrushScatterCount;
 
   // Sky params stored in AppState
   bool &solidSky;
   float *skyHorizon; // float[3]
   float *skyTop;     // float[3]
+  bool &dayNightEnabled;
+  float &timeOfDay;
+  float &cycleSpeed;
+  float *dayHorizon; // float[3]
+  float *dayTop;     // float[3]
+  float *nightHorizon; // float[3]
+  float *nightTop;     // float[3]
+  glm::vec3 &sunDayColor;
+  glm::vec3 &sunDuskColor;
+  glm::vec3 &sunNightColor;
+  bool &minimalSky;
+  float &skyBackdropBlend;
+  float &skyFeatureVisibility;
+  bool &firefliesEnabled;
+  int &fireflyCount;
+  float &fireflyRadius;
+  float &fireflyHeightMin;
+  float &fireflyHeightMax;
+  float &fireflySize;
+  float &fireflyIntensity;
+  glm::vec3 &fireflyColor;
 
   // Renderer controls
   float &shadowStrength;
   float &shadowFarPlane;
+  int &shadowUpdateInterval;
+  float &shadowUpdateDistance;
+  float &shadowUpdateAngle;
+  bool &shadowCameraCulling;
   float &exposure;
   float &gamma;
   float &fogDensity;
   glm::vec3 &fogColor;
+  bool &toonEnabled;
+  int &toonSteps;
+  float &toonMin;
+  bool &shadowBandEnabled;
+  int &shadowBandSteps;
+  float &shadowBandSoftness;
+  bool &ambientRampEnabled;
+  float &ambientRampStrength;
+  glm::vec3 &ambientRampTop;
+  glm::vec3 &ambientRampBottom;
+  bool &rimEnabled;
+  float &rimPower;
+  float &rimStrength;
+  glm::vec3 &rimColor;
 
   // Render debug toggles
   bool &wireframe;
@@ -103,6 +148,12 @@ struct EditorContext {
   bool &disableClouds;
   bool &disableHDR;
   bool &freezeTime;
+  int &woodCount;
+  bool &axeEnabled;
+  glm::vec3 &axeOffset;
+  glm::vec3 &axeRotation;
+  glm::vec3 &axeScale;
+  bool &usePlayerCameraInEdit;
 
   // Frame stats
   float dt;
@@ -118,6 +169,7 @@ struct EditorContext {
   const std::vector<std::string> *renderPassOrder = nullptr;
   bool &hotReloadEnabled;
   bool &autoProcessImportQueue;
+  bool &iconFontLoaded;
   const std::vector<std::string> *hotReloadMessages = nullptr;
   const std::vector<std::string> *historyLabels = nullptr;
   int historyIndex = -1;
@@ -145,6 +197,7 @@ struct EditorUIOutput {
   bool wantCaptureKeyboard = false;
   bool terrainDirty = false;
   bool sceneModified = false;
+  std::vector<std::string> consoleCommands;
 
   bool saveRequested = false;
   bool loadRequested = false;
@@ -177,13 +230,16 @@ public:
   // Component inspector for selected entity
   bool drawInspector(EditorContext &ctx);
   void drawScriptEditor(EditorContext &ctx);
+  void toggleConsole() { mShowLog = !mShowLog; }
+  void setConsoleOpen(bool open) { mShowLog = open; }
+  bool isConsoleOpen() const { return mShowLog; }
 
 private:
   // File browser state
   bool mShowFileBrowser = false;
   std::string mBrowsePath;
   char mPathInput[512] = "";
-  bool mResetLayout = false;
+  bool mResetLayout = true;
   bool mLockLayout = true; // Panels locked by default
   char mAssetSearch[128] = "";
 
@@ -192,7 +248,7 @@ private:
   bool mShowInspector = true;
   bool mShowAssets = true;
   bool mShowEnvironment = true;
-  bool mShowLog = false;
+  bool mShowLog = true;
   bool mShowStats = true;
   bool mShowProfiler = true;
   bool mShowScriptEditor = false;
@@ -206,9 +262,12 @@ private:
   bool mConsoleAutoScroll = true;
   bool mFilterInfo = true;
   bool mFilterWarn = true;
-
   bool mFilterError = true;
   char mConsoleSearch[128] = "";
+  char mConsoleInput[256] = "";
+  std::vector<std::string> mConsoleHistory;
+  int mConsoleHistoryPos = -1;
+  std::vector<std::string> mPendingConsoleCommands;
 
   // FPS history for graph
   static constexpr int kFpsHistorySize = 120;
@@ -219,8 +278,10 @@ private:
   void drawMainMenuBar(EditorContext &ctx);
   void drawHierarchy(EditorContext &ctx);
   void drawAssets(EditorContext &ctx);
+  void drawAssetsContent(EditorContext &ctx);
   void drawEnvironment(EditorContext &ctx);
   void drawLog(EditorContext &ctx);
   void drawStats(EditorContext &ctx);
   void drawProfiler(EditorContext &ctx);
+  static int consoleInputCallback(ImGuiInputTextCallbackData *data);
 };

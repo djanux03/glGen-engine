@@ -12,6 +12,7 @@ uniform int sampleCount;
 uniform float radius;
 uniform float bias;
 uniform float power;
+uniform vec2 uSsaoResolution;
 
 vec3 reconstructViewPos(vec2 uv, float depth) {
     float z = depth * 2.0 - 1.0;
@@ -30,7 +31,7 @@ void main() {
     vec3 fragPos = reconstructViewPos(TexCoords, depth);
     vec3 normal = normalize(cross(dFdx(fragPos), dFdy(fragPos)));
 
-    vec2 noiseScale = vec2(textureSize(depthTex, 0)) / 4.0;
+    vec2 noiseScale = uSsaoResolution / 4.0;
     vec3 randVec = normalize(texture(noiseTex, TexCoords * noiseScale).xyz * 2.0 - 1.0);
     vec3 tangent = normalize(randVec - normal * dot(randVec, normal));
     vec3 bitangent = normalize(cross(normal, tangent));

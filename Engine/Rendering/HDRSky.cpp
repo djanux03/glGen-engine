@@ -95,6 +95,11 @@ void HDRSky::draw(const glm::mat4 &view, const glm::mat4 &projection,
   mShader->setFloat("uSunDiscIntensity", sunDiscIntensity);
   mShader->setFloat("uSunHaloIntensity", sunHaloIntensity);
   mShader->setFloat("uSunRaysIntensity", sunRaysIntensity);
+  mShader->setFloat("uNightFactor", nightFactor);
+  mShader->setFloat("uStarIntensity", starIntensity);
+  mShader->setFloat("uMilkyWayIntensity", milkyWayIntensity);
+  mShader->setVec3("uNightHorizonGlow", nightHorizonGlow);
+  mShader->setFloat("uNightDither", nightDitherStrength);
   mShader->setBool("uSkyCloudsEnabled", skyCloudsEnabled);
   mShader->setFloat("uSkyCloudScale", skyCloudScale);
   mShader->setFloat("uSkyCloudCoverage", skyCloudCoverage);

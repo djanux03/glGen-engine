@@ -120,7 +120,18 @@ void Renderer::setFrameUniforms(const glm::mat4 &view,
                                 const glm::vec3 &cameraPos, float sunIntensity,
                                 const glm::vec3 &lightDir, float farPlane,
                                 float shadowStrength, const glm::vec3 &fogColor,
-                                float fogDensity) {
+                                float fogDensity, bool toonEnabled,
+                                int toonSteps, float toonMin,
+                                bool shadowBandEnabled, int shadowBandSteps,
+                                float shadowBandSoftness,
+                                bool ambientRampEnabled,
+                                float ambientRampStrength,
+                                const glm::vec3 &ambientRampTop,
+                                const glm::vec3 &ambientRampBottom,
+                                bool rimEnabled,
+                                float rimPower, float rimStrength,
+                                const glm::vec3 &rimColor,
+                                float emissiveBoost, float emissiveFlicker) {
   ENGINE_ASSERT(mShader != nullptr,
                 "Renderer::setFrameUniforms called before shader init");
   mShader->activate();
@@ -142,6 +153,32 @@ void Renderer::setFrameUniforms(const glm::mat4 &view,
   // Fog
   mShader->setVec3("uFogColor", fogColor);
   mShader->setFloat("uFogDensity", fogDensity);
+
+  // Toon lighting
+  mShader->setBool("uToonEnabled", toonEnabled);
+  mShader->setInt("uToonSteps", toonSteps);
+  mShader->setFloat("uToonMin", toonMin);
+
+  // Shadow bands
+  mShader->setBool("uShadowBandEnabled", shadowBandEnabled);
+  mShader->setInt("uShadowBandSteps", shadowBandSteps);
+  mShader->setFloat("uShadowBandSoftness", shadowBandSoftness);
+
+  // Ambient ramp
+  mShader->setBool("uAmbientRampEnabled", ambientRampEnabled);
+  mShader->setFloat("uAmbientRampStrength", ambientRampStrength);
+  mShader->setVec3("uAmbientRampTop", ambientRampTop);
+  mShader->setVec3("uAmbientRampBottom", ambientRampBottom);
+
+  // Rim lighting
+  mShader->setBool("uRimEnabled", rimEnabled);
+  mShader->setFloat("uRimPower", rimPower);
+  mShader->setFloat("uRimStrength", rimStrength);
+  mShader->setVec3("uRimColor", rimColor);
+
+  // Emissive boost/flicker (night look)
+  mShader->setFloat("uEmissiveBoost", emissiveBoost);
+  mShader->setFloat("uEmissiveFlicker", emissiveFlicker);
 
   glActiveTexture(GL_TEXTURE1);
   glBindTexture(GL_TEXTURE_2D, mShadowTex);

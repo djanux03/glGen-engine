@@ -5,6 +5,8 @@
 #include "AppState.h"
 #include "EditorSubsystem.h"
 #include "EditorTheme.h"
+#include "Logger.h"
+#include <filesystem>
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -22,6 +24,26 @@ bool EditorSubsystem::initialize() {
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 #endif
   io.IniFilename = "imgui.ini";
+
+  io.Fonts->AddFontDefault();
+  const std::string iconPathTtf =
+      mState.projectConfig.assetPath("fonts/fa-solid-900.ttf");
+  const std::string iconPathOtf =
+      mState.projectConfig.assetPath("fonts/fa-solid-900.otf");
+  const std::string iconPath =
+      std::filesystem::exists(iconPathTtf) ? iconPathTtf : iconPathOtf;
+  if (!iconPath.empty() && std::filesystem::exists(iconPath)) {
+    ImFontConfig cfg;
+    cfg.MergeMode = true;
+    cfg.PixelSnapH = true;
+    cfg.GlyphMinAdvanceX = 14.0f;
+    static const ImWchar ranges[] = {0xf000, 0xf8ff, 0};
+    if (io.Fonts->AddFontFromFileTTF(iconPath.c_str(), 14.0f, &cfg, ranges))
+      mState.iconFontLoaded = true;
+  } else {
+    LOG_WARN("Editor",
+             "Font Awesome not found: " + iconPathTtf + " or " + iconPathOtf);
+  }
 
   EditorTheme::applyAATheme();
   ImGui_ImplGlfw_InitForOpenGL(mState.window, true);

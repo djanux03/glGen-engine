@@ -48,6 +48,7 @@ public:
 
   void setBool(const std::string &name, bool value);
   void setVec4(const std::string &name, const glm::vec4 &v);
+  void setVec2(const std::string &name, const glm::vec2 &v);
   void setVec3(const char *name, const glm::vec3 &v);
 
   void setVec3(const std::string &name, const glm::vec3 &v);

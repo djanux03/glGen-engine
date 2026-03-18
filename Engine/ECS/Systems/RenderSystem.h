@@ -6,6 +6,7 @@
 #include "ECS/Registry.h"
 #include "Rendering/Shader.h"
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -14,6 +15,8 @@
 
 class RenderSystem {
 public:
+  enum class TerrainFilter { All, OnlyTerrain, ExcludeTerrain };
+
   struct VisibilityStats {
     int tested = 0;
     int drawn = 0;
@@ -43,11 +46,16 @@ public:
   }
   void setCameraPosition(const glm::vec3 &p) { mCameraPos = p; }
   void setCullingEnabled(bool enabled) { mCullingEnabled = enabled; }
+  void setShadowCameraCulling(bool enabled) {
+    mShadowCameraCulling = enabled;
+  }
   bool cullingEnabled() const { return mCullingEnabled; }
   const VisibilityStats &stats() const { return mStats; }
 
   void update(Registry &registry, Shader &shader, bool shadowPass = false,
-              EntityId selectedEntity = 0, bool outlinePass = false) {
+              EntityId selectedEntity = 0, bool outlinePass = false,
+              bool viewModelPass = false,
+              TerrainFilter terrainFilter = TerrainFilter::All) {
 
     // Set pass-level uniforms ONCE (instead of per-object in OBJModel::draw)
     if (!shadowPass) {
@@ -100,15 +108,29 @@ public:
 
       if (!mesh.visible)
         continue;
+      if (viewModelPass) {
+        if (!mesh.isViewModel)
+          continue;
+      } else {
+        if (mesh.isViewModel)
+          continue;
+      }
       if (shadowPass && !mesh.castsShadow)
         continue;
       if (!mesh.objModel && !mesh.gltfModel && !mesh.ufbxModel)
         continue;
       if (outlinePass && entity != selectedEntity)
         continue;
+      if (terrainFilter == TerrainFilter::OnlyTerrain &&
+          (!mesh.isTerrain || mesh.isWater))
+        continue;
+      if (terrainFilter == TerrainFilter::ExcludeTerrain &&
+          (mesh.isTerrain && !mesh.isWater))
+        continue;
 
-      // Frustum culling (only main pass, skip terrain)
-      if (!shadowPass && mCullingEnabled && !mesh.isTerrain) {
+      // Frustum culling (main pass + optional shadow camera culling, skip terrain)
+      if (!viewModelPass && mCullingEnabled && !mesh.isTerrain &&
+          (!shadowPass || mShadowCameraCulling)) {
         ++mStats.tested;
         glm::mat4 world = worldMatrix(worldMatrix, entity);
         float radius = 1.0f;
@@ -226,7 +248,7 @@ public:
           }
         }
 
-        if (mesh.isTerrain) {
+        if (mesh.isTerrain && !mesh.isWater) {
           shader.setBool("uTerrainPass", true);
           shader.setBool("uUseColor", false);
         }
@@ -250,7 +272,7 @@ public:
           ++mStats.drawn;
         }
 
-        if (mesh.isTerrain) {
+        if (mesh.isTerrain && !mesh.isWater) {
           shader.setBool("uTerrainPass", false);
         }
       }
@@ -259,6 +281,9 @@ public:
     // ------------------------------------------------------------------
     // Draw Instanced Meshes
     // ------------------------------------------------------------------
+    if (viewModelPass)
+      return;
+    const uint64_t frameCullKey = buildCullKey_();
     for (auto entity : registry.view<InstancedMeshComponent>()) {
       if (!registry.has<LifecycleComponent>(entity))
         continue;
@@ -282,58 +307,81 @@ public:
       // We build a temporary scratch list and upload only the survivors.
       // The authoritative instanceTransforms list is never mutated here.
       // ------------------------------------------------------------------
-      const float maxDist = inst.maxDrawDistance;
+      const float maxDist =
+          shadowPass ? std::min(inst.maxDrawDistance, inst.shadowMaxDrawDistance)
+                     : inst.maxDrawDistance;
       const float maxDist2 = maxDist * maxDist;
-      // Approximate bounding radius of one tree instance (half the scale on Y)
-      constexpr float kTreeRadius = 8.0f;
+      const float baseRadius = std::max(0.25f, inst.instanceCullRadius);
 
       // Build culled list — only allocate if count would change
       const int totalCount = (int)inst.instanceTransforms.size();
-      mCullScratch.clear();
-      mCullScratch.reserve(totalCount);
+      int visibleCount = inst.lastVisibleCount;
+      const bool allowCache = !shadowPass;
+      const bool needsRebuild =
+          !allowCache || inst.isDirty || inst.lastCullKey != frameCullKey ||
+          (allowCache && inst.instanceVBO == 0);
+      if (needsRebuild) {
+        std::vector<glm::mat4> &outList =
+            allowCache ? inst.culledTransforms : mCullScratch;
+        outList.clear();
+        outList.reserve(totalCount);
 
-      for (const glm::mat4 &m : inst.instanceTransforms) {
-        const glm::vec3 worldPos(m[3]);
-        // Distance cull (squared, no sqrt)
-        glm::vec3 d = worldPos - mCameraPos;
-        if (d.x * d.x + d.y * d.y + d.z * d.z > maxDist2)
-          continue;
-        // Frustum cull — test if sphere around instance position is visible
-        // Shadow pass uses a slightly looser check to avoid shadow popping
-        bool visible = true;
-        const float r = shadowPass ? kTreeRadius * 2.0f : kTreeRadius;
-        for (const glm::vec4 &p : mFrustumPlanes) {
-          if (glm::dot(glm::vec3(p), worldPos) + p.w < -r) {
-            visible = false;
-            break;
+        for (const glm::mat4 &m : inst.instanceTransforms) {
+          const glm::vec3 worldPos(m[3]);
+          // Distance cull (squared, no sqrt)
+          glm::vec3 d = worldPos - mCameraPos;
+          if (d.x * d.x + d.y * d.y + d.z * d.z > maxDist2)
+            continue;
+          // Frustum cull — test if sphere around instance position is visible
+          // Shadow pass uses a slightly looser check to avoid shadow popping
+          bool visible = true;
+          const float r = shadowPass ? baseRadius * 1.5f : baseRadius;
+          for (const glm::vec4 &p : mFrustumPlanes) {
+            if (glm::dot(glm::vec3(p), worldPos) + p.w < -r) {
+              visible = false;
+              break;
+            }
           }
+          if (visible)
+            outList.push_back(m);
         }
-        if (visible)
-          mCullScratch.push_back(m);
+
+        visibleCount = (int)outList.size();
       }
 
-      const int visibleCount = (int)mCullScratch.size();
       if (visibleCount == 0) {
         shader.setBool("uInstanced", false);
         continue;
       }
 
-      // Upload culled transforms to GPU (orphan when capacity exceeded)
-      if (inst.instanceVBO == 0)
-        glGenBuffers(1, &inst.instanceVBO);
+      if (needsRebuild) {
+        const std::vector<glm::mat4> &uploadList =
+            allowCache ? inst.culledTransforms : mCullScratch;
+        // Upload culled transforms to GPU (orphan when capacity exceeded)
+        unsigned int &targetVBO =
+            shadowPass ? inst.shadowInstanceVBO : inst.instanceVBO;
+        size_t &targetCapacity =
+            shadowPass ? inst.shadowInstanceVBOCapacity
+                       : inst.instanceVBOCapacity;
+        if (targetVBO == 0)
+          glGenBuffers(1, &targetVBO);
 
-      const size_t neededBytes = (size_t)visibleCount * sizeof(glm::mat4);
-      glBindBuffer(GL_ARRAY_BUFFER, inst.instanceVBO);
-      if (neededBytes > inst.instanceVBOCapacity) {
-        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)neededBytes, nullptr,
-                     GL_DYNAMIC_DRAW);
-        inst.instanceVBOCapacity = neededBytes;
+        const size_t neededBytes = (size_t)visibleCount * sizeof(glm::mat4);
+        glBindBuffer(GL_ARRAY_BUFFER, targetVBO);
+        if (neededBytes > targetCapacity) {
+          glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)neededBytes, nullptr,
+                       GL_DYNAMIC_DRAW);
+          targetCapacity = neededBytes;
+        }
+        glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)neededBytes,
+                        uploadList.data());
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        if (allowCache) {
+          inst.isDirty = false;
+          inst.lastCullKey = frameCullKey;
+          inst.lastVisibleCount = visibleCount;
+        }
       }
-      glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)neededBytes,
-                      mCullScratch.data());
-      glBindBuffer(GL_ARRAY_BUFFER, 0);
-      // isDirty is no longer needed with per-frame culled upload
-      inst.isDirty = false;
 
       shader.setBool("uInstanced", true);
 
@@ -348,10 +396,12 @@ public:
       if (shadowPass) {
         mStats.instancedDrawCallsShadow += instSubmeshCount;
         if (inst.objModel) {
-          inst.objModel->drawDepthInstanced(shader, inst.instanceVBO,
+          inst.objModel->drawDepthInstanced(
+              shader, shadowPass ? inst.shadowInstanceVBO : inst.instanceVBO,
                                             visibleCount);
         } else if (inst.ufbxModel) {
-          inst.ufbxModel->drawDepthInstanced(shader, inst.instanceVBO,
+          inst.ufbxModel->drawDepthInstanced(
+              shader, shadowPass ? inst.shadowInstanceVBO : inst.instanceVBO,
                                              visibleCount);
         }
       } else {
@@ -375,6 +425,27 @@ public:
   }
 
 private:
+  uint64_t buildCullKey_() const {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](uint64_t v) {
+      h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+    };
+    auto quant = [](float v, float scale) -> int64_t {
+      return (int64_t)std::llround(v * scale);
+    };
+    // Quantize camera position and frustum planes to avoid tiny jitter.
+    mix((uint64_t)quant(mCameraPos.x, 10.0f));
+    mix((uint64_t)quant(mCameraPos.y, 10.0f));
+    mix((uint64_t)quant(mCameraPos.z, 10.0f));
+    for (const glm::vec4 &p : mFrustumPlanes) {
+      mix((uint64_t)quant(p.x, 1000.0f));
+      mix((uint64_t)quant(p.y, 1000.0f));
+      mix((uint64_t)quant(p.z, 1000.0f));
+      mix((uint64_t)quant(p.w, 10.0f));
+    }
+    return h;
+  }
+
   // Culls a sphere against pre-computed (and pre-normalized) frustum planes
   bool sphereInFrustum_(const glm::vec3 &center, float radius) const {
     for (const glm::vec4 &p : mFrustumPlanes) {
@@ -394,6 +465,7 @@ private:
   glm::vec3 mCameraPos{0.0f};
   glm::vec4 mFrustumPlanes[6]{};
   bool mCullingEnabled = true;
+  bool mShadowCameraCulling = true;
   VisibilityStats mStats{};
 
   // Persistent per-frame caches — cleared each frame, capacity retained

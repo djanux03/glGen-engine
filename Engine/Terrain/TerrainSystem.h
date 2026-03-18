@@ -55,6 +55,7 @@ struct TerrainSettings {
   int viewDistance = 3;         // chunk radius around camera
   float chunkWorldSize = 64.0f; // world-space size of one chunk
   bool useRidgeNoise = false;
+  bool singleBiomeOnly = true;  // force plains-only biome for now
   int octaves = 5;
   float lacunarity = 2.0f;
   float gain = 0.5f;
@@ -63,6 +64,8 @@ struct TerrainSettings {
   float seaLevel = -2.0f;
   float rockDensity = 0.2f;                 // mountain/tundra rock density
   float grassDensity = 0.25f;               // plains grass cluster density
+  float rockScale = 0.7f;                   // uniform rock size multiplier
+  float grassScale = 1.0f;                  // uniform grass size multiplier
   bool spawnWater = true;                   // generate water planes in ocean
   bool spawnRocks = true;                   // generate rocks in mountains
   bool spawnVegetation = true;              // generate trees/grass/cacti
@@ -83,6 +86,7 @@ public:
   void update(const glm::vec3 &cameraPos);
   void regenerate();
   void shutdown();
+  bool chopTree(EntityId treeEntity);
   // Must be called once per frame on main thread to GPU-upload completed chunks
   void flushPendingChunks();
 
@@ -91,6 +95,18 @@ public:
 
   bool isEnabled() const { return mSettings.enabled; }
   const TerrainStats &stats() const { return mStats; }
+  // Move a prefab instance by delta (updates instanced mesh transform).
+  bool movePrefabInstance(const std::string &prefabName, size_t instanceIndex,
+                          const glm::vec3 &delta);
+  bool getPrefabInstanceMatrix(const std::string &prefabName,
+                               size_t instanceIndex, glm::mat4 &out) const;
+  bool setPrefabInstanceMatrix(const std::string &prefabName,
+                               size_t instanceIndex, const glm::mat4 &m);
+  bool convertTreeToEntity(EntityId treeEntity);
+  bool applyHeightBrush(const glm::vec3 &center, float radius, float delta);
+  bool applyVegetationBrush(const glm::vec3 &center, float radius,
+                            const std::string &prefabName, bool add,
+                            int count);
 
   // ── Terrain Queries API ──
   float getHeightAt(float worldX, float worldZ) const;
@@ -119,9 +135,16 @@ private:
   struct ChunkData {
     EntityId entity = 0;
     std::string terrainAssetId;
+    int terrainLod = 0;
 
     // Track how many instances of each prefab this chunk spawned
     std::unordered_map<std::string, int> prefabInstanceCounts;
+    // Exact instance matrices for this chunk (for rebuilds)
+    std::unordered_map<std::string, std::vector<glm::mat4>>
+        prefabInstanceMatrices;
+    // Tree entities per prefab (if any)
+    std::unordered_map<std::string, std::vector<uint32_t>>
+        prefabInstanceEntities;
 
     EntityId waterEntity = 0;
     std::string waterAssetId;
@@ -130,6 +153,15 @@ private:
     int rockCount = 0;
     // Jolt body ID for this chunk's HeightFieldShape (0xFFFFFFFF = none)
     uint32_t physicsBodyId = 0xFFFFFFFF;
+  };
+
+  struct HeightOffsetData {
+    uint32_t sampleCount = 0;
+    std::vector<float> offsets;
+  };
+
+  struct PaintedInstanceData {
+    std::unordered_map<std::string, std::vector<glm::mat4>> prefabMatrices;
   };
 
   struct PrefabData {
@@ -153,6 +185,8 @@ private:
 
   // Mesh generation
   std::vector<OBJModel::VertexData> generateChunkMesh(int cx, int cz);
+  std::vector<OBJModel::VertexData> generateChunkMeshLod(int cx, int cz,
+                                                         int lod);
   std::vector<OBJModel::VertexData> generateWaterPlane(int cx, int cz);
 
   // Vegetation generation
@@ -173,9 +207,18 @@ private:
   void clearPrefabs();
   void addPrefabFromVerts(const std::string &name,
                           const std::vector<OBJModel::VertexData> &verts);
-  void addPrefabInstance(const std::string &name, const glm::vec3 &pos,
-                         const glm::vec3 &scale, const glm::vec3 &rot,
-                         ChunkData &chunk);
+  size_t addPrefabInstance(const std::string &name, const glm::vec3 &pos,
+                           const glm::vec3 &scale, const glm::vec3 &rot,
+                           ChunkData &chunk);
+  void registerTreeInstance(const std::string &prefabName, size_t instanceIndex,
+                            const glm::vec3 &pos, const glm::vec3 &scale,
+                            int cx, int cz, ChunkData *chunk = nullptr);
+  void removeLastPrefabInstances(const std::string &prefabName, size_t count);
+  void rebuildChunkTerrain(int cx, int cz, bool rebuildPhysics = true);
+  void rebuildPrefabInstances(const std::string &prefabName);
+  int computeChunkLod(int cameraChunkX, int cameraChunkZ, int chunkX,
+                      int chunkZ) const;
+  int lodResolution(int lod) const;
 
   TerrainSettings mSettings;
   TerrainStats mStats;
@@ -190,12 +233,19 @@ private:
   PhysicsSystem *mPhysicsSystem =
       nullptr; // optional; enables terrain collision
   std::unordered_map<ChunkCoord, ChunkData, ChunkCoordHash> mChunks;
+  std::unordered_map<ChunkCoord, HeightOffsetData, ChunkCoordHash>
+      mHeightOffsets;
+  std::unordered_map<ChunkCoord, PaintedInstanceData, ChunkCoordHash>
+      mPaintedInstances;
   ChunkCoord mLastCameraChunk = {INT_MAX, INT_MAX};
+  std::unordered_map<std::string, std::vector<uint32_t>>
+      mPrefabInstanceEntities;
 
   // ── Async chunk generation ──────────────────────────────────
   // Result produced off the main thread (pure CPU work)
   struct PendingChunk {
     int cx, cz;
+    int terrainLod = 0;
     std::vector<OBJModel::VertexData> terrainVerts;
     std::vector<OBJModel::VertexData> waterVerts;
     bool hasWater{false};
@@ -214,5 +264,5 @@ private:
   // Track which chunks are already being generated so we don't double-queue
   std::unordered_map<ChunkCoord, bool, ChunkCoordHash> mInFlight;
 
-  void loadChunkAsync(int cx, int cz);
+  void loadChunkAsync(int cx, int cz, int lod);
 };

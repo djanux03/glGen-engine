@@ -13,6 +13,7 @@ double Mouse::scrollDX = 0;
 double Mouse::scrollDY = 0;
 
 bool Mouse::firstMouse = true;
+static bool manualMode = false;
 
 bool Mouse::buttons[GLFW_MOUSE_BUTTON_LAST + 1] = {0};
 bool Mouse::buttonsChanged[GLFW_MOUSE_BUTTON_LAST + 1] = {0};
@@ -27,8 +28,10 @@ void Mouse::cursorPosCallback(GLFWwindow *window, double _x, double _y) {
     firstMouse = false;
   }
 
-  dx += x - lastX;
-  dy += lastY - y;
+  if (!manualMode) {
+    dx += x - lastX;
+    dy += lastY - y;
+  }
   lastX = x;
   lastY = y;
 }
@@ -84,3 +87,26 @@ bool Mouse::buttonWentUp(int button) {
 bool Mouse::buttonWentDown(int button) {
   return buttons[button] && buttonChanged(button);
 }
+
+void Mouse::resetDeltas() {
+  dx = 0;
+  dy = 0;
+  scrollDX = 0;
+  scrollDY = 0;
+}
+
+void Mouse::resetPosition(double _x, double _y) {
+  x = _x;
+  y = _y;
+  lastX = _x;
+  lastY = _y;
+  firstMouse = false;
+  resetDeltas();
+}
+
+void Mouse::setDeltas(double _dx, double _dy) {
+  dx = _dx;
+  dy = _dy;
+}
+
+void Mouse::setManualMode(bool enabled) { manualMode = enabled; }

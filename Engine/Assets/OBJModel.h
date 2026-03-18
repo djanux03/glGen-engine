@@ -107,6 +107,10 @@ private:
     glm::vec3 aabbMin = glm::vec3(1e30f);
     glm::vec3 aabbMax = glm::vec3(-1e30f);
     bool hasBounds = false;
+
+    // Instancing cache (VAO-level state)
+    GLuint instancedVBO = 0;
+    bool instancingReady = false;
   };
 
 private:

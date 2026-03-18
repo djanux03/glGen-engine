@@ -176,6 +176,13 @@ inline void registerScriptBindings(sol::state &lua, Registry &registry,
     }
   };
 
+  entityType["get_velocity"] = [](const EntityProxy &e) -> glm::vec3 {
+    if (e.reg->has<RigidbodyComponent>(e.id)) {
+      return e.reg->get<RigidbodyComponent>(e.id).linearVelocity;
+    }
+    return glm::vec3(0.0f);
+  };
+
   // ── Input table ────────────────────────────────────────────────────
   auto inputTable = lua.create_named_table("input");
 
@@ -207,13 +214,22 @@ inline void registerScriptBindings(sol::state &lua, Registry &registry,
       &PhysicsRaycastResult::position, "normal", &PhysicsRaycastResult::normal,
       "entityId", &PhysicsRaycastResult::entityId);
 
-  physicsTable["raycast"] = [physics](float ox, float oy, float oz, float dx,
-                                      float dy, float dz,
-                                      float maxDist) -> PhysicsRaycastResult {
-    if (physics) {
-      return physics->raycast(glm::vec3(ox, oy, oz), glm::vec3(dx, dy, dz),
-                              maxDist);
-    }
-    return PhysicsRaycastResult{};
-  };
+  physicsTable["raycast"] = sol::overload(
+      [physics](float ox, float oy, float oz, float dx, float dy, float dz,
+                float maxDist) -> PhysicsRaycastResult {
+        if (physics) {
+          return physics->raycast(glm::vec3(ox, oy, oz), glm::vec3(dx, dy, dz),
+                                  maxDist);
+        }
+        return PhysicsRaycastResult{};
+      },
+      [physics](float ox, float oy, float oz, float dx, float dy, float dz,
+                float maxDist, uint32_t ignoreEntity)
+          -> PhysicsRaycastResult {
+        if (physics) {
+          return physics->raycast(glm::vec3(ox, oy, oz), glm::vec3(dx, dy, dz),
+                                  maxDist, ignoreEntity);
+        }
+        return PhysicsRaycastResult{};
+      });
 }

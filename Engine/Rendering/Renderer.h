@@ -32,7 +32,16 @@ public:
                         float ambientStrength, const glm::vec3 &cameraPos,
                         float sunIntensity, const glm::vec3 &lightDir,
                         float far_plane, float shadowStrength,
-                        const glm::vec3 &fogColor, float fogDensity);
+                        const glm::vec3 &fogColor, float fogDensity,
+                        bool toonEnabled, int toonSteps, float toonMin,
+                        bool shadowBandEnabled, int shadowBandSteps,
+                        float shadowBandSoftness, bool ambientRampEnabled,
+                        float ambientRampStrength,
+                        const glm::vec3 &ambientRampTop,
+                        const glm::vec3 &ambientRampBottom,
+                        bool rimEnabled, float rimPower, float rimStrength,
+                        const glm::vec3 &rimColor, float emissiveBoost,
+                        float emissiveFlicker);
 
   // Shadow pass (depth cubemap)
   void beginShadowPass();

@@ -10,48 +10,46 @@
 namespace EditorTheme {
 
 // ── Color Palette ────────────────────────────────────────────────────────────
-inline constexpr ImVec4 kBgDarkest = {0.086f, 0.086f, 0.094f, 1.0f}; // #16161a
-inline constexpr ImVec4 kBgDark = {0.110f, 0.110f, 0.125f, 1.0f};    // #1c1c20
-inline constexpr ImVec4 kBgPanel = {0.145f, 0.145f, 0.165f, 1.0f};   // #25252a
-inline constexpr ImVec4 kBgChild = {0.160f, 0.160f, 0.180f, 1.0f};   // #29292e
-inline constexpr ImVec4 kBgPopup = {0.125f, 0.125f, 0.145f, 1.0f};   // #202025
+inline constexpr ImVec4 kBgDarkest = {0.060f, 0.060f, 0.065f, 1.0f}; // #0f0f10
+inline constexpr ImVec4 kBgDark = {0.090f, 0.090f, 0.100f, 1.0f};    // #17171a
+inline constexpr ImVec4 kBgPanel = {0.115f, 0.115f, 0.130f, 1.0f};   // #1d1d21
+inline constexpr ImVec4 kBgChild = {0.130f, 0.130f, 0.150f, 1.0f};   // #212126
+inline constexpr ImVec4 kBgPopup = {0.100f, 0.100f, 0.120f, 1.0f};   // #19191f
 
 inline constexpr ImVec4 kBorder = {0.220f, 0.220f, 0.260f, 0.60f};
 inline constexpr ImVec4 kBorderLight = {0.300f, 0.300f, 0.350f, 0.40f};
 
-inline constexpr ImVec4 kText = {0.900f, 0.900f, 0.920f, 1.0f};
-inline constexpr ImVec4 kTextDim = {0.550f, 0.550f, 0.600f, 1.0f};
-inline constexpr ImVec4 kTextDisabled = {0.380f, 0.380f, 0.420f, 1.0f};
+inline constexpr ImVec4 kText = {0.920f, 0.920f, 0.930f, 1.0f};
+inline constexpr ImVec4 kTextDim = {0.600f, 0.600f, 0.630f, 1.0f};
+inline constexpr ImVec4 kTextDisabled = {0.380f, 0.380f, 0.400f, 1.0f};
 
-// Accent: Soft blue (like Unreal Engine)
-inline constexpr ImVec4 kAccent = {0.260f, 0.590f, 0.980f, 1.0f}; // #4297fa
-inline constexpr ImVec4 kAccentHover = {0.340f, 0.660f, 1.000f,
-                                        1.0f}; // #57a8ff
-inline constexpr ImVec4 kAccentActive = {0.200f, 0.480f, 0.850f,
-                                         1.0f}; // #337ad9
-inline constexpr ImVec4 kAccentDim = {0.200f, 0.400f, 0.700f, 0.30f};
+// Accent: Burnt orange / amber
+inline constexpr ImVec4 kAccent = {0.980f, 0.560f, 0.160f, 1.0f}; // #fa8f29
+inline constexpr ImVec4 kAccentHover = {1.000f, 0.650f, 0.220f, 1.0f};
+inline constexpr ImVec4 kAccentActive = {0.850f, 0.450f, 0.120f, 1.0f};
+inline constexpr ImVec4 kAccentDim = {0.980f, 0.560f, 0.160f, 0.25f};
 
 // Header / Collapsable
-inline constexpr ImVec4 kHeader = {0.180f, 0.180f, 0.210f, 1.0f};
-inline constexpr ImVec4 kHeaderHover = {0.240f, 0.240f, 0.280f, 1.0f};
-inline constexpr ImVec4 kHeaderActive = {0.200f, 0.200f, 0.250f, 1.0f};
+inline constexpr ImVec4 kHeader = {0.160f, 0.160f, 0.185f, 1.0f};
+inline constexpr ImVec4 kHeaderHover = {0.220f, 0.200f, 0.180f, 1.0f};
+inline constexpr ImVec4 kHeaderActive = {0.200f, 0.180f, 0.160f, 1.0f};
 
 // Tab
-inline constexpr ImVec4 kTab = {0.130f, 0.130f, 0.150f, 1.0f};
-inline constexpr ImVec4 kTabHover = {0.220f, 0.220f, 0.260f, 1.0f};
-inline constexpr ImVec4 kTabActive = {0.180f, 0.180f, 0.210f, 1.0f};
-inline constexpr ImVec4 kTabUnfocused = {0.100f, 0.100f, 0.120f, 1.0f};
+inline constexpr ImVec4 kTab = {0.120f, 0.120f, 0.140f, 1.0f};
+inline constexpr ImVec4 kTabHover = {0.200f, 0.180f, 0.160f, 1.0f};
+inline constexpr ImVec4 kTabActive = {0.170f, 0.150f, 0.130f, 1.0f};
+inline constexpr ImVec4 kTabUnfocused = {0.090f, 0.090f, 0.110f, 1.0f};
 
 // Scrollbar
-inline constexpr ImVec4 kScrollbar = {0.160f, 0.160f, 0.180f, 1.0f};
-inline constexpr ImVec4 kScrollGrab = {0.300f, 0.300f, 0.340f, 1.0f};
-inline constexpr ImVec4 kScrollHover = {0.380f, 0.380f, 0.430f, 1.0f};
+inline constexpr ImVec4 kScrollbar = {0.150f, 0.150f, 0.170f, 1.0f};
+inline constexpr ImVec4 kScrollGrab = {0.320f, 0.280f, 0.240f, 1.0f};
+inline constexpr ImVec4 kScrollHover = {0.420f, 0.340f, 0.260f, 1.0f};
 
 // Semantic colors
 inline constexpr ImVec4 kSuccess = {0.300f, 0.780f, 0.400f, 1.0f}; // Green
-inline constexpr ImVec4 kWarning = {0.950f, 0.780f, 0.200f, 1.0f}; // Yellow
+inline constexpr ImVec4 kWarning = {0.980f, 0.650f, 0.180f, 1.0f}; // Orange
 inline constexpr ImVec4 kError = {0.920f, 0.300f, 0.300f, 1.0f};   // Red
-inline constexpr ImVec4 kInfo = {0.400f, 0.700f, 0.950f, 1.0f};    // Light blue
+inline constexpr ImVec4 kInfo = {0.750f, 0.650f, 0.400f, 1.0f};    // Warm beige
 
 // XYZ axis colors (for transform gizmos & property editors)
 inline constexpr ImVec4 kAxisX = {0.920f, 0.250f, 0.300f, 1.0f}; // Red
@@ -78,13 +76,13 @@ inline void applyAATheme() {
   style.FrameBorderSize = 0.0f;
   style.TabBorderSize = 0.0f;
 
-  style.WindowRounding = 4.0f;
-  style.ChildRounding = 3.0f;
-  style.FrameRounding = 3.0f;
-  style.PopupRounding = 4.0f;
+  style.WindowRounding = 6.0f;
+  style.ChildRounding = 5.0f;
+  style.FrameRounding = 5.0f;
+  style.PopupRounding = 6.0f;
   style.ScrollbarRounding = 6.0f;
-  style.GrabRounding = 2.0f;
-  style.TabRounding = 4.0f;
+  style.GrabRounding = 3.0f;
+  style.TabRounding = 6.0f;
 
   style.WindowTitleAlign = ImVec2(0.0f, 0.5f);
   style.WindowMenuButtonPosition = ImGuiDir_None; // No collapse button

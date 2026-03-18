@@ -2,8 +2,10 @@
 #include "Shader.h"
 #include <glm/gtc/matrix_transform.hpp>
 
-void CloudFX::init()
+bool CloudFX::init(const std::string &vertPath, const std::string &fragPath)
 {
+    mShader = std::make_unique<Shader>(vertPath.c_str(), fragPath.c_str());
+
     // Quad in XZ plane (y=0), pos.xyz uv.xy
     const float quad[] = {
         -0.5f, 0.0f, -0.5f,   0.0f, 0.0f,
@@ -28,6 +30,7 @@ void CloudFX::init()
     glEnableVertexAttribArray(1);
 
     glBindVertexArray(0);
+    return true;
 }
 
 void CloudFX::shutdown()
@@ -35,44 +38,50 @@ void CloudFX::shutdown()
     if (vbo) glDeleteBuffers(1, &vbo);
     if (vao) glDeleteVertexArrays(1, &vao);
     vbo = vao = 0;
+    mShader.reset();
 }
 
-void CloudFX::draw(Shader& shader, const glm::vec3& cameraPos)
+void CloudFX::draw(const glm::mat4 &view, const glm::mat4 &projection,
+                   const glm::vec3 &cameraPos, float timeSec,
+                   const glm::vec3 &sunColor, float sunIntensity)
 {
+    if (!mShader)
+        return;
     glBindVertexArray(vao);
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
 
-    shader.setBool("uUseColor", true);
-    shader.setBool("uCloudPass", true);
-    shader.setBool("uGlowPass", false);
+    mShader->activate();
+    mShader->setMat4("view", view);
+    mShader->setMat4("projection", projection);
+    mShader->setFloat("uTime", timeSec);
+    mShader->setVec3("uSunColor", sunColor);
+    mShader->setFloat("uSunIntensity", sunIntensity);
 
-    shader.setVec3("uCloudColor", color);
-    shader.setFloat("uCloudScale", scale);
-    shader.setFloat("uCloudSpeed", speed);
-    shader.setFloat("uCloudCover", cover);
-    shader.setFloat("uCloudSoftness", softness);
-    shader.setFloat("uCloudAlpha", alpha);
+    mShader->setVec3("uCloudColor", color);
+    mShader->setFloat("uCloudScale", scale);
+    mShader->setFloat("uCloudSpeed", speed);
+    mShader->setFloat("uCloudCover", cover);
+    mShader->setFloat("uCloudSoftness", softness);
+    mShader->setFloat("uCloudAlpha", alpha);
 
     // NEW volumetric uniforms
-    shader.setVec3("uCameraPos", cameraPos);
-    shader.setFloat("uCloudHeight", height);
-    shader.setFloat("uCloudThickness", thickness);
-    shader.setFloat("uCloudDensity", density);
-    shader.setFloat("uCloudLightAbsorption", lightAbsorption);
-    shader.setFloat("uCloudPhaseG", phaseG);
-    shader.setVec3("uCloudWind", glm::vec3(windDir.x, 0.0f, windDir.y));
+    mShader->setVec3("uCameraPos", cameraPos);
+    mShader->setFloat("uCloudHeight", height);
+    mShader->setFloat("uCloudThickness", thickness);
+    mShader->setFloat("uCloudDensity", density);
+    mShader->setFloat("uCloudLightAbsorption", lightAbsorption);
+    mShader->setFloat("uCloudPhaseG", phaseG);
+    mShader->setVec3("uCloudWind", glm::vec3(windDir.x, 0.0f, windDir.y));
 
     glm::mat4 model(1.0f);
     model = glm::translate(model, glm::vec3(0.0f, height, 0.0f)); // bottom of layer
     model = glm::scale(model, glm::vec3(size));
-    shader.setMat4("model", model);
+    mShader->setMat4("model", model);
 
     glDrawArrays(GL_TRIANGLES, 0, 6);
-
-    shader.setBool("uCloudPass", false);
 
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);

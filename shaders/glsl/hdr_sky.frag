@@ -24,6 +24,11 @@ uniform float uSunSize; // e.g. 0.9995 for small disc
 uniform float uSunDiscIntensity;
 uniform float uSunHaloIntensity;
 uniform float uSunRaysIntensity;
+uniform float uNightFactor;
+uniform float uStarIntensity;
+uniform float uMilkyWayIntensity;
+uniform vec3 uNightHorizonGlow;
+uniform float uNightDither;
 
 // Lightweight procedural sky cloud controls
 uniform bool uSkyCloudsEnabled;
@@ -64,6 +69,17 @@ float fbm(vec2 p) {
         amp *= 0.5;
     }
     return v;
+}
+
+float starField(vec3 dir)
+{
+    vec2 uv = dirToEquirectUV(dir);
+    vec2 g = uv * 2048.0;
+    vec2 cell = floor(g);
+    float h = hash21(cell);
+    float star = smoothstep(0.9975, 1.0, h);
+    float twinkle = 0.6 + 0.4 * sin(uTime * 2.0 + h * 123.4);
+    return star * twinkle;
 }
 
 vec2 dirToEquirectUV(vec3 d)
@@ -140,11 +156,31 @@ void main()
     float rayMask = smoothstep(0.35, 0.06, radial);
     float rays = rayShape * rayMask * (1.0 - sunDisc);
 
+    float nightSunScale = mix(1.0, 0.15, uNightFactor);
     vec3 sunContribution =
-        uSunColor * (sunDisc * uSunDiscIntensity +
-                     halo * uSunHaloIntensity +
-                     rays * uSunRaysIntensity);
+        uSunColor * nightSunScale * (sunDisc * uSunDiscIntensity +
+                                     halo * uSunHaloIntensity +
+                                     rays * uSunRaysIntensity);
     mapped += sunContribution;
+
+    // Night sky: stars + milky way + horizon glow
+    if (uNightFactor > 0.001) {
+        float stars = starField(worldDir) * uStarIntensity;
+        vec2 uv = dirToEquirectUV(worldDir);
+        float band = exp(-pow(dot(worldDir, normalize(vec3(0.2, 0.7, 0.1))), 2.0) * 8.0);
+        float dust = fbm(uv * 18.0 + vec2(0.0, uTime * 0.002));
+        float milky = band * dust * uMilkyWayIntensity;
+        float horizon = pow(clamp(1.0 - abs(worldDir.y), 0.0, 1.0), 3.5);
+        vec3 glow = uNightHorizonGlow * horizon;
+        mapped += (stars + milky) * uNightFactor;
+        mapped += glow * uNightFactor;
+    }
+
+    // Subtle night dithering to reduce banding
+    if (uNightFactor > 0.001 && uNightDither > 0.0) {
+        float d = (hash21(vUV * vec2(1024.0, 512.0)) - 0.5) * uNightDither;
+        mapped += vec3(d);
+    }
 
     FragColor = vec4(mapped, 1.0);
 

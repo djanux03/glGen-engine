@@ -27,7 +27,8 @@ public:
 
   // Perform a physics raycast into the world
   PhysicsRaycastResult raycast(glm::vec3 origin, glm::vec3 direction,
-                               float maxDistance = 1000.0f);
+                               float maxDistance = 1000.0f,
+                               uint32_t ignoreEntityId = 0);
 
   // Initialize the Jolt physics engine
   void init();
@@ -50,6 +51,9 @@ public:
 
   // Remove a previously registered terrain chunk body.
   void removeTerrainChunk(uint32_t bodyId);
+
+  // Remove a rigidbody from the physics world.
+  void removeBody(uint32_t bodyId);
 
 private:
   // Jolt Physics core systems

@@ -43,6 +43,13 @@ public:
   float sunHaloIntensity = 0.6f;
   float sunRaysIntensity = 0.2f;
 
+  // Night visuals
+  float nightFactor = 0.0f;           // 0=day, 1=night
+  float starIntensity = 0.4f;
+  float milkyWayIntensity = 0.25f;
+  glm::vec3 nightHorizonGlow = glm::vec3(0.08f, 0.12f, 0.20f);
+  float nightDitherStrength = 0.004f;
+
 private:
   void createFullscreenQuad_();
 

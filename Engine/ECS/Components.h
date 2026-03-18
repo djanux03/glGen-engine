@@ -51,6 +51,8 @@ struct MeshComponent {
   bool visible = true;
   bool castsShadow = true;
   bool isTerrain = false; // Terrain chunks get height-based biome coloring
+  bool isWater = false; // Water plane (avoid terrain shading path)
+  bool isViewModel = false; // Rendered in viewmodel pass only
 };
 
 struct MaterialOverrideComponent {
@@ -72,9 +74,16 @@ struct InstancedMeshComponent {
   OBJHandle objHandle{};
   UFBXHandle ufbxHandle{};
   std::vector<glm::mat4> instanceTransforms;
+  std::vector<glm::mat4> culledTransforms;
+  uint64_t lastCullKey = 0;
+  int lastVisibleCount = 0;
   unsigned int instanceVBO = 0;
   size_t instanceVBOCapacity = 0; // bytes currently allocated on GPU
+  unsigned int shadowInstanceVBO = 0;
+  size_t shadowInstanceVBOCapacity = 0;
   float maxDrawDistance = 800.0f; // cull instances beyond this distance
+  float shadowMaxDrawDistance = 400.0f;
+  float instanceCullRadius = 8.0f;
   // When true, instance fragments use terrain procedural shading path.
   bool useTerrainShading = false;
   bool isDirty = true;
@@ -108,11 +117,14 @@ struct RigidbodyComponent {
   float mass = 1.0f;
   float friction = 0.5f;
   float restitution = 0.0f;
+  // When true, physics does not override Transform rotation for this body.
+  bool lockRotation = false;
 
   // Pending forces/velocities from scripts to be applied this frame
   glm::vec3 pendingLinearVelocity = {0.0f, 0.0f, 0.0f};
   bool setLinearVelocity = false;
   glm::vec3 pendingImpulse = {0.0f, 0.0f, 0.0f};
+  glm::vec3 linearVelocity = {0.0f, 0.0f, 0.0f};
 
   // Tracking last known physics transform to detect external changes (e.g.
   // Gizmos)
@@ -133,6 +145,14 @@ struct ColliderComponent {
 
 struct BoundsComponent {
   float radius = 1.0f;
+};
+
+struct TreeComponent {
+  float health = 3.0f;
+  uint32_t instanceIndex = 0;
+  std::string prefabName;
+  int chunkX = 0;
+  int chunkZ = 0;
 };
 
 struct LODComponent {

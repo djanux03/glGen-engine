@@ -32,6 +32,7 @@ public:
   glm::vec3 sunDir =
       glm::normalize(glm::vec3(-0.2f, -1.0f, -0.3f)); // rays travel this way
   glm::vec3 sunColor = glm::vec3(1.0f);
+  float lightIntensity = 0.542f;
   float ambientStrength = 0.25f;
 
   float sunAzimuth = 180.0f;

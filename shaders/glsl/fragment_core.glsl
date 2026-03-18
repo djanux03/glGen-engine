@@ -56,6 +56,8 @@ uniform int   uOpacityChannel;
 uniform bool  uRoughnessMapIsGloss;
 uniform vec3  uEmissiveColor;
 uniform float uEmissiveStrength;
+uniform float uEmissiveBoost;
+uniform float uEmissiveFlicker;
 uniform float uAlphaCutoff;
 uniform float uGamma;
 
@@ -67,6 +69,20 @@ uniform float uFarPlane;
 uniform float uShadowStrength;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
+uniform bool  uToonEnabled;
+uniform int   uToonSteps;
+uniform float uToonMin;
+uniform bool  uShadowBandEnabled;
+uniform int   uShadowBandSteps;
+uniform float uShadowBandSoftness;
+uniform bool  uAmbientRampEnabled;
+uniform float uAmbientRampStrength;
+uniform vec3  uAmbientRampTop;
+uniform vec3  uAmbientRampBottom;
+uniform bool  uRimEnabled;
+uniform float uRimPower;
+uniform float uRimStrength;
+uniform vec3  uRimColor;
 
 // NEW: Campfire point light (no shadows)
 uniform bool  uHasFire;
@@ -401,6 +417,33 @@ void main()
         wOcean /= biomeSum; wPlains /= biomeSum; wForest /= biomeSum;
         wDesert /= biomeSum; wMountains /= biomeSum; wTundra /= biomeSum;
 
+        if (uTerrainFlatGreenEnabled) {
+            // Fast stylized path: no triplanar noise, no detail normal synthesis,
+            // no terrain PBR layer blending. Keep only broad height/slope tinting
+            // so the terrain still reads as shaped instead of fully flat.
+            float cliffMask = smoothstep(cliffStart, cliffEnd, slope);
+            float lowMask = 1.0 - smoothstep(lowStart, lowEnd, h);
+            float highMask = smoothstep(snowStart, snowEnd, h);
+
+            vec3 baseGreen = uTerrainFlatGreenColor;
+            vec3 lowTint = baseGreen * vec3(0.78, 0.86, 0.78);
+            vec3 cliffTint = mix(baseGreen, vec3(0.34, 0.36, 0.32), 0.65);
+            vec3 highTint = mix(baseGreen, vec3(0.62, 0.70, 0.63), 0.35);
+
+            vec3 terrainColor = baseGreen;
+            terrainColor = mix(terrainColor, lowTint, lowMask * 0.35);
+            terrainColor = mix(terrainColor, cliffTint, cliffMask * 0.55);
+            terrainColor = mix(terrainColor, highTint, highMask * 0.20);
+            terrainColor = clamp(terrainColor, vec3(0.0), vec3(1.0));
+
+            materialRoughness = 0.92;
+            materialMetallic = 0.0;
+            materialAO = clamp(0.92 - cliffMask * 0.08 + lowMask * 0.04, 0.75, 1.0);
+            terrainNormalWS = Nw;
+            useTerrainMaterialProps = true;
+            baseColor = vec4(terrainColor, 1.0);
+        } else {
+
         // Terrain masks used like splat-map channels.
         float cliffMask = smoothstep(cliffStart, cliffEnd, slope);
         float flatMask  = 1.0 - cliffMask;
@@ -459,62 +502,45 @@ void main()
             colSand  * layerSand  +
             colSnow  * layerSnow;
 
-        if (customMat && uTerrainFlatGreenEnabled) {
-            // Complete override: single flat color for poly-style world.
-            terrainColor = uTerrainFlatGreenColor;
-        }
-
-        // Break up monotony and dampen saturation on steep surfaces.
-        // Skip when flat green is enabled for a truly uniform poly look.
-        if (!uTerrainFlatGreenEnabled) {
-            float macroVarStrength = customMat ? uTerrainMacroVariationStrength : 0.20;
-            float cliffDesat = customMat ? uTerrainCliffDesatStrength : 0.35;
-            terrainColor *= (0.90 + macroVarStrength * macro);
-            terrainColor = mix(terrainColor, terrainColor * vec3(0.90, 0.92, 0.95), cliffMask * cliffDesat);
-        }
+        float macroVarStrength = customMat ? uTerrainMacroVariationStrength : 0.20;
+        float cliffDesat = customMat ? uTerrainCliffDesatStrength : 0.35;
+        terrainColor *= (0.90 + macroVarStrength * macro);
+        terrainColor = mix(terrainColor, terrainColor * vec3(0.90, 0.92, 0.95), cliffMask * cliffDesat);
         terrainColor = clamp(terrainColor, vec3(0.0), vec3(1.0));
 
-        if (uTerrainFlatGreenEnabled) {
-            // Poly-style: flat roughness, flat AO, no detail normals.
-            materialRoughness = 0.85;
-            materialMetallic = 0.0;
-            materialAO = 1.0;
-            // Use raw geometry normal — no detail perturbation.
-            terrainNormalWS = Nw;
-        } else {
-            // Terrain-specific PBR parameters.
-            float roughGrass = customMat ? uTerrainRoughGrass : 0.84;
-            float roughDirt = customMat ? uTerrainRoughDirt : 0.90;
-            float roughRock = customMat ? uTerrainRoughRock : 0.63;
-            float roughSand = customMat ? uTerrainRoughSand : 0.88;
-            float roughSnow = customMat ? uTerrainRoughSnow : 0.42;
-            materialRoughness =
-                layerGrass * roughGrass +
-                layerDirt  * roughDirt  +
-                layerRock  * roughRock  +
-                layerSand  * roughSand  +
-                layerSnow  * roughSnow;
-            materialRoughness = clamp(materialRoughness, 0.20, 0.98);
+        // Terrain-specific PBR parameters.
+        float roughGrass = customMat ? uTerrainRoughGrass : 0.84;
+        float roughDirt = customMat ? uTerrainRoughDirt : 0.90;
+        float roughRock = customMat ? uTerrainRoughRock : 0.63;
+        float roughSand = customMat ? uTerrainRoughSand : 0.88;
+        float roughSnow = customMat ? uTerrainRoughSnow : 0.42;
+        materialRoughness =
+            layerGrass * roughGrass +
+            layerDirt  * roughDirt  +
+            layerRock  * roughRock  +
+            layerSand  * roughSand  +
+            layerSnow  * roughSnow;
+        materialRoughness = clamp(materialRoughness, 0.20, 0.98);
 
-            materialMetallic = 0.0;
-            materialAO = clamp(0.74 + flatMask * 0.16 - cliffMask * 0.07 + lowMask * 0.06, 0.55, 1.0);
+        materialMetallic = 0.0;
+        materialAO = clamp(0.74 + flatMask * 0.16 - cliffMask * 0.07 + lowMask * 0.06, 0.55, 1.0);
 
-            // Detail normal from triplanar noise derivatives.
-            vec3 tangent = normalize(vec3(Nw.z, 0.0, -Nw.x));
-            if (dot(tangent, tangent) < 0.0001) tangent = vec3(1.0, 0.0, 0.0);
-            vec3 bitangent = normalize(cross(Nw, tangent));
-            float eps = 0.45;
-            float normalDetailScale = customMat ? uTerrainNormalDetailScale : 1.9;
-            float normalStrength = customMat ? uTerrainNormalStrength : 0.85;
-            float dT = triplanarNoise(FragPos + tangent * eps, Nw, normalDetailScale) -
-                       triplanarNoise(FragPos - tangent * eps, Nw, normalDetailScale);
-            float dB = triplanarNoise(FragPos + bitangent * eps, Nw, normalDetailScale) -
-                       triplanarNoise(FragPos - bitangent * eps, Nw, normalDetailScale);
-            terrainNormalWS = normalize(Nw - tangent * dT * normalStrength - bitangent * dB * normalStrength);
-        }
+        // Detail normal from triplanar noise derivatives.
+        vec3 tangent = normalize(vec3(Nw.z, 0.0, -Nw.x));
+        if (dot(tangent, tangent) < 0.0001) tangent = vec3(1.0, 0.0, 0.0);
+        vec3 bitangent = normalize(cross(Nw, tangent));
+        float eps = 0.45;
+        float normalDetailScale = customMat ? uTerrainNormalDetailScale : 1.9;
+        float normalStrength = customMat ? uTerrainNormalStrength : 0.85;
+        float dT = triplanarNoise(FragPos + tangent * eps, Nw, normalDetailScale) -
+                   triplanarNoise(FragPos - tangent * eps, Nw, normalDetailScale);
+        float dB = triplanarNoise(FragPos + bitangent * eps, Nw, normalDetailScale) -
+                   triplanarNoise(FragPos - bitangent * eps, Nw, normalDetailScale);
+        terrainNormalWS = normalize(Nw - tangent * dT * normalStrength - bitangent * dB * normalStrength);
 
         useTerrainMaterialProps = true;
         baseColor = vec4(terrainColor, 1.0);
+        }
     } else {
         baseColor = uUseColor ? uColor : texture(texDiffuse, TexCoord);
     }
@@ -565,6 +591,11 @@ void main()
     vec3 skyColor = vec3(0.6, 0.7, 0.8) * uAmbient;
     vec3 groundColor = vec3(0.2, 0.25, 0.2) * uAmbient;
     vec3 ambient = albedo * mix(groundColor, skyColor, N.y * 0.5 + 0.5) * (1.0 - metallic) + F0 * 0.1 * mix(groundColor, skyColor, N.y * 0.5 + 0.5);
+    if (uAmbientRampEnabled) {
+        float rampT = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
+        vec3 ramp = mix(uAmbientRampBottom, uAmbientRampTop, rampT);
+        ambient += albedo * ramp * uAmbientRampStrength;
+    }
     ambient *= ao;
 
     vec3 Lo = vec3(0.0);
@@ -596,7 +627,19 @@ void main()
     vec3 kD = vec3(1.0) - kS;
     kD *= 1.0 - metallic;	
 
-    Lo += (kD * albedo / PI + specular) * sunRadiance * NdotLs * (1.0 - shadow);
+    float shadowFactor = 1.0 - shadow;
+    if (uShadowBandEnabled) {
+        float steps = max(1.0, float(uShadowBandSteps));
+        float band = floor(shadowFactor * steps) / steps;
+        shadowFactor = mix(band, shadowFactor, clamp(uShadowBandSoftness, 0.0, 1.0));
+    }
+    float lightTerm = NdotLs * shadowFactor;
+    if (uToonEnabled) {
+        float steps = max(1.0, float(uToonSteps));
+        float t = floor(lightTerm * steps) / steps;
+        lightTerm = max(uToonMin, t);
+    }
+    Lo += (kD * albedo / PI + specular) * sunRadiance * lightTerm;
 
     // ---------- FIRE (non-shadowed point light) ----------
     if (uHasFire)
@@ -638,8 +681,19 @@ void main()
     if (!useTerrainMaterialProps && uHasEmissiveMap) {
         emissive += toLinear(texture(texEmissive, TexCoord).rgb) * uEmissiveStrength;
     }
+    emissive *= max(uEmissiveBoost, 0.0);
+    if (uEmissiveFlicker > 0.0) {
+        emissive *= (1.0 + uEmissiveFlicker *
+                     sin(uTime * 6.0 + FragPos.x * 0.7 + FragPos.z * 0.7));
+    }
 
     vec3 lit = ambient + Lo + emissive;
+
+    if (uRimEnabled) {
+        float rim = 1.0 - max(dot(N, V), 0.0);
+        rim = pow(rim, max(uRimPower, 0.001));
+        lit += uRimColor * (rim * uRimStrength);
+    }
 
     // Tonemap + gamma
     lit = toneMapReinhard(lit);

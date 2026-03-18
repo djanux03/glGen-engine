@@ -21,6 +21,10 @@ struct UFBXSubmesh {
   GLsizei indexCount = 0;
 
   MaterialAsset material;
+
+  // Instancing cache (VAO-level state)
+  GLuint instancedVBO = 0;
+  bool instancingReady = false;
 };
 
 class UFBXModel {

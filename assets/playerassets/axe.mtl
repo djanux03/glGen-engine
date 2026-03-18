@@ -1,0 +1,26 @@
+# Blender 5.0.1 MTL File: 'axe.blend'
+# www.blender.org
+
+newmtl Blade
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd textures/Axe_Blade_BaseColor.jpg
+map_refl textures/Axe_Blade_Metallic.jpg
+map_Bump -bm 1.000000 textures/Axe_Blade_Normal.jpg
+
+newmtl Wood
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd textures/Axe_Wood_BaseColor.jpg
+map_refl textures/Axe_Wood_Metallic.jpg
+map_Bump -bm 1.000000 textures/Axe_Wood_Normal.jpg

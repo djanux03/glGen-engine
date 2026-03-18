@@ -1,5 +1,6 @@
 #include "RenderLoopSubsystem.h"
 #include "AppState.h"
+#include <cfloat>
 #include <glad/glad.h>
 #include <glm/gtc/type_ptr.hpp>
 
@@ -29,6 +30,20 @@ void RenderLoopSubsystem::executeRenderPasses(const glm::mat4 &view,
                                               const glm::vec3 &cameraFront,
                                               const glm::vec3 &cameraUp,
                                               float renderTime) {
+  ++mShadowFrameIndex;
+  // Update sun direction for day/night cycle (affects shadow pass).
+  if (mState.skyUI.dayNightEnabled) {
+    const float t = mState.skyUI.timeOfDay;
+    const float az = glm::radians(mState.sun.sunAzimuth);
+    const float phase = t * 6.28318530718f - 1.57079632679f;
+    const float elevDeg = std::sin(phase) * 75.0f;
+    mState.sun.sunElevation = elevDeg;
+    const float el = glm::radians(elevDeg);
+    mState.sun.sunDir = glm::normalize(
+        glm::vec3(std::cos(el) * std::sin(az), std::sin(el),
+                  std::cos(el) * std::cos(az)));
+    mState.sun.sunDir = -mState.sun.sunDir;
+  }
   if (mGpuQueries[0] == 0 && mGpuQueries[1] == 0) {
     glGenQueries(2, mGpuQueries);
   }
@@ -44,14 +59,39 @@ void RenderLoopSubsystem::executeRenderPasses(const glm::mat4 &view,
     glBeginQuery(GL_TIME_ELAPSED, mGpuQueries[queryIndex]);
 
   mState.renderGraph.clear();
+  bool shouldRenderShadowPass = false;
   if (!mState.render.disableShadows) {
+    const int interval = std::max(1, mState.render.shadowUpdateInterval);
+    if (!mShadowValid || interval <= 1) {
+      shouldRenderShadowPass = true;
+    } else if ((mShadowFrameIndex % (uint64_t)interval) == 0) {
+      shouldRenderShadowPass = true;
+    }
+
+    if (!shouldRenderShadowPass) {
+      const float dist =
+          glm::length(cameraPos - mLastShadowCamPos);
+      const float distThresh = mState.render.shadowUpdateDistance;
+      const float dotDir =
+          glm::clamp(glm::dot(glm::normalize(mState.sun.sunDir),
+                              glm::normalize(mLastShadowSunDir)),
+                     -1.0f, 1.0f);
+      const float angleDeg = glm::degrees(std::acos(dotDir));
+      if (dist > distThresh || angleDeg > mState.render.shadowUpdateAngle) {
+        shouldRenderShadowPass = true;
+      }
+    }
+  }
+
+  if (shouldRenderShadowPass) {
     mState.renderGraph.addPass({"ShadowPass", {}, [&]() {
                                   const int qIdx = mShadowQueryIndex;
                                   if (mShadowQueries[qIdx] != 0)
                                     glBeginQuery(GL_TIME_ELAPSED,
                                                  mShadowQueries[qIdx]);
                                   renderShadowPass(
-                                      cameraPos, mState.sun.sunDir, 1.0f,
+                                      view, projection, cameraPos,
+                                      mState.sun.sunDir, 1.0f,
                                       mState.render.shadowFarPlane);
                                   if (mShadowQueries[qIdx] != 0)
                                     glEndQuery(GL_TIME_ELAPSED);
@@ -59,8 +99,8 @@ void RenderLoopSubsystem::executeRenderPasses(const glm::mat4 &view,
   }
   mState.renderGraph.addPass(
       {"MainPass",
-       mState.render.disableShadows ? std::vector<std::string>{}
-                                    : std::vector<std::string>{"ShadowPass"},
+       shouldRenderShadowPass ? std::vector<std::string>{"ShadowPass"}
+                              : std::vector<std::string>{},
        [&]() {
          const int qIdx = mMainQueryIndex;
          if (mMainQueries[qIdx] != 0)
@@ -120,27 +160,63 @@ void RenderLoopSubsystem::executeRenderPasses(const glm::mat4 &view,
   mMainQueryIndex = mainRead;
 }
 
-void RenderLoopSubsystem::renderShadowPass(const glm::vec3 &cameraPos,
+void RenderLoopSubsystem::renderShadowPass(const glm::mat4 &view,
+                                           const glm::mat4 &projection,
+                                           const glm::vec3 &cameraPos,
                                            const glm::vec3 &sunDirRaw,
                                            float nearPlane, float farPlane) {
-  // Use Orthographic projection for directional light (Sun)
-  float orthoSize = 100.0f;
-  glm::mat4 shadowProj = glm::ortho(-orthoSize, orthoSize, -orthoSize,
-                                    orthoSize, nearPlane, farPlane);
-
-  // Position the light camera to look exactly along the sun's direction towards
-  // the player/center.
-  glm::vec3 sunDir = glm::normalize(sunDirRaw);
-  glm::vec3 target = cameraPos;
-  glm::vec3 lightViewPos = target - sunDir * (farPlane * 0.5f);
-
-  // Avoid Gimbal Lock if looking straight up/down
-  glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
-  if (std::abs(glm::dot(sunDir, up)) > 0.999f) {
-    up = glm::vec3(0.0f, 0.0f, 1.0f);
+  // Fit an orthographic frustum to the camera view for better shadow quality.
+  const glm::mat4 invVP = glm::inverse(projection * view);
+  glm::vec3 frustumCorners[8];
+  int idx = 0;
+  for (int z = 0; z < 2; ++z) {
+    const float ndcZ = (z == 0) ? -1.0f : 1.0f;
+    for (int y = 0; y < 2; ++y) {
+      const float ndcY = (y == 0) ? -1.0f : 1.0f;
+      for (int x = 0; x < 2; ++x) {
+        const float ndcX = (x == 0) ? -1.0f : 1.0f;
+        glm::vec4 corner = invVP * glm::vec4(ndcX, ndcY, ndcZ, 1.0f);
+        corner /= std::max(corner.w, 0.0001f);
+        frustumCorners[idx++] = glm::vec3(corner);
+      }
+    }
   }
 
-  glm::mat4 shadowView = glm::lookAt(lightViewPos, target, up);
+  glm::vec3 frustumCenter(0.0f);
+  for (const glm::vec3 &c : frustumCorners)
+    frustumCenter += c;
+  frustumCenter /= 8.0f;
+
+  glm::vec3 sunDir = glm::normalize(sunDirRaw);
+  glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
+  if (std::abs(glm::dot(sunDir, up)) > 0.999f)
+    up = glm::vec3(0.0f, 0.0f, 1.0f);
+
+  glm::vec3 lightViewPos =
+      frustumCenter - sunDir * (farPlane * 0.5f);
+  glm::mat4 shadowView = glm::lookAt(lightViewPos, frustumCenter, up);
+
+  glm::vec3 minL(FLT_MAX);
+  glm::vec3 maxL(-FLT_MAX);
+  for (const glm::vec3 &corner : frustumCorners) {
+    glm::vec4 lightSpace = shadowView * glm::vec4(corner, 1.0f);
+    minL = glm::min(minL, glm::vec3(lightSpace));
+    maxL = glm::max(maxL, glm::vec3(lightSpace));
+  }
+
+  const float pad = 10.0f;
+  minL.x -= pad;
+  minL.y -= pad;
+  maxL.x += pad;
+  maxL.y += pad;
+
+  float minZ = minL.z - pad;
+  float maxZ = maxL.z + pad;
+  float lightNear = std::max(0.1f, -maxZ);
+  float lightFar = std::max(lightNear + 1.0f, -minZ);
+
+  glm::mat4 shadowProj =
+      glm::ortho(minL.x, maxL.x, minL.y, maxL.y, lightNear, lightFar);
   mState.render.lightSpaceMatrix = shadowProj * shadowView;
 
   mState.renderer.beginShadowPass();
@@ -154,9 +230,14 @@ void RenderLoopSubsystem::renderShadowPass(const glm::vec3 &cameraPos,
   depthSh.activate();
   depthSh.setMat4("uLightSpaceMatrix", mState.render.lightSpaceMatrix);
 
-  mState.renderSystem.update(mState.scene.registry(), depthSh, true);
+  mState.renderSystem.update(mState.scene.registry(), depthSh, true, 0, false,
+                             false, RenderSystem::TerrainFilter::All);
 
   mState.renderer.endShadowPass();
+
+  mShadowValid = true;
+  mLastShadowCamPos = cameraPos;
+  mLastShadowSunDir = sunDir;
 }
 
 void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
@@ -168,16 +249,76 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
   glm::vec3 lightDir = mState.sun.sunDir;
   float far_plane = mState.render.shadowFarPlane;
 
+  glm::vec3 skyHorizon = glm::make_vec3(mState.skyUI.skyHorizon);
+  glm::vec3 skyTop = glm::make_vec3(mState.skyUI.skyTop);
+  glm::vec3 sunColor = mState.sun.sunColor;
+  float nightFactor = 0.0f;
+  glm::vec3 fogColor = mState.render.fogColor;
+  float fogDensity = mState.render.fogDensity;
+  float emissiveBoost = 1.0f;
+  float emissiveFlicker = 0.0f;
+  float skyExposure = mState.render.exposure;
+  float skyGamma = mState.render.gamma;
+  float ambientRampStrength = mState.render.ambientRampStrength;
+  glm::vec3 ambientRampTop = mState.render.ambientRampTop;
+  glm::vec3 ambientRampBottom = mState.render.ambientRampBottom;
+
+  if (mState.skyUI.dayNightEnabled) {
+    const float t = mState.skyUI.timeOfDay;
+    const float phase = t * 6.28318530718f - 1.57079632679f;
+    const float sunHeight = std::sin(phase);
+    const float dayFactor = glm::smoothstep(-0.05f, 0.20f, sunHeight);
+    nightFactor = glm::smoothstep(0.15f, -0.20f, sunHeight);
+    float duskFactor = 1.0f - std::abs(sunHeight);
+    duskFactor = glm::smoothstep(0.20f, 0.80f, duskFactor);
+
+    const glm::vec3 dayH = glm::make_vec3(mState.skyUI.dayHorizon);
+    const glm::vec3 dayT = glm::make_vec3(mState.skyUI.dayTop);
+    const glm::vec3 nightH = glm::make_vec3(mState.skyUI.nightHorizon);
+    const glm::vec3 nightT = glm::make_vec3(mState.skyUI.nightTop);
+
+    skyHorizon = glm::mix(nightH, dayH, dayFactor);
+    skyTop = glm::mix(nightT, dayT, dayFactor);
+
+    const glm::vec3 duskSun = mState.skyUI.sunDuskColor;
+    const glm::vec3 nightSun = mState.skyUI.sunNightColor;
+    const glm::vec3 daySun = mState.skyUI.sunDayColor;
+
+    sunColor = glm::mix(nightSun, duskSun, duskFactor);
+    sunColor = glm::mix(sunColor, daySun, dayFactor);
+
+    // Slightly tint the horizon at dusk for nicer gradients.
+    skyHorizon = glm::mix(skyHorizon, sunColor, duskFactor * 0.25f);
+
+    // Night atmosphere adjustments
+    fogColor = glm::mix(fogColor, glm::vec3(0.03f, 0.05f, 0.10f), nightFactor);
+    fogDensity = fogDensity * glm::mix(1.0f, 1.6f, nightFactor);
+    emissiveBoost = glm::mix(1.0f, 1.8f, nightFactor);
+    emissiveFlicker = 0.08f * nightFactor;
+    skyExposure = mState.render.exposure * glm::mix(1.0f, 0.7f, nightFactor);
+    skyGamma = glm::mix(mState.render.gamma, 1.9f, nightFactor);
+    ambientRampStrength =
+        mState.render.ambientRampStrength * glm::mix(1.0f, 0.6f, nightFactor);
+    ambientRampTop = glm::mix(mState.render.ambientRampTop,
+                              glm::vec3(0.08f, 0.12f, 0.18f), nightFactor);
+    ambientRampBottom = glm::mix(mState.render.ambientRampBottom,
+                                 glm::vec3(0.02f, 0.03f, 0.05f),
+                                 nightFactor);
+  }
+
   // Elevation-driven lighting model for more natural day/dusk look.
   float daylight = glm::clamp(-lightDir.y, 0.0f, 1.0f);
   float dayBlend = glm::smoothstep(0.03f, 0.30f, daylight);
   glm::vec3 sunriseTint(1.20f, 0.70f, 0.45f);
   glm::vec3 litSunColor =
-      mState.sun.sunColor * glm::mix(sunriseTint, glm::vec3(1.0f), dayBlend);
+      sunColor * glm::mix(sunriseTint, glm::vec3(1.0f), dayBlend);
   float litSunIntensity =
-      mState.sun.glowStrength * glm::mix(0.16f, 1.0f, daylight);
+      mState.sun.lightIntensity * glm::mix(0.08f, 1.0f, daylight);
+  litSunIntensity = glm::mix(litSunIntensity, litSunIntensity * 0.25f,
+                             nightFactor);
   float litAmbient =
       glm::max(0.02f, mState.sun.ambientStrength * (0.25f + 0.75f * daylight));
+  litAmbient = glm::mix(litAmbient, litAmbient * 0.5f, nightFactor);
 
   glEnable(GL_STENCIL_TEST);
   glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
@@ -196,29 +337,101 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
 
   if (mState.render.disableHDR) {
     mState.sky.setSolidSky(true);
-    mState.sky.setSkyColors(glm::make_vec3(mState.skyUI.skyHorizon),
-                            glm::make_vec3(mState.skyUI.skyTop));
+    mState.sky.setSkyColors(skyHorizon, skyTop);
   } else {
     mState.sky.setSolidSky(false);
   }
 
   bool o_skyCloudsEnabled = mState.sky.skyCloudsEnabled;
+  const float baseSkyCloudDensity = mState.sky.skyCloudDensity;
+  const glm::vec3 baseSkyCloudColor = mState.sky.skyCloudColor;
+  const float baseCloudAlpha = mState.cloud.alpha;
+  const glm::vec3 baseCloudColor = mState.cloud.color;
   if (mState.render.disableClouds) {
     mState.sky.skyCloudsEnabled = false;
   }
 
-  mState.sky.draw(view, projection, mState.render.exposure, mState.render.gamma,
-                  mState.sun.sunDir, litSunColor, mState.sun.sunSize, nowT);
+  // Keep lighting and sky presentation separate: minimal sky only affects the
+  // visible backdrop, not sun light intensity.
+  const bool minimalSky = mState.skyUI.minimalSky;
+  const float backdropBlend =
+      glm::clamp(mState.skyUI.skyBackdropBlend, 0.0f, 1.0f);
+  const float featureVisibility =
+      glm::clamp(mState.skyUI.skyFeatureVisibility, 0.0f, 1.0f);
+  if (minimalSky) {
+    const glm::vec3 fogDrivenSky = glm::mix(fogColor, skyTop, 0.18f);
+    skyHorizon = glm::mix(skyHorizon, fogDrivenSky, backdropBlend);
+    skyTop = glm::mix(skyTop, fogDrivenSky,
+                      glm::mix(backdropBlend, 1.0f, 0.35f));
+    mState.sky.skyCloudDensity = baseSkyCloudDensity * featureVisibility;
+    mState.sky.skyCloudColor =
+        glm::mix(fogDrivenSky, baseSkyCloudColor, featureVisibility);
+    mState.cloud.alpha =
+        baseCloudAlpha * glm::mix(0.0f, 0.75f, featureVisibility);
+    mState.cloud.color =
+        glm::mix(fogDrivenSky, baseCloudColor, featureVisibility);
+  }
+
+  mState.sky.nightFactor = nightFactor;
+  mState.sky.starIntensity = glm::mix(0.0f, 0.65f, nightFactor);
+  mState.sky.milkyWayIntensity = glm::mix(0.0f, 0.35f, nightFactor);
+  mState.sky.nightHorizonGlow = glm::mix(glm::vec3(0.0f),
+                                         glm::vec3(0.08f, 0.12f, 0.20f),
+                                         nightFactor);
+  mState.sky.nightDitherStrength = glm::mix(0.0f, 0.006f, nightFactor);
+  const float baseDisc = mState.sky.sunDiscIntensity;
+  const float baseHalo = mState.sky.sunHaloIntensity;
+  const float baseRays = mState.sky.sunRaysIntensity;
+  mState.sky.sunDiscIntensity =
+      baseDisc * glm::mix(1.0f, 0.18f, nightFactor);
+  mState.sky.sunHaloIntensity =
+      baseHalo * glm::mix(1.0f, 0.25f, nightFactor);
+  mState.sky.sunRaysIntensity =
+      baseRays * glm::mix(1.0f, 0.05f, nightFactor);
+  if (minimalSky) {
+    mState.sky.sunDiscIntensity *= featureVisibility;
+    mState.sky.sunHaloIntensity *= featureVisibility;
+    mState.sky.sunRaysIntensity *= featureVisibility;
+  }
+  mState.sky.draw(view, projection, skyExposure, skyGamma, mState.sun.sunDir,
+                  litSunColor, mState.sun.sunSize, nowT);
+  mState.sky.sunDiscIntensity = baseDisc;
+  mState.sky.sunHaloIntensity = baseHalo;
+  mState.sky.sunRaysIntensity = baseRays;
+
+  // Fireflies (night-only)
+  static float lastFireflyT = 0.0f;
+  float fireflyDt = nowT - lastFireflyT;
+  if (fireflyDt < 0.0f)
+    fireflyDt = 0.0f;
+  if (fireflyDt > 0.05f)
+    fireflyDt = 0.05f;
+  lastFireflyT = nowT;
+  float fireflyFactor =
+      mState.skyUI.firefliesEnabled
+          ? (mState.skyUI.dayNightEnabled ? nightFactor : 1.0f)
+          : 0.0f;
+  if (fireflyFactor > 0.0f) {
+    mState.fireflies.update(fireflyDt, cameraPos, fireflyFactor,
+                            mState.skyUI.fireflyCount,
+                            mState.skyUI.fireflyRadius,
+                            mState.skyUI.fireflyHeightMin,
+                            mState.skyUI.fireflyHeightMax);
+  }
 
   mState.sky.skyCloudsEnabled = o_skyCloudsEnabled;
+  mState.sky.skyCloudDensity = baseSkyCloudDensity;
+  mState.sky.skyCloudColor = baseSkyCloudColor;
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, 0);
 
   if (!mState.render.disableClouds) {
-    mState.renderer.shader().activate();
-    mState.cloud.draw(mState.renderer.shader(), cameraPos);
+    mState.cloud.draw(view, projection, cameraPos, nowT, litSunColor,
+                      litSunIntensity);
   }
+  mState.cloud.alpha = baseCloudAlpha;
+  mState.cloud.color = baseCloudColor;
 
   mState.renderer.shader().activate();
 
@@ -228,8 +441,13 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
   mState.renderer.setFrameUniforms(
       view, projection, mState.render.mixVal, nowT, litSunColor, litAmbient,
       cameraPos, litSunIntensity, lightDir, far_plane,
-      mState.render.shadowStrength, mState.render.fogColor,
-      mState.render.fogDensity);
+      mState.render.shadowStrength, fogColor, fogDensity,
+      mState.render.toonEnabled, mState.render.toonSteps, mState.render.toonMin,
+      mState.render.shadowBandEnabled, mState.render.shadowBandSteps,
+      mState.render.shadowBandSoftness, mState.render.ambientRampEnabled,
+      ambientRampStrength, ambientRampTop, ambientRampBottom,
+      mState.render.rimEnabled, mState.render.rimPower, mState.render.rimStrength,
+      mState.render.rimColor, emissiveBoost, emissiveFlicker);
 
   mState.renderer.shader().setMat4("uLightSpaceMatrix",
                                    mState.render.lightSpaceMatrix);
@@ -272,8 +490,49 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
                                    tm.flatGreenEnabled);
   mState.renderer.shader().setVec3("uTerrainFlatGreenColor", tm.flatGreenColor);
 
-  mState.renderSystem.update(mState.scene.registry(), mState.renderer.shader(),
-                             false, mState.selection.selectedEntityId, false);
+  const bool useFlatTerrainShader = tm.flatGreenEnabled &&
+                                    mState.terrainFlatShader != nullptr;
+  if (useFlatTerrainShader) {
+    Shader &terrainSh = *mState.terrainFlatShader;
+    terrainSh.activate();
+    terrainSh.setMat4("view", view);
+    terrainSh.setMat4("projection", projection);
+    terrainSh.setVec3("uSunColor", litSunColor);
+    terrainSh.setFloat("uSunIntensity", litSunIntensity);
+    terrainSh.setFloat("uAmbient", litAmbient);
+    terrainSh.setVec3("uLightDir", lightDir);
+    terrainSh.setMat4("uLightSpaceMatrix", mState.render.lightSpaceMatrix);
+    terrainSh.setFloat("uShadowStrength", mState.render.shadowStrength);
+    terrainSh.setVec3("uCameraPos", cameraPos);
+    terrainSh.setVec3("uFogColor", fogColor);
+    terrainSh.setFloat("uFogDensity", fogDensity);
+    terrainSh.setVec3("uTerrainFlatGreenColor", tm.flatGreenColor);
+    terrainSh.setInt("shadowMap", 1);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, mState.renderer.shadowTex());
+    glActiveTexture(GL_TEXTURE0);
+
+    mState.renderSystem.update(
+        mState.scene.registry(), terrainSh, false, 0, false, false,
+        RenderSystem::TerrainFilter::OnlyTerrain);
+
+    // Restore main shader after terrain-only pass so non-terrain draws use the
+    // correct program (terrain shader has no instancing path).
+    mState.renderer.shader().activate();
+  }
+
+  mState.renderSystem.update(
+      mState.scene.registry(), mState.renderer.shader(), false,
+      mState.selection.selectedEntityId, false, false,
+      useFlatTerrainShader ? RenderSystem::TerrainFilter::ExcludeTerrain
+                           : RenderSystem::TerrainFilter::All);
+
+  if (fireflyFactor > 0.0f) {
+    mState.fireflies.draw(view, projection, nowT, fireflyFactor,
+                          mState.skyUI.fireflySize,
+                          mState.skyUI.fireflyIntensity,
+                          mState.skyUI.fireflyColor);
+  }
 
   mState.projectiles.draw(view, projection, 0.25f);
 
@@ -285,12 +544,45 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
     mState.outlineShader->setMat4("view", view);
     mState.outlineShader->setMat4("projection", projection);
     mState.renderSystem.update(mState.scene.registry(), *mState.outlineShader,
-                               false, mState.selection.selectedEntityId, true);
+                               false, mState.selection.selectedEntityId, true,
+                               false, RenderSystem::TerrainFilter::All);
 
     glStencilMask(0xFF);
     glStencilFunc(GL_ALWAYS, 1, 0xFF);
   }
   glDisable(GL_STENCIL_TEST);
+
+  // Viewmodel pass (axe) — screen-space, no camera correlation.
+  if (mState.axeEnabled && mState.axeEntity != 0) {
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+
+    float aspect = (float)mState.scrW / (float)mState.scrH;
+    glm::mat4 vmView(1.0f);
+    glm::mat4 vmProj = glm::perspective(glm::radians(mState.input.fov), aspect,
+                                        0.01f, 50.0f);
+
+    mState.renderer.shader().activate();
+    mState.renderer.setFrameUniforms(
+        vmView, vmProj, mState.render.mixVal, nowT, litSunColor, litAmbient,
+        glm::vec3(0.0f), litSunIntensity, lightDir, far_plane,
+        mState.render.shadowStrength, fogColor, fogDensity,
+        mState.render.toonEnabled,
+        mState.render.toonSteps, mState.render.toonMin,
+        mState.render.shadowBandEnabled, mState.render.shadowBandSteps,
+        mState.render.shadowBandSoftness, mState.render.ambientRampEnabled,
+        ambientRampStrength, ambientRampTop, ambientRampBottom,
+        mState.render.rimEnabled, mState.render.rimPower,
+        mState.render.rimStrength, mState.render.rimColor, emissiveBoost,
+        emissiveFlicker);
+
+    mState.renderSystem.update(mState.scene.registry(), mState.renderer.shader(),
+                               false, 0, false, true,
+                               RenderSystem::TerrainFilter::All);
+
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST);
+  }
 
   if (mState.playState != AppState::PlayState::Playing) {
     mState.physicsSystem.drawDebugColliders(
@@ -298,6 +590,61 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
   }
 
   // Finish post-processing (bloom + SSAO + volumetrics) and blit to screen.
-  mState.postProcessor.endRenderPass(view, projection, cameraPos, lightDir,
-                                     litSunColor, 0.1f, 500.0f, nowT);
+  auto &pp = mState.postProcessor;
+  pp.setForceSsaoFullRes(
+      mState.terrainMaterial.flatGreenEnabled && pp.ssaoFullResTerrain);
+  const bool baseEnableColorGrade = pp.enableColorGrade;
+  const float baseBloomIntensity = pp.bloomIntensity;
+  const float baseBloomThreshold = pp.bloomThreshold;
+  const float baseBrightness = pp.brightness;
+  const bool baseEnableDistanceTint = pp.enableDistanceTint;
+  const glm::vec3 baseDistanceTintColor = pp.distanceTintColor;
+  const float baseVolumetricDensity = pp.volumetricFogDensity;
+  const float baseGradeSaturation = pp.gradeSaturation;
+  const float baseGradeContrast = pp.gradeContrast;
+  const float baseGradeLift = pp.gradeLift;
+  const float baseGradeGamma = pp.gradeGamma;
+  const float baseGradeGain = pp.gradeGain;
+  const glm::vec3 baseGradeTint = pp.gradeTint;
+
+  if (nightFactor > 0.001f) {
+    pp.enableColorGrade = true;
+    pp.gradeSaturation = glm::mix(baseGradeSaturation, 0.85f, nightFactor);
+    pp.gradeContrast = glm::mix(baseGradeContrast, 1.08f, nightFactor);
+    pp.gradeLift = glm::mix(baseGradeLift, -0.03f, nightFactor);
+    pp.gradeGamma = glm::mix(baseGradeGamma, 1.12f, nightFactor);
+    pp.gradeGain = glm::mix(baseGradeGain, 0.95f, nightFactor);
+    pp.gradeTint =
+        glm::mix(baseGradeTint, glm::vec3(0.75f, 0.85f, 1.05f), nightFactor);
+
+    pp.bloomIntensity = glm::mix(baseBloomIntensity, 1.6f, nightFactor);
+    pp.bloomThreshold = glm::mix(baseBloomThreshold, 0.6f, nightFactor);
+    pp.brightness = glm::mix(baseBrightness, 0.95f, nightFactor);
+
+    pp.enableDistanceTint = true;
+    pp.distanceTintColor =
+        glm::mix(baseDistanceTintColor, glm::vec3(0.07f, 0.10f, 0.16f),
+                 nightFactor);
+    pp.volumetricFogDensity =
+        glm::mix(baseVolumetricDensity, baseVolumetricDensity * 1.3f,
+                 nightFactor);
+  }
+
+  pp.endRenderPass(view, projection, cameraPos, lightDir, litSunColor, 0.1f,
+                   500.0f, nowT);
+
+  // Restore post-process settings so UI values stay stable.
+  pp.enableColorGrade = baseEnableColorGrade;
+  pp.bloomIntensity = baseBloomIntensity;
+  pp.bloomThreshold = baseBloomThreshold;
+  pp.brightness = baseBrightness;
+  pp.enableDistanceTint = baseEnableDistanceTint;
+  pp.distanceTintColor = baseDistanceTintColor;
+  pp.volumetricFogDensity = baseVolumetricDensity;
+  pp.gradeSaturation = baseGradeSaturation;
+  pp.gradeContrast = baseGradeContrast;
+  pp.gradeLift = baseGradeLift;
+  pp.gradeGamma = baseGradeGamma;
+  pp.gradeGain = baseGradeGain;
+  pp.gradeTint = baseGradeTint;
 }

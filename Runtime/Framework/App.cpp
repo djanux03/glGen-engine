@@ -156,6 +156,8 @@ bool initRuntimeSystems(AppState &s) {
       s.projectConfig.shaderPath(s.projectConfig.projectileVertexShader);
   const std::string projFS =
       s.projectConfig.shaderPath(s.projectConfig.projectileFragmentShader);
+  const std::string cloudVS = s.projectConfig.shaderPath("cloud.vert");
+  const std::string cloudFS = s.projectConfig.shaderPath("cloud.frag");
 
   const std::string grassSide =
       s.projectConfig.assetPath(s.projectConfig.grassSideTexture);
@@ -182,6 +184,8 @@ bool initRuntimeSystems(AppState &s) {
       s.projectConfig.shaderPath(s.projectConfig.volumetricFogFragmentShader);
   const std::string ppBloomCompositeFS =
       s.projectConfig.shaderPath(s.projectConfig.bloomCompositeFragmentShader);
+  const std::string terrainFlatVS = s.projectConfig.shaderPath("terrain_flat.vert");
+  const std::string terrainFlatFS = s.projectConfig.shaderPath("terrain_flat.frag");
 
   if (!s.renderer.init(mainVS.c_str(), mainFS.c_str(), grassSide.c_str(),
                        grassTop.c_str(), grassTop.c_str(), shadowVS.c_str(),
@@ -205,8 +209,22 @@ bool initRuntimeSystems(AppState &s) {
   if (!s.projectiles.init(projVS.c_str(), projFS.c_str()))
     return false;
 
+  if (!s.cloud.init(cloudVS, cloudFS))
+    LOG_WARN("Runtime", "Failed to initialize CloudFX");
+
+  const std::string fireflyVS = s.projectConfig.shaderPath("firefly.vert");
+  const std::string fireflyFS = s.projectConfig.shaderPath("firefly.frag");
+  if (!s.fireflies.init(fireflyVS.c_str(), fireflyFS.c_str()))
+    LOG_WARN("Runtime", "Failed to initialize FireflySystem");
+
   (void)s.assets.registerShader(&s.renderer.shader(), mainVS, mainFS);
   (void)s.assets.registerShader(&s.renderer.shadowShader(), shadowVS, shadowFS);
+  if (s.cloud.shader())
+    (void)s.assets.registerShader(s.cloud.shader(), cloudVS, cloudFS);
+  s.terrainFlatShader =
+      std::make_unique<Shader>(terrainFlatVS.c_str(), terrainFlatFS.c_str());
+  (void)s.assets.registerShader(s.terrainFlatShader.get(), terrainFlatVS,
+                                terrainFlatFS);
 
   // Initialize and register outline shader
   s.outlineShader =
@@ -240,9 +258,12 @@ bool initRuntimeSystems(AppState &s) {
 void shutdownRuntimeSystems(AppState &s) {
   s.postProcessor.shutdown();
   s.projectiles.shutdown();
+  s.fireflies.shutdown();
+  s.cloud.shutdown();
   s.fire.shutdown();
   s.sky.shutdown();
   s.renderer.shutdown();
+  s.terrainFlatShader.reset();
 }
 
 class WindowSubsystem final : public IEngineSubsystem {

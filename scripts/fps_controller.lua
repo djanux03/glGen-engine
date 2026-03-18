@@ -3,10 +3,20 @@
 
 local speed = 10.0
 local sprint_mult = 2.0
-local sensitivity = 4.5 -- mouselook sensitivity
+local sensitivity = 0.12 -- mouselook sensitivity (tuned for pixel deltas)
 
 local pitch = 0.0
 local yaw = 0.0
+local last_yaw = 0.0
+local last_pitch = 0.0
+local vel_y = 0.0
+
+-- Character tuning
+local gravity = -9.8
+local max_fall_speed = -25.0
+local ground_clearance = 0.9
+local ground_snap = 1.2
+local jump_speed = 4.5
 
 -- Used for simple shooting cooldown so you don't fire 60 bullets a second
 local last_shot_time = 0.0
@@ -17,22 +27,12 @@ function on_spawn(entity)
     local r = entity:get_rotation()
     pitch = r.x
     yaw = r.y
+    last_yaw = yaw
+    last_pitch = pitch
 end
 
 function on_update(entity, dt)
-    local pos = entity:get_position()
-    
-    -- 1. Mouselook
-    local dx = input.mouse_dx()
-    local dy = input.mouse_dy()
-    yaw = yaw - dx * sensitivity * dt
-    pitch = pitch + dy * sensitivity * dt
-    
-    -- Clamp pitch to prevent flipping backwards
-    if pitch > 89.0 then pitch = 89.0 end
-    if pitch < -89.0 then pitch = -89.0 end
-    
-    entity:set_rotation(pitch, yaw, 0.0)
+    -- 1. Mouselook handled in C++ (CoreAppLayer) for stability.
     
     -- 2. WASD Movement (relative to camera yaw direction)
     local current_speed = speed
@@ -47,27 +47,46 @@ function on_update(entity, dt)
     local right_x = r.x
     local right_z = r.z
     
+    local vx = 0.0
+    local vz = 0.0
     if input.key_down("W") then
-        pos.x = pos.x + forward_x * move
-        pos.z = pos.z + forward_z * move
+        vx = vx + forward_x * move
+        vz = vz + forward_z * move
     end
     if input.key_down("S") then
-        pos.x = pos.x - forward_x * move
-        pos.z = pos.z - forward_z * move
+        vx = vx - forward_x * move
+        vz = vz - forward_z * move
     end
     if input.key_down("A") then
-        pos.x = pos.x - right_x * move
-        pos.z = pos.z - right_z * move
+        vx = vx - right_x * move
+        vz = vz - right_z * move
     end
     if input.key_down("D") then
-        pos.x = pos.x + right_x * move
-        pos.z = pos.z + right_z * move
+        vx = vx + right_x * move
+        vz = vz + right_z * move
     end
-    
-    -- Up / Down (For floating around or jumping)
-    if input.key_down("SPACE") then pos.y = pos.y + move end
-    if input.key_down("LCTRL") then pos.y = pos.y - move end
-    
+
+    -- Manual gravity + ground snap
+    local pos = entity:get_position()
+    local hit = physics.raycast(pos.x, pos.y, pos.z, 0.0, -1.0, 0.0, 5.0, entity:id())
+    local grounded = false
+    if hit.hit and hit.distance <= ground_snap then
+        grounded = true
+        if vel_y < 0.0 then vel_y = 0.0 end
+        pos.y = hit.position.y + ground_clearance
+        if input.key_down("SPACE") then
+            vel_y = jump_speed
+            grounded = false
+            pos.y = pos.y + vel_y * dt
+        end
+    else
+        vel_y = vel_y + gravity * dt
+        if vel_y < max_fall_speed then vel_y = max_fall_speed end
+        pos.y = pos.y + vel_y * dt
+    end
+
+    pos.x = pos.x + vx
+    pos.z = pos.z + vz
     entity:set_position(pos.x, pos.y, pos.z)
     
     -- 3. Shooting (Left click = GLFW button 0)
@@ -83,7 +102,7 @@ function on_update(entity, dt)
         local dir_z = f3.z
         
         -- Raycast into the physics engine up to 1000 units away
-        local hit = physics.raycast(pos.x, pos.y, pos.z, dir_x, dir_y, dir_z, 1000.0)
+        local hit = physics.raycast(pos.x, pos.y, pos.z, dir_x, dir_y, dir_z, 1000.0, entity:id())
         
         if hit.hit then
             log.info("BANG! Hit entity ID: " .. tostring(hit.entityId) .. " at distance: " .. tostring(hit.distance))

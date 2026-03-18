@@ -1,15 +1,20 @@
 #pragma once
 #include <glad/glad.h>
 #include <glm/glm.hpp>
+#include <memory>
+#include <string>
 
 class Shader;
 
 class CloudFX
 {
 public:
-    void init();
+    bool init(const std::string &vertPath, const std::string &fragPath);
     void shutdown();
-void draw(Shader& shader, const glm::vec3& cameraPos);
+    void draw(const glm::mat4 &view, const glm::mat4 &projection,
+              const glm::vec3 &cameraPos, float timeSec,
+              const glm::vec3 &sunColor, float sunIntensity);
+    Shader *shader() const { return mShader.get(); }
 
     // tweakables (additions)
     float thickness = 8.0f;          // vertical size of cloud layer
@@ -31,4 +36,5 @@ void draw(Shader& shader, const glm::vec3& cameraPos);
 
 private:
     GLuint vao = 0, vbo = 0;
+    std::unique_ptr<Shader> mShader;
 };
