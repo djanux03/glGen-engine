@@ -110,5 +110,16 @@ void main()
 
     sceneColor *= uBrightness;
 
+    // ACES Tonemapping
+    float a = 2.51;
+    float b = 0.03;
+    float c = 2.43;
+    float d = 0.59;
+    float e = 0.14;
+    sceneColor = clamp((sceneColor * (a * sceneColor + b)) / (sceneColor * (c * sceneColor + d) + e), 0.0, 1.0);
+
+    // Gamma Correction
+    sceneColor = pow(sceneColor, vec3(1.0 / 2.2));
+
     FragColor = vec4(sceneColor, 1.0);
 }

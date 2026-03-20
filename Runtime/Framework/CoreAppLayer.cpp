@@ -3,6 +3,7 @@
 #include <glad/glad.h>
 
 #include "AppState.h"
+#include "AudioSubsystem.h"
 #include "CoreAppLayer.h"
 #include "EditorSubsystem.h"
 #include "RenderLoopSubsystem.h"
@@ -263,6 +264,10 @@ bool executeConsoleCommand(AppState &s, const std::string &line) {
 
   if (cmd == "play") {
     s.playState = AppState::PlayState::Playing;
+    return false;
+  }
+  if (cmd == "audio_test_footstep") {
+    s.pending.requestTestFootstepAudio = true;
     return false;
   }
   if (cmd == "pause") {
@@ -542,6 +547,13 @@ json serializeTerrainMaterial(const TerrainMaterialSettings &s) {
   j["roughRock"] = s.roughRock;
   j["roughSand"] = s.roughSand;
   j["roughSnow"] = s.roughSnow;
+  j["useGroundTextures"] = s.useGroundTextures;
+  j["groundAlbedoPath"] = s.groundAlbedoPath;
+  j["groundNormalPath"] = s.groundNormalPath;
+  j["groundRoughnessPath"] = s.groundRoughnessPath;
+  j["groundTiling"] = s.groundTiling;
+  j["groundBlendStrength"] = s.groundBlendStrength;
+  j["groundRoughness"] = s.groundRoughness;
   j["flatGreenEnabled"] = s.flatGreenEnabled;
   j["flatGreenColor"] = vec3ToJson(s.flatGreenColor);
   return j;
@@ -594,6 +606,20 @@ void applyTerrainMaterial(const json &j, TerrainMaterialSettings &s) {
     s.roughSand = j["roughSand"].get<float>();
   if (j.contains("roughSnow"))
     s.roughSnow = j["roughSnow"].get<float>();
+  if (j.contains("useGroundTextures"))
+    s.useGroundTextures = j["useGroundTextures"].get<bool>();
+  if (j.contains("groundAlbedoPath"))
+    s.groundAlbedoPath = j["groundAlbedoPath"].get<std::string>();
+  if (j.contains("groundNormalPath"))
+    s.groundNormalPath = j["groundNormalPath"].get<std::string>();
+  if (j.contains("groundRoughnessPath"))
+    s.groundRoughnessPath = j["groundRoughnessPath"].get<std::string>();
+  if (j.contains("groundTiling"))
+    s.groundTiling = j["groundTiling"].get<float>();
+  if (j.contains("groundBlendStrength"))
+    s.groundBlendStrength = j["groundBlendStrength"].get<float>();
+  if (j.contains("groundRoughness"))
+    s.groundRoughness = j["groundRoughness"].get<float>();
   if (j.contains("flatGreenEnabled"))
     s.flatGreenEnabled = j["flatGreenEnabled"].get<bool>();
   loadVec3(j, "flatGreenColor", s.flatGreenColor);
@@ -697,6 +723,47 @@ void applyRenderSettings(const json &j, RenderSettings &s) {
     s.frustumCulling = j["frustumCulling"].get<bool>();
   if (j.contains("shadowCameraCulling"))
     s.shadowCameraCulling = j["shadowCameraCulling"].get<bool>();
+}
+
+json serializeAudioSettings(const AudioSettings &s) {
+  json j;
+  j["enabled"] = s.enabled;
+  j["mute"] = s.mute;
+  j["masterVolume"] = s.masterVolume;
+  j["ambientEnabled"] = s.ambientEnabled;
+  j["ambientPath"] = s.ambientPath;
+  j["ambientVolume"] = s.ambientVolume;
+  j["footstepsEnabled"] = s.footstepsEnabled;
+  j["footstepPath"] = s.footstepPath;
+  j["footstepVolume"] = s.footstepVolume;
+  j["footstepWalkCadence"] = s.footstepWalkCadence;
+  j["footstepRunCadence"] = s.footstepRunCadence;
+  return j;
+}
+
+void applyAudioSettings(const json &j, AudioSettings &s) {
+  if (j.contains("enabled"))
+    s.enabled = j["enabled"].get<bool>();
+  if (j.contains("mute"))
+    s.mute = j["mute"].get<bool>();
+  if (j.contains("masterVolume"))
+    s.masterVolume = j["masterVolume"].get<float>();
+  if (j.contains("ambientEnabled"))
+    s.ambientEnabled = j["ambientEnabled"].get<bool>();
+  if (j.contains("ambientPath"))
+    s.ambientPath = j["ambientPath"].get<std::string>();
+  if (j.contains("ambientVolume"))
+    s.ambientVolume = j["ambientVolume"].get<float>();
+  if (j.contains("footstepsEnabled"))
+    s.footstepsEnabled = j["footstepsEnabled"].get<bool>();
+  if (j.contains("footstepPath"))
+    s.footstepPath = j["footstepPath"].get<std::string>();
+  if (j.contains("footstepVolume"))
+    s.footstepVolume = j["footstepVolume"].get<float>();
+  if (j.contains("footstepWalkCadence"))
+    s.footstepWalkCadence = j["footstepWalkCadence"].get<float>();
+  if (j.contains("footstepRunCadence"))
+    s.footstepRunCadence = j["footstepRunCadence"].get<float>();
 }
 
 json serializePostProcess(const PostProcessor &s) {
@@ -1163,11 +1230,29 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.render.disableHDR,
       mState.render.freezeTime,
       mState.woodCount,
+      (int &)mState.activeSlot,
       mState.axeEnabled,
       mState.axeOffset,
       mState.axeRotation,
       mState.axeScale,
+      mState.torchEnabled,
+      mState.torchOffset,
+      mState.torchRotation,
+      mState.torchScale,
       mState.usePlayerCameraInEdit,
+      mState.audio.enabled,
+      mState.audio.mute,
+      mState.audio.masterVolume,
+      mState.audio.ambientEnabled,
+      mState.audio.ambientPath,
+      mState.audio.ambientVolume,
+      mState.audio.footstepsEnabled,
+      mState.audio.footstepPath,
+      mState.audio.footstepVolume,
+      mState.audio.footstepWalkCadence,
+      mState.audio.footstepRunCadence,
+      mState.audioBackendAvailable,
+      mState.audioStatus,
       dt,
       (int)mState.scene.registry().view<TransformComponent>().size(),
       (int)(mState.projectiles.count()),
@@ -1209,6 +1294,12 @@ void CoreAppLayer::update(float dt, float nowT) {
   if (Keyboard::keyWentDown(GLFW_KEY_GRAVE_ACCENT)) {
     mState.editor.toggleConsole();
   }
+  if (!uiOut.wantCaptureKeyboard) {
+    if (Keyboard::keyWentDown(GLFW_KEY_1))
+      mState.activeSlot = AppState::HotbarSlot::Axe;
+    if (Keyboard::keyWentDown(GLFW_KEY_2))
+      mState.activeSlot = AppState::HotbarSlot::Torch;
+  }
   if (uiOut.sceneModified) {
     mState.history.pendingHistoryCommit = true;
     mState.history.pendingHistoryLabel = "Edit Scene";
@@ -1244,6 +1335,11 @@ void CoreAppLayer::update(float dt, float nowT) {
   }
 
   // Handle Play mode cursor locking and ESC to pause
+  if (mState.playState == AppState::PlayState::Playing &&
+      Keyboard::keyWentDown(GLFW_KEY_ESCAPE)) {
+    mState.playState = AppState::PlayState::Paused;
+  }
+
   static AppState::PlayState lastPlayState = AppState::PlayState::Stopped;
   static bool usingRawMouse = false;
   if (mState.playState == AppState::PlayState::Playing &&
@@ -1280,11 +1376,6 @@ void CoreAppLayer::update(float dt, float nowT) {
     }
   }
 
-  if (mState.playState == AppState::PlayState::Playing &&
-      Keyboard::keyWentDown(GLFW_KEY_ESCAPE)) {
-    mState.playState = AppState::PlayState::Paused;
-    glfwSetInputMode(mState.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-  }
   lastPlayState = mState.playState;
 
   bool sceneMutatedByCommands = false;
@@ -1320,6 +1411,7 @@ void CoreAppLayer::update(float dt, float nowT) {
       root["terrainSettings"] = serializeTerrainSettings(mState.terrainSettings);
       root["terrainMaterial"] = serializeTerrainMaterial(mState.terrainMaterial);
       root["renderSettings"] = serializeRenderSettings(mState.render);
+      root["audioSettings"] = serializeAudioSettings(mState.audio);
       root["sunSettings"] = serializeSunSettings(mState.sun);
       root["skySettings"] = serializeSkySettings(mState.skyUI);
       root["postProcess"] = serializePostProcess(mState.postProcessor);
@@ -1358,6 +1450,8 @@ void CoreAppLayer::update(float dt, float nowT) {
           applyTerrainMaterial(root["terrainMaterial"], mState.terrainMaterial);
         if (root.contains("renderSettings"))
           applyRenderSettings(root["renderSettings"], mState.render);
+        if (root.contains("audioSettings"))
+          applyAudioSettings(root["audioSettings"], mState.audio);
         if (root.contains("sunSettings"))
           applySunSettings(root["sunSettings"], mState.sun);
         if (root.contains("skySettings"))
@@ -1704,6 +1798,41 @@ void CoreAppLayer::update(float dt, float nowT) {
         mState.grabbedReleaseVelocity = glm::vec3(0.0f);
       }
     }
+
+    // ── Mouse2: Dynamic Terrain Cratering ──
+    static float craterCooldown = 0.0f;
+    if (craterCooldown > 0.0f) {
+      craterCooldown -= dt;
+    } else {
+      bool mouse2Down =
+          glfwGetMouseButton(mState.window, GLFW_MOUSE_BUTTON_RIGHT) ==
+          GLFW_PRESS;
+      if (mouse2Down) {
+        auto &reg = mState.scene.registry();
+        if (mState.playerId != 0 && reg.has<TransformComponent>(mState.playerId)) {
+          auto &camTr = reg.get<TransformComponent>(mState.playerId);
+          glm::vec3 front;
+          front.x = -sin(glm::radians(camTr.rotation.y)) *
+                    cos(glm::radians(camTr.rotation.x));
+          front.y = sin(glm::radians(camTr.rotation.x));
+          front.z = -cos(glm::radians(camTr.rotation.y)) *
+                    cos(glm::radians(camTr.rotation.x));
+          front = glm::normalize(front);
+
+          auto hit = mState.physicsSystem.raycast(camTr.position, front, 100.0f,
+                                                  mState.playerId);
+          if (hit.hit) {
+            // Apply a negative height offset to carve out a crater.
+            // Radius 2.5 meters, scooping out 0.8 meters per tick.
+            bool carved =
+                mState.terrainSystem.applyHeightBrush(hit.position, 2.5f, -0.8f);
+            if (carved) {
+              craterCooldown = 0.1f; // Limit to ~10 carves per second
+            }
+          }
+        }
+      }
+    }
     {
       ScopedCpuTimer timer(mState.profiler, "Scripts");
       mState.scriptSystem.update(mState.scene.registry(), dt);
@@ -1724,8 +1853,8 @@ void CoreAppLayer::update(float dt, float nowT) {
   // ── Editor Camera (orbit / pan / zoom via mouse) ──
   {
     ScopedCpuTimer timer(mState.profiler, "Editor Camera");
-    mState.editorCamera.update(mState.window,
-                               uiOut.wantCaptureMouse || ImGuizmo::IsUsing());
+    bool imguiWants = uiOut.wantCaptureMouse || ImGuizmo::IsUsing();
+    mState.editorCamera.update(mState.window, imguiWants);
   }
 
   // F key: focus on selected entity
@@ -1806,6 +1935,7 @@ void CoreAppLayer::update(float dt, float nowT) {
   // Viewmodel (axe)
   const bool showAxe =
       mState.axeEnabled &&
+      mState.activeSlot == AppState::HotbarSlot::Axe &&
       (mState.playState == AppState::PlayState::Playing || mState.uiMode);
   if (showAxe) {
     auto &reg = mState.scene.registry();
@@ -1845,6 +1975,67 @@ void CoreAppLayer::update(float dt, float nowT) {
     auto &reg = mState.scene.registry();
     if (reg.has<MeshComponent>(mState.axeEntity)) {
       reg.get<MeshComponent>(mState.axeEntity).visible = false;
+    }
+  }
+
+  const bool showTorch =
+      mState.torchEnabled &&
+      mState.activeSlot == AppState::HotbarSlot::Torch &&
+      (mState.playState == AppState::PlayState::Playing || mState.uiMode);
+  if (showTorch) {
+    auto &reg = mState.scene.registry();
+    if (mState.torchEntity == 0 ||
+        !reg.has<MeshComponent>(mState.torchEntity) ||
+        !reg.has<TransformComponent>(mState.torchEntity)) {
+      EntityId eid = mState.scene.spawnPrimitive("cube");
+      if (eid != 0) {
+        reg.emplace<TransientComponent>(eid);
+        if (reg.has<NameComponent>(eid))
+          reg.get<NameComponent>(eid).name = "Torch";
+        auto &t = reg.get<TransformComponent>(eid);
+        t.position = mState.torchOffset;
+        t.rotation = mState.torchRotation;
+        t.scale = mState.torchScale;
+        auto &mc = reg.get<MeshComponent>(eid);
+        mc.visible = true;
+        mc.castsShadow = false;
+        mc.isViewModel = true;
+        if (reg.has<MaterialOverrideComponent>(eid)) {
+          auto &mo = reg.get<MaterialOverrideComponent>(eid);
+          mo.enabled = true;
+          mo.material.baseColor = glm::vec4(0.18f, 0.12f, 0.07f, 1.0f);
+          mo.material.roughness = 1.0f;
+          mo.material.metallic = 0.0f;
+          mo.material.ao = 1.0f;
+        } else {
+          MaterialOverrideComponent mo;
+          mo.enabled = true;
+          mo.material.id = "__torch_stick";
+          mo.material.baseColor = glm::vec4(0.18f, 0.12f, 0.07f, 1.0f);
+          mo.material.roughness = 1.0f;
+          mo.material.metallic = 0.0f;
+          mo.material.ao = 1.0f;
+          reg.emplace<MaterialOverrideComponent>(eid, std::move(mo));
+        }
+        mState.torchEntity = eid;
+      }
+    }
+
+    if (mState.torchEntity != 0 &&
+        reg.has<TransformComponent>(mState.torchEntity)) {
+      if (reg.has<MeshComponent>(mState.torchEntity)) {
+        reg.get<MeshComponent>(mState.torchEntity).visible = true;
+      }
+      auto &t = reg.get<TransformComponent>(mState.torchEntity);
+      t.position = glm::vec3(mState.torchOffset.x, mState.torchOffset.y,
+                             -std::abs(mState.torchOffset.z));
+      t.rotation = mState.torchRotation;
+      t.scale = mState.torchScale;
+    }
+  } else if (mState.torchEntity != 0) {
+    auto &reg = mState.scene.registry();
+    if (reg.has<MeshComponent>(mState.torchEntity)) {
+      reg.get<MeshComponent>(mState.torchEntity).visible = false;
     }
   }
 
@@ -2014,6 +2205,16 @@ void CoreAppLayer::update(float dt, float nowT) {
     ScopedCpuTimer timer(mState.profiler, "Projectiles");
     mState.projectiles.update(dt);
   }
+
+  if (mState.audioSubsystem) {
+    if (mState.pending.requestTestFootstepAudio) {
+      mState.audioSubsystem->playTestFootstep();
+      mState.pending.requestTestFootstepAudio = false;
+    }
+    ScopedCpuTimer timer(mState.profiler, "Audio");
+    mState.audioSubsystem->update(dt, cameraPos, cameraFront);
+  }
+
   // Use non-jittered projection for culling stability.
   mState.renderSystem.setViewProjection(projection * view);
   mState.renderSystem.setCameraPosition(cameraPos);

@@ -49,6 +49,7 @@
 #include <vector>
 
 #include "AppState.h"
+#include "AudioSubsystem.h"
 #include "CoreAppLayer.h"
 #include "EditorSubsystem.h"
 #include "NetworkRuntimeSubsystem.h"
@@ -340,6 +341,10 @@ int App::run() {
   (void)m->projectConfig.loadFromFile("project_config.json");
 
   m->subsystems.registerSubsystem(std::make_unique<WindowSubsystem>(*m));
+
+  auto audioSubsys = std::make_unique<AudioSubsystem>(*m);
+  m->audioSubsystem = audioSubsys.get();
+  m->subsystems.registerSubsystem(std::move(audioSubsys));
 
   m->subsystems.registerSubsystem(
       std::make_unique<RuntimeSystemsSubsystem>(*m));

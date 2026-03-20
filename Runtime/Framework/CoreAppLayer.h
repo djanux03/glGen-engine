@@ -13,7 +13,7 @@ public:
   std::string name() const override { return "CoreAppLayer"; }
   SubsystemPhase phase() const override { return SubsystemPhase::Application; }
   std::vector<std::string> dependencies() const override {
-    return {"Window", "RuntimeSystems", "EditorSubsystem",
+    return {"Window", "AudioSubsystem", "RuntimeSystems", "EditorSubsystem",
             "RenderLoopSubsystem", "PhysicsRuntimeSubsystem",
             "ScriptRuntimeSubsystem", "NetworkRuntimeSubsystem",
             "TerrainRuntimeSubsystem"};

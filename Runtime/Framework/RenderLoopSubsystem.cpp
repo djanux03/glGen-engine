@@ -1,5 +1,6 @@
 #include "RenderLoopSubsystem.h"
 #include "AppState.h"
+#include "Texture.h"
 #include <cfloat>
 #include <glad/glad.h>
 #include <glm/gtc/type_ptr.hpp>
@@ -320,6 +321,39 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
       glm::max(0.02f, mState.sun.ambientStrength * (0.25f + 0.75f * daylight));
   litAmbient = glm::mix(litAmbient, litAmbient * 0.5f, nightFactor);
 
+  const bool torchLightActive =
+      mState.torchEnabled &&
+      mState.activeSlot == AppState::HotbarSlot::Torch &&
+      (mState.playState == AppState::PlayState::Playing || mState.uiMode);
+  const glm::vec3 camRight =
+      glm::normalize(glm::cross(cameraFront, cameraUp));
+  const float torchFlickerNoise =
+      0.50f +
+      0.50f * (0.50f * std::sin(nowT * 7.3f + 0.4f) +
+               0.30f * std::sin(nowT * 12.7f + 1.9f) +
+               0.20f * std::sin(nowT * 19.9f + 4.2f));
+  const glm::vec3 torchLightPos =
+      cameraPos + camRight * (0.34f + 0.020f * std::sin(nowT * 8.1f)) +
+      cameraUp * (-0.12f + 0.018f * std::sin(nowT * 13.7f + 1.1f)) +
+      cameraFront * (0.78f + 0.032f * std::sin(nowT * 10.4f + 2.3f));
+  const glm::vec3 torchLightDir = glm::normalize(
+      cameraFront * (0.82f + 0.05f * std::sin(nowT * 6.2f)) +
+      camRight * (0.08f * std::sin(nowT * 9.4f + 0.8f)) +
+      glm::vec3(0.0f, -0.57f - 0.05f * std::sin(nowT * 7.9f + 1.7f), 0.0f));
+  const glm::vec3 torchLightColor =
+      glm::mix(glm::vec3(0.95f, 0.34f, 0.08f),
+               glm::vec3(1.0f, 0.80f, 0.42f), torchFlickerNoise * 0.65f);
+  const float torchNightBoost = glm::mix(1.2f, 2.4f, nightFactor);
+  const float torchFireIntensity =
+      (8.2f + 3.4f * torchFlickerNoise) * torchNightBoost;
+  const float torchFireConstant = 1.0f;
+  const float torchFireLinear = 0.14f;
+  const float torchFireQuadratic = 0.032f;
+  const float torchFireFlicker = 0.22f;
+  const float torchFireAmbient =
+      (0.75f + 0.25f * torchFlickerNoise) * torchNightBoost;
+  const float torchFireAmbientRadius = 9.5f + 1.6f * torchFlickerNoise;
+
   glEnable(GL_STENCIL_TEST);
   glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
   glStencilFunc(GL_ALWAYS, 1, 0xFF);
@@ -442,6 +476,7 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
       view, projection, mState.render.mixVal, nowT, litSunColor, litAmbient,
       cameraPos, litSunIntensity, lightDir, far_plane,
       mState.render.shadowStrength, fogColor, fogDensity,
+      mState.render.fogHeightFalloff,
       mState.render.toonEnabled, mState.render.toonSteps, mState.render.toonMin,
       mState.render.shadowBandEnabled, mState.render.shadowBandSteps,
       mState.render.shadowBandSoftness, mState.render.ambientRampEnabled,
@@ -451,7 +486,18 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
 
   mState.renderer.shader().setMat4("uLightSpaceMatrix",
                                    mState.render.lightSpaceMatrix);
-  mState.renderer.shader().setBool("uHasFire", false);
+  mState.renderer.shader().setBool("uHasFire", torchLightActive);
+  mState.renderer.shader().setVec3("uFirePos", torchLightPos);
+  mState.renderer.shader().setVec3("uFireDir", torchLightDir);
+  mState.renderer.shader().setVec3("uFireColor", torchLightColor);
+  mState.renderer.shader().setFloat("uFireIntensity", torchFireIntensity);
+  mState.renderer.shader().setFloat("uFireConstant", torchFireConstant);
+  mState.renderer.shader().setFloat("uFireLinear", torchFireLinear);
+  mState.renderer.shader().setFloat("uFireQuadratic", torchFireQuadratic);
+  mState.renderer.shader().setFloat("uFireFlicker", torchFireFlicker);
+  mState.renderer.shader().setFloat("uFireAmbient", torchFireAmbient);
+  mState.renderer.shader().setFloat("uFireAmbientRadius",
+                                    torchFireAmbientRadius);
 
   const TerrainMaterialSettings &tm = mState.terrainMaterial;
   mState.renderer.shader().setBool("uTerrainMaterialEnabled", tm.enableCustom);
@@ -486,6 +532,27 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
   mState.renderer.shader().setFloat("uTerrainRoughRock", tm.roughRock);
   mState.renderer.shader().setFloat("uTerrainRoughSand", tm.roughSand);
   mState.renderer.shader().setFloat("uTerrainRoughSnow", tm.roughSnow);
+  const GLuint terrainGroundAlbedo =
+      tm.useGroundTextures ? LoadTexture2DCached(tm.groundAlbedoPath) : 0;
+  const GLuint terrainGroundRoughness =
+      tm.useGroundTextures ? LoadTexture2DCached(tm.groundRoughnessPath) : 0;
+  mState.renderer.shader().setBool(
+      "uTerrainUseGroundTextures",
+      tm.useGroundTextures && terrainGroundAlbedo != 0);
+  mState.renderer.shader().setBool("uTerrainHasGroundRoughness",
+                                   terrainGroundRoughness != 0);
+  mState.renderer.shader().setFloat("uTerrainGroundTiling", tm.groundTiling);
+  mState.renderer.shader().setFloat("uTerrainGroundBlendStrength",
+                                    tm.groundBlendStrength);
+  mState.renderer.shader().setFloat("uTerrainGroundRoughnessValue",
+                                    tm.groundRoughness);
+  mState.renderer.shader().setInt("uTerrainGroundAlbedo", 8);
+  mState.renderer.shader().setInt("uTerrainGroundRoughness", 9);
+  glActiveTexture(GL_TEXTURE8);
+  glBindTexture(GL_TEXTURE_2D, terrainGroundAlbedo);
+  glActiveTexture(GL_TEXTURE9);
+  glBindTexture(GL_TEXTURE_2D, terrainGroundRoughness);
+  glActiveTexture(GL_TEXTURE0);
   mState.renderer.shader().setBool("uTerrainFlatGreenEnabled",
                                    tm.flatGreenEnabled);
   mState.renderer.shader().setVec3("uTerrainFlatGreenColor", tm.flatGreenColor);
@@ -506,6 +573,19 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
     terrainSh.setVec3("uCameraPos", cameraPos);
     terrainSh.setVec3("uFogColor", fogColor);
     terrainSh.setFloat("uFogDensity", fogDensity);
+    terrainSh.setFloat("uFogHeightFalloff", mState.render.fogHeightFalloff);
+    terrainSh.setBool("uHasFire", torchLightActive);
+    terrainSh.setVec3("uFirePos", torchLightPos);
+    terrainSh.setVec3("uFireDir", torchLightDir);
+    terrainSh.setVec3("uFireColor", torchLightColor);
+    terrainSh.setFloat("uFireIntensity", torchFireIntensity);
+    terrainSh.setFloat("uFireConstant", torchFireConstant);
+    terrainSh.setFloat("uFireLinear", torchFireLinear);
+    terrainSh.setFloat("uFireQuadratic", torchFireQuadratic);
+    terrainSh.setFloat("uFireFlicker", torchFireFlicker);
+    terrainSh.setFloat("uFireAmbient", torchFireAmbient);
+    terrainSh.setFloat("uFireAmbientRadius", torchFireAmbientRadius);
+    terrainSh.setFloat("uTime", nowT);
     terrainSh.setVec3("uTerrainFlatGreenColor", tm.flatGreenColor);
     terrainSh.setInt("shadowMap", 1);
     glActiveTexture(GL_TEXTURE1);
@@ -552,8 +632,16 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
   }
   glDisable(GL_STENCIL_TEST);
 
-  // Viewmodel pass (axe) — screen-space, no camera correlation.
-  if (mState.axeEnabled && mState.axeEntity != 0) {
+  // Viewmodel pass — screen-space, no camera correlation.
+  const bool drawViewmodelAxe =
+      mState.axeEnabled &&
+      mState.activeSlot == AppState::HotbarSlot::Axe &&
+      mState.axeEntity != 0;
+  const bool drawViewmodelTorch =
+      mState.torchEnabled &&
+      mState.activeSlot == AppState::HotbarSlot::Torch &&
+      mState.torchEntity != 0;
+  if (drawViewmodelAxe || drawViewmodelTorch) {
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
 
@@ -567,6 +655,7 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
         vmView, vmProj, mState.render.mixVal, nowT, litSunColor, litAmbient,
         glm::vec3(0.0f), litSunIntensity, lightDir, far_plane,
         mState.render.shadowStrength, fogColor, fogDensity,
+        mState.render.fogHeightFalloff,
         mState.render.toonEnabled,
         mState.render.toonSteps, mState.render.toonMin,
         mState.render.shadowBandEnabled, mState.render.shadowBandSteps,
@@ -579,6 +668,26 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
     mState.renderSystem.update(mState.scene.registry(), mState.renderer.shader(),
                                false, 0, false, true,
                                RenderSystem::TerrainFilter::All);
+
+    if (drawViewmodelTorch &&
+        mState.scene.registry().has<TransformComponent>(mState.torchEntity)) {
+      const auto &torchTr =
+          mState.scene.registry().get<TransformComponent>(mState.torchEntity);
+      const glm::vec3 firePos = glm::vec3(
+          torchTr.getMatrix() * glm::vec4(0.0f, 0.72f, 0.0f, 1.0f));
+      FireFXParams savedParams = mState.fire.params();
+      auto &fireParams = mState.fire.params();
+      fireParams.enabled = true;
+      fireParams.offset = glm::vec3(0.0f);
+      fireParams.size = 0.16f;
+      fireParams.intensity = 1.65f;
+      fireParams.smokeOpacity = 0.28f;
+      fireParams.smokeScaleXY = 1.35f;
+      fireParams.smokeScaleY = 1.8f;
+      fireParams.smokeLift = 0.65f;
+      mState.fire.draw(vmView, vmProj, glm::vec3(0.0f), firePos, nowT);
+      fireParams = savedParams;
+    }
 
     glDepthMask(GL_TRUE);
     glEnable(GL_DEPTH_TEST);

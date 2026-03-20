@@ -25,6 +25,7 @@
 
 #include "Assets/PrimitiveMeshGenerator.h"
 #include "Rendering/Shader.h"
+#include "Rendering/GLStateCache.h"
 
 #include <iostream>
 
@@ -353,7 +354,7 @@ void ::PhysicsSystem::drawDebugColliders(Registry &reg, const glm::mat4 &view,
   if (!mDebugCube || !mDebugSphere)
     return;
 
-  glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+  GLStateCache::instance().setPolygonMode(GL_LINE);
   glDisable(GL_CULL_FACE);
 
   shader.activate();
@@ -425,7 +426,7 @@ void ::PhysicsSystem::drawDebugColliders(Registry &reg, const glm::mat4 &view,
     drawModel->draw(shader, glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f));
   }
 
-  glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+  GLStateCache::instance().setPolygonMode(GL_FILL);
   glEnable(GL_CULL_FACE);
 }
 

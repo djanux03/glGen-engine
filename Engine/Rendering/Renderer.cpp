@@ -120,8 +120,8 @@ void Renderer::setFrameUniforms(const glm::mat4 &view,
                                 const glm::vec3 &cameraPos, float sunIntensity,
                                 const glm::vec3 &lightDir, float farPlane,
                                 float shadowStrength, const glm::vec3 &fogColor,
-                                float fogDensity, bool toonEnabled,
-                                int toonSteps, float toonMin,
+                                float fogDensity, float fogHeightFalloff,
+                                bool toonEnabled, int toonSteps, float toonMin,
                                 bool shadowBandEnabled, int shadowBandSteps,
                                 float shadowBandSoftness,
                                 bool ambientRampEnabled,
@@ -153,6 +153,7 @@ void Renderer::setFrameUniforms(const glm::mat4 &view,
   // Fog
   mShader->setVec3("uFogColor", fogColor);
   mShader->setFloat("uFogDensity", fogDensity);
+  mShader->setFloat("uFogHeightFalloff", fogHeightFalloff);
 
   // Toon lighting
   mShader->setBool("uToonEnabled", toonEnabled);

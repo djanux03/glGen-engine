@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glm/glm.hpp>
+#include <string>
 
 struct TerrainMaterialSettings {
   bool enableCustom = true;
@@ -36,6 +37,15 @@ struct TerrainMaterialSettings {
   float roughRock = 0.63f;
   float roughSand = 0.88f;
   float roughSnow = 0.42f;
+
+  // Optional realistic ground layer.
+  bool useGroundTextures = false;
+  std::string groundAlbedoPath;
+  std::string groundNormalPath;
+  std::string groundRoughnessPath;
+  float groundTiling = 0.18f;
+  float groundBlendStrength = 1.0f;
+  float groundRoughness = 0.82f;
 
   // Stylized option: flatten green-biome terrain into a single green tint.
   bool flatGreenEnabled = true;

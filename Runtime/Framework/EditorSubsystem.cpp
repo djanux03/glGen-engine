@@ -24,8 +24,37 @@ bool EditorSubsystem::initialize() {
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 #endif
   io.IniFilename = "imgui.ini";
+  io.Fonts->Clear();
 
-  io.Fonts->AddFontDefault();
+  const std::vector<std::string> mainFontCandidates = {
+      mState.projectConfig.assetPath("fonts/Inter-Regular.ttf"),
+      mState.projectConfig.assetPath("fonts/Inter-Medium.ttf"),
+      "/System/Library/Fonts/Supplemental/Helvetica.ttc",
+      "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+      "/Library/Fonts/Arial.ttf"};
+
+  ImFont *mainFont = nullptr;
+  for (const std::string &fontPath : mainFontCandidates) {
+    if (fontPath.empty() || !std::filesystem::exists(fontPath))
+      continue;
+    ImFontConfig cfg;
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 2;
+    cfg.PixelSnapH = false;
+    cfg.RasterizerMultiply = 1.1f;
+    mainFont = io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 16.0f, &cfg);
+    if (mainFont != nullptr)
+      break;
+  }
+  if (mainFont == nullptr) {
+    ImFontConfig cfg;
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 2;
+    cfg.PixelSnapH = false;
+    cfg.RasterizerMultiply = 1.1f;
+    mainFont = io.Fonts->AddFontDefault(&cfg);
+  }
+
   const std::string iconPathTtf =
       mState.projectConfig.assetPath("fonts/fa-solid-900.ttf");
   const std::string iconPathOtf =
@@ -35,8 +64,10 @@ bool EditorSubsystem::initialize() {
   if (!iconPath.empty() && std::filesystem::exists(iconPath)) {
     ImFontConfig cfg;
     cfg.MergeMode = true;
-    cfg.PixelSnapH = true;
+    cfg.PixelSnapH = false;
     cfg.GlyphMinAdvanceX = 14.0f;
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 2;
     static const ImWchar ranges[] = {0xf000, 0xf8ff, 0};
     if (io.Fonts->AddFontFromFileTTF(iconPath.c_str(), 14.0f, &cfg, ranges))
       mState.iconFontLoaded = true;
@@ -44,6 +75,8 @@ bool EditorSubsystem::initialize() {
     LOG_WARN("Editor",
              "Font Awesome not found: " + iconPathTtf + " or " + iconPathOtf);
   }
+
+  io.FontDefault = mainFont;
 
   EditorTheme::applyAATheme();
   ImGui_ImplGlfw_InitForOpenGL(mState.window, true);

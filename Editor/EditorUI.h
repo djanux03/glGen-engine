@@ -149,11 +149,31 @@ struct EditorContext {
   bool &disableHDR;
   bool &freezeTime;
   int &woodCount;
+  int &activeViewmodelSlot;
   bool &axeEnabled;
   glm::vec3 &axeOffset;
   glm::vec3 &axeRotation;
   glm::vec3 &axeScale;
+  bool &torchEnabled;
+  glm::vec3 &torchOffset;
+  glm::vec3 &torchRotation;
+  glm::vec3 &torchScale;
   bool &usePlayerCameraInEdit;
+
+  // Audio
+  bool &audioEnabled;
+  bool &audioMute;
+  float &audioMasterVolume;
+  bool &ambientAudioEnabled;
+  std::string &ambientAudioPath;
+  float &ambientAudioVolume;
+  bool &footstepAudioEnabled;
+  std::string &footstepAudioPath;
+  float &footstepAudioVolume;
+  float &footstepWalkCadence;
+  float &footstepRunCadence;
+  bool &audioBackendAvailable;
+  std::string &audioStatus;
 
   // Frame stats
   float dt;

@@ -117,10 +117,9 @@ inline void draw(ToolbarState &state) {
     float rightX = vp->WorkSize.x - 260;
     ImGui::SameLine(rightX);
 
-    const char *shadingLabels[] = {"Textured", "Solid", "Wire"};
-    if (ToolButton(shadingLabels[state.shadingMode], false)) {
-      state.shadingMode =
-          (ToolbarState::ShadingMode)((state.shadingMode + 1) % 3);
+    const char *label = state.shadingMode == ToolbarState::Wireframe ? "Wire" : "Textured";
+    if (ToolButton(label, false)) {
+      state.shadingMode = state.shadingMode == ToolbarState::Wireframe ? ToolbarState::Textured : ToolbarState::Wireframe;
     }
     ImGui::SameLine();
 

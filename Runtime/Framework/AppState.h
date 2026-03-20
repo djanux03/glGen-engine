@@ -48,6 +48,7 @@ class Shader;
 class EditorSubsystem;
 class RenderLoopSubsystem;
 class CoreAppLayer;
+class AudioSubsystem;
 
 struct AppConfig {
   // Sun
@@ -99,6 +100,7 @@ struct RenderSettings {
   float exposure = 1.0f;
   float gamma = 2.2f;
   float fogDensity = 0.0025f;
+  float fogHeightFalloff = 0.05f;
   glm::vec3 fogColor = glm::vec3(0.55f, 0.65f, 0.78f);
   bool toonEnabled = false;
   int toonSteps = 4;
@@ -160,20 +162,20 @@ struct SelectionState {
 struct SkySettings {
   bool solidSky = true;
   // Manual sky colors (used when day/night disabled)
-  float skyHorizon[3] = {0.70f, 0.80f, 0.95f};
-  float skyTop[3] = {0.12f, 0.20f, 0.45f};
+  float skyHorizon[3] = {0.55f, 0.72f, 0.95f};
+  float skyTop[3] = {0.22f, 0.42f, 0.82f};
   // Day/Night cycle
   bool dayNightEnabled = false;
   float timeOfDay = 0.35f;  // 0..1 (0=midnight, 0.25=sunrise, 0.5=noon)
   float cycleSpeed = 0.02f; // cycles per minute (set 0 for manual)
-  float dayHorizon[3] = {0.70f, 0.80f, 0.95f};
-  float dayTop[3] = {0.12f, 0.20f, 0.45f};
+  float dayHorizon[3] = {0.55f, 0.72f, 0.95f};
+  float dayTop[3] = {0.22f, 0.42f, 0.82f};
   float nightHorizon[3] = {0.02f, 0.03f, 0.08f};
   float nightTop[3] = {0.01f, 0.01f, 0.04f};
   glm::vec3 sunDayColor = glm::vec3(1.0f, 0.95f, 0.85f);
   glm::vec3 sunDuskColor = glm::vec3(1.0f, 0.55f, 0.25f);
   glm::vec3 sunNightColor = glm::vec3(0.1f, 0.15f, 0.3f);
-  bool minimalSky = true;
+  bool minimalSky = false;
   float skyBackdropBlend = 0.85f;
   float skyFeatureVisibility = 0.08f;
   // Fireflies (night-only)
@@ -202,6 +204,7 @@ struct PendingActions {
   std::vector<uint32_t> pendingDeleteEntityIds;
   std::vector<std::string> pendingEmptyEntityNames;
   std::vector<std::string> pendingConsoleCommands;
+  bool requestTestFootstepAudio = false;
 
   bool requestSaveConfig = false;
   bool requestLoadConfig = false;
@@ -219,6 +222,22 @@ struct HistoryState {
   int historyCursor = -1;
   bool pendingHistoryCommit = false;
   std::string pendingHistoryLabel;
+};
+
+struct AudioSettings {
+  bool enabled = true;
+  bool mute = false;
+  float masterVolume = 1.0f;
+
+  bool ambientEnabled = true;
+  std::string ambientPath;
+  float ambientVolume = 0.65f;
+
+  bool footstepsEnabled = true;
+  std::string footstepPath;
+  float footstepVolume = 0.60f;
+  float footstepWalkCadence = 0.34f;
+  float footstepRunCadence = 0.24f;
 };
 
 // ---------------------------------------------------------------------------
@@ -280,10 +299,21 @@ struct AppState {
   bool uiMode = true;
   bool escWasDown = false;
 
+  // Hotbar System
+  enum class HotbarSlot { Axe = 1, Torch = 2 };
+  HotbarSlot activeSlot = HotbarSlot::Axe;
+
   // Viewmodel (axe)
   bool axeEnabled = true;
   glm::vec3 axeOffset = glm::vec3(0.06f, -0.15f, 0.24f);
   glm::vec3 axeRotation = glm::vec3(117.5f, 84.5f, 2.0f); // degrees
+  
+  // Viewmodel (torch)
+  bool torchEnabled = true;
+  uint32_t torchEntity = 0;
+  glm::vec3 torchOffset = glm::vec3(0.12f, -0.3f, 0.40f); // further right, lower down
+  glm::vec3 torchRotation = glm::vec3(-20.0f, -20.0f, 0.0f); // tilted slightly forward
+  glm::vec3 torchScale = glm::vec3(0.05f, 0.5f, 0.05f); // long, thin wooden stick
   glm::vec3 axeScale = glm::vec3(0.66f);
   std::string axePath = "assets/playerassets/axe.obj";
   bool usePlayerCameraInEdit = true;
@@ -326,6 +356,7 @@ struct AppState {
   SkySettings skyUI;
   PendingActions pending;
   HistoryState history;
+  AudioSettings audio;
 
   // Infrastructure
   ProjectConfig projectConfig;
@@ -333,6 +364,7 @@ struct AppState {
   EditorSubsystem *editorSubsystem = nullptr;
   RenderLoopSubsystem *renderLoopSubsystem = nullptr;
   CoreAppLayer *coreAppLayer = nullptr;
+  AudioSubsystem *audioSubsystem = nullptr;
   SubsystemManager subsystems;
   AssetManager assets;
   FrameProfiler profiler;
@@ -349,4 +381,6 @@ struct AppState {
   bool hotReloadEnabled = true;
   bool autoProcessImportQueue = false;
   bool iconFontLoaded = false;
+  bool audioBackendAvailable = false;
+  std::string audioStatus;
 };

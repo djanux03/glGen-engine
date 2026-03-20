@@ -62,6 +62,6 @@ private:
   GLuint mVBO = 0;
 
   bool mUseSolidSky = false;
-  glm::vec3 mSkyHorizon = glm::vec3(0.65f, 0.75f, 0.90f);
-  glm::vec3 mSkyTop = glm::vec3(0.15f, 0.25f, 0.55f);
+  glm::vec3 mSkyHorizon = glm::vec3(0.55f, 0.72f, 0.95f);
+  glm::vec3 mSkyTop = glm::vec3(0.22f, 0.42f, 0.82f);
 };

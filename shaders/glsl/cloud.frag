@@ -87,8 +87,7 @@ void main()
 
     if (finalAlpha <= 0.01) discard;
 
-    cloudLit = toneMapReinhard(cloudLit);
-    cloudLit = toSRGB(cloudLit);
+
 
     FragColor = vec4(cloudLit, finalAlpha);
 }

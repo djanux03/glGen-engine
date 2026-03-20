@@ -33,6 +33,7 @@ public:
                         float sunIntensity, const glm::vec3 &lightDir,
                         float far_plane, float shadowStrength,
                         const glm::vec3 &fogColor, float fogDensity,
+                        float fogHeightFalloff,
                         bool toonEnabled, int toonSteps, float toonMin,
                         bool shadowBandEnabled, int shadowBandSteps,
                         float shadowBandSoftness, bool ambientRampEnabled,

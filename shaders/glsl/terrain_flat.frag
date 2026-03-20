@@ -15,7 +15,20 @@ uniform float uAmbient;
 uniform vec3 uCameraPos;
 uniform vec3 uFogColor;
 uniform float uFogDensity;
+uniform float uFogHeightFalloff;
 uniform vec3 uTerrainFlatGreenColor;
+uniform bool uHasFire;
+uniform vec3 uFirePos;
+uniform vec3 uFireDir;
+uniform vec3 uFireColor;
+uniform float uFireIntensity;
+uniform float uFireConstant;
+uniform float uFireLinear;
+uniform float uFireQuadratic;
+uniform float uFireFlicker;
+uniform float uFireAmbient;
+uniform float uFireAmbientRadius;
+uniform float uTime;
 
 float ShadowDirectional(vec4 fragPosLightSpace) {
     vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
@@ -62,11 +75,42 @@ void main()
     float lightTerm = NdotL * (1.0 - shadow);
     vec3 lit = ambient + albedo * sunRadiance * lightTerm;
 
-    lit = toneMapReinhard(lit);
-    lit = toSRGB(lit);
+    if (uHasFire) {
+        vec3 toFire = uFirePos - FragPos;
+        float dist = length(toFire);
+        vec3 Lf = (dist > 0.0001) ? (toFire / dist) : vec3(0.0, 1.0, 0.0);
+        vec3 fireDir = normalize(uFireDir);
+        float forwardBias = clamp(dot(-Lf, fireDir), 0.0, 1.0);
+        forwardBias = mix(0.35, 1.0, forwardBias * forwardBias);
+        float groundBias = clamp(dot(Lf, vec3(0.0, 1.0, 0.0)), 0.0, 1.0);
+        float NdotLf = max(dot(N, Lf), 0.0);
+        float attenuation = 1.0 / (uFireConstant + uFireLinear * dist +
+                                   uFireQuadratic * (dist * dist));
+        float flicker = 1.0 + uFireFlicker *
+                        sin(uTime * 17.0 + FragPos.x * 3.0 + FragPos.z * 2.0);
+        float coreMask = clamp(1.0 - dist / (uFireAmbientRadius * 0.45), 0.0, 1.0);
+        coreMask = coreMask * coreMask;
+        float bounceMask = clamp(1.0 - dist / (uFireAmbientRadius * 1.45), 0.0, 1.0);
+        bounceMask = bounceMask * bounceMask;
+        vec3 coreColor = mix(uFireColor, vec3(1.0, 0.92, 0.72), 0.45);
+        vec3 bounceColor = mix(uFireColor, vec3(0.40, 0.28, 0.18), 0.38);
+        vec3 fireRadiance =
+            coreColor * (uFireIntensity * attenuation * flicker * forwardBias);
+        lit += albedo * fireRadiance * NdotLf;
+        lit += albedo * bounceColor *
+               (uFireAmbient * 0.95 * bounceMask * groundBias * forwardBias);
+
+        float amb = clamp(1.0 - dist / uFireAmbientRadius, 0.0, 1.0);
+        amb = amb * amb;
+        lit += albedo * (uFireAmbient * amb * 0.45 * forwardBias) * bounceColor;
+        lit += albedo * (uFireAmbient * 0.40 * coreMask) * coreColor;
+    }
+
+
 
     float dist = length(uCameraPos - FragPos);
-    float fogFactor = exp(-pow(dist * uFogDensity, 2.0));
+    float heightDensity = uFogDensity * exp(-max(FragPos.y, 0.0) * uFogHeightFalloff);
+    float fogFactor = exp(-pow(dist * heightDensity, 2.0));
     fogFactor = clamp(fogFactor, 0.0, 1.0);
     lit = mix(uFogColor, lit, fogFactor);
 

@@ -225,7 +225,7 @@ EditorUIOutput EditorUI::draw(EditorContext &ctx) {
   // If the host window is hovered, it means the mouse is over the empty
   // viewport area and NOT over any docked panels. We record this to bypass
   // ImGui's mouse capture!
-  bool isViewportHovered = ImGui::IsWindowHovered();
+  bool isViewportHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 
   ImGui::PopStyleVar(3);
 
@@ -934,6 +934,8 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
       ImGui::DragFloat("Gravity", &ctx.gravity, 0.001f, 0.0f, 1.0f);
       ImGui::Checkbox("Freeze Physics", &ctx.freezePhysics);
       ImGui::SeparatorText("Viewmodel");
+      ImGui::SliderInt("Active Slot", &ctx.activeViewmodelSlot, 1, 2,
+                       ctx.activeViewmodelSlot == 1 ? "Axe" : "Torch");
       ImGui::Checkbox("Enable Axe", &ctx.axeEnabled);
       if (ImGui::Button("Reset Axe Defaults")) {
         ctx.axeOffset = glm::vec3(0.25f, -0.2f, 0.45f);
@@ -948,11 +950,65 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
       ImGui::DragFloat3("Axe Rotation", &ctx.axeRotation.x, 0.5f, -180.0f,
                         180.0f);
       ImGui::DragFloat3("Axe Scale", &ctx.axeScale.x, 0.01f, 0.05f, 5.0f);
+      ImGui::Separator();
+      ImGui::Checkbox("Enable Torch", &ctx.torchEnabled);
+      if (ImGui::Button("Reset Torch Defaults")) {
+        ctx.torchOffset = glm::vec3(0.18f, -0.24f, 0.36f);
+        ctx.torchRotation = glm::vec3(18.0f, 0.0f, -10.0f);
+        ctx.torchScale = glm::vec3(0.07f, 0.58f, 0.07f);
+      }
+      ImGui::DragFloat3("Torch Offset", &ctx.torchOffset.x, 0.01f, -2.0f, 2.0f);
+      ImGui::DragFloat3("Torch Rotation", &ctx.torchRotation.x, 0.5f, -180.0f,
+                        180.0f);
+      ImGui::DragFloat3("Torch Scale", &ctx.torchScale.x, 0.01f, 0.02f, 5.0f);
       ImGui::Checkbox("Use Player Camera In Edit", &ctx.usePlayerCameraInEdit);
       ImGui::TextDisabled("Tip: Axe Offset Z < 0 puts it behind the camera.");
       ImGui::SeparatorText("System");
       ImGui::Checkbox("Hot Reload", &ctx.hotReloadEnabled);
       ImGui::Checkbox("Auto Import", &ctx.autoProcessImportQueue);
+      ImGui::SeparatorText("Audio");
+      ImGui::Checkbox("Enable Audio", &ctx.audioEnabled);
+      ImGui::SameLine();
+      ImGui::Checkbox("Mute", &ctx.audioMute);
+      ImGui::SliderFloat("Master Volume", &ctx.audioMasterVolume, 0.0f, 1.5f,
+                         "%.2f");
+      ImGui::TextDisabled("Backend: %s",
+                          ctx.audioBackendAvailable ? "Available" : "Unavailable");
+      if (!ctx.audioStatus.empty())
+        ImGui::TextWrapped("%s", ctx.audioStatus.c_str());
+
+      auto drawAudioPathField = [&](const char *label, const char *tag,
+                                    std::string &value) {
+        char pathBuf[512] = {};
+        std::snprintf(pathBuf, sizeof(pathBuf), "%s", value.c_str());
+        if (ImGui::InputText(label, pathBuf, sizeof(pathBuf))) {
+          value = pathBuf;
+        }
+        ImGui::SameLine();
+        const std::string buttonId = std::string("Browse##") + tag;
+        if (ImGui::Button(buttonId.c_str())) {
+          mBrowsePath = tag;
+          ImGui::OpenPopup("Select Terrain Asset");
+        }
+      };
+
+      ImGui::Checkbox("Enable Ambient", &ctx.ambientAudioEnabled);
+      drawAudioPathField("Ambient Track", "AudioAmbient",
+                         ctx.ambientAudioPath);
+      ImGui::SliderFloat("Ambient Volume", &ctx.ambientAudioVolume, 0.0f, 1.5f,
+                         "%.2f");
+
+      ImGui::Checkbox("Enable Footsteps", &ctx.footstepAudioEnabled);
+      ImGui::TextDisabled("Footstep clips auto-discover from assets/*.ogg");
+      if (ImGui::Button("Play Test Footstep")) {
+        mPendingConsoleCommands.push_back("audio_test_footstep");
+      }
+      ImGui::SliderFloat("Footstep Volume", &ctx.footstepAudioVolume, 0.0f,
+                         1.5f, "%.2f");
+      ImGui::SliderFloat("Walk Cadence", &ctx.footstepWalkCadence, 0.10f, 0.80f,
+                         "%.2fs");
+      ImGui::SliderFloat("Run Cadence", &ctx.footstepRunCadence, 0.08f, 0.60f,
+                         "%.2fs");
     }
     if (worldSection == 1) {
       ImGui::Checkbox("Enable Day/Night", &ctx.dayNightEnabled);
@@ -1032,6 +1088,12 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
                            "%.2f");
         ImGui::SliderFloat("Feature Visibility", &ctx.skyFeatureVisibility,
                            0.0f, 1.0f, "%.2f");
+      }
+
+      ImGui::SeparatorText("Background Type");
+      ImGui::Checkbox("Use Procedural Color Sky (Disable HDR Texture)", &ctx.disableHDR);
+      if (!ctx.disableHDR) {
+          ImGui::TextColored(ImVec4(0.8f, 0.4f, 0.2f, 1.0f), "Day/Night colors are ignored while an HDR Texture is active.");
       }
     }
     if (worldSection == 2) {
@@ -1127,7 +1189,6 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
       ImGui::SliderFloat("Brightness##Render", &ctx.postProcessor.brightness,
                          0.0f, 3.0f, "%.2f");
 
-      ImGui::Checkbox("Disable HDR", &ctx.disableHDR);
       ImGui::SeparatorText("Bloom");
       ImGui::SliderFloat("Threshold##Bloom", &ctx.postProcessor.bloomThreshold,
                          0.2f, 4.0f, "%.2f");
@@ -1347,14 +1408,14 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
         if (ImGui::Checkbox("Flip Custom Grass",
                             &ctx.terrainSettings.flipCustomGrass))
           needsRegen = true;
-          if (ImGui::Checkbox("Spawn Vegetation",
-                              &ctx.terrainSettings.spawnVegetation))
-            needsRegen = true;
-          ImGui::SameLine();
-          if (ImGui::Checkbox("Spawn Rocks", &ctx.terrainSettings.spawnRocks))
-            needsRegen = true;
-          if (ImGui::Checkbox("Spawn Water", &ctx.terrainSettings.spawnWater))
-            needsRegen = true;
+        if (ImGui::Checkbox("Spawn Vegetation",
+                            &ctx.terrainSettings.spawnVegetation))
+          needsRegen = true;
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Spawn Rocks", &ctx.terrainSettings.spawnRocks))
+          needsRegen = true;
+        if (ImGui::Checkbox("Spawn Water", &ctx.terrainSettings.spawnWater))
+          needsRegen = true;
 
           ImGui::Separator();
           ImGui::Text("Brush Tools");
@@ -1472,6 +1533,42 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
                              &ctx.terrainMaterial.roughSnow, 0.0f, 1.0f,
                              "%.2f");
 
+          ImGui::SeparatorText("Ground Material");
+          ImGui::Checkbox("Use Ground Textures##TerrainMat",
+                          &ctx.terrainMaterial.useGroundTextures);
+          if (ctx.terrainMaterial.useGroundTextures) {
+            auto drawPathField = [&](const char *label, const char *tag,
+                                     std::string &value) {
+              char pathBuf[512] = {};
+              std::snprintf(pathBuf, sizeof(pathBuf), "%s", value.c_str());
+              if (ImGui::InputText(label, pathBuf, sizeof(pathBuf))) {
+                value = pathBuf;
+              }
+              ImGui::SameLine();
+              const std::string buttonId = std::string("Browse##") + tag;
+              if (ImGui::Button(buttonId.c_str())) {
+                mBrowsePath = tag;
+                ImGui::OpenPopup("Select Terrain Asset");
+              }
+            };
+            drawPathField("Ground Albedo##TerrainMat", "TerrainGroundAlbedo",
+                          ctx.terrainMaterial.groundAlbedoPath);
+            drawPathField("Ground Normal##TerrainMat", "TerrainGroundNormal",
+                          ctx.terrainMaterial.groundNormalPath);
+            drawPathField("Ground Roughness##TerrainMat",
+                          "TerrainGroundRoughness",
+                          ctx.terrainMaterial.groundRoughnessPath);
+            ImGui::SliderFloat("Ground Tiling##TerrainMat",
+                               &ctx.terrainMaterial.groundTiling, 0.02f, 2.0f,
+                               "%.3f");
+            ImGui::SliderFloat("Ground Blend##TerrainMat",
+                               &ctx.terrainMaterial.groundBlendStrength, 0.0f,
+                               1.5f, "%.2f");
+            ImGui::SliderFloat("Ground Roughness##TerrainMat",
+                               &ctx.terrainMaterial.groundRoughness, 0.0f,
+                               1.0f, "%.2f");
+          }
+
           ImGui::SeparatorText("Stylized");
           ImGui::Checkbox("Flat Green Terrain##TerrainMat",
                           &ctx.terrainMaterial.flatGreenEnabled);
@@ -1522,77 +1619,6 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
                               ctx.terrainSettings.customDeadTreeModelPath,
                               needsRegen);
 
-        // Handle the generic Asset Browser popup for Terrain System
-        if (ImGui::BeginPopupModal("Select Terrain Asset", NULL,
-                                   ImGuiWindowFlags_AlwaysAutoResize)) {
-          ImGui::Text("Browse Assets Directory:");
-          ImGui::InputText("##Search", mAssetSearch, sizeof(mAssetSearch));
-
-          ImGui::BeginChild("AssetList", ImVec2(400, 300), true);
-
-          // Collect valid extensions
-          std::vector<std::string> exts = {".obj", ".fbx"};
-
-          // Simple recursive dir iteration for the popup
-          std::vector<std::filesystem::path> assetRoots;
-          if (std::filesystem::exists("Assets"))
-            assetRoots.emplace_back("Assets");
-          if (std::filesystem::exists("assets"))
-            assetRoots.emplace_back("assets");
-
-          for (const auto &root : assetRoots) {
-            for (auto &p :
-                 std::filesystem::recursive_directory_iterator(root)) {
-              if (p.is_regular_file()) {
-                std::string ext = p.path().extension().string();
-                for (auto &c : ext)
-                  c = (char)std::tolower((unsigned char)c);
-
-                bool match = false;
-                for (const auto &validExt : exts) {
-                  if (ext == validExt)
-                    match = true;
-                }
-
-                if (match) {
-                  std::string pathStr = p.path().string();
-                  if (mAssetSearch[0] != '\0' &&
-                      pathStr.find(mAssetSearch) == std::string::npos) {
-                    continue;
-                  }
-
-                  if (ImGui::Selectable(pathStr.c_str())) {
-                    if (mBrowsePath == "TerrainTree") {
-                      ctx.terrainSettings.customTreeModelPath = pathStr;
-                    } else if (mBrowsePath == "TerrainRock") {
-                      ctx.terrainSettings.customRockModelPath = pathStr;
-                    } else if (mBrowsePath == "TerrainGrass") {
-                      ctx.terrainSettings.customGrassModelPath = pathStr;
-                    } else if (mBrowsePath == "TerrainFlower") {
-                      ctx.terrainSettings.customFlowerModelPath = pathStr;
-                    } else if (mBrowsePath == "TerrainCactus") {
-                      ctx.terrainSettings.customCactusModelPath = pathStr;
-                    } else if (mBrowsePath == "TerrainDeadTree") {
-                      ctx.terrainSettings.customDeadTreeModelPath = pathStr;
-                    }
-
-                    if (mBrowsePath.rfind("Terrain", 0) == 0) {
-                      ctx.terrainSystem.applySettings(ctx.terrainSettings);
-                      ctx.terrainSystem.regenerate();
-                    }
-                    ImGui::CloseCurrentPopup();
-                  }
-                }
-              }
-            }
-          }
-          ImGui::EndChild();
-
-          if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-            ImGui::CloseCurrentPopup();
-          }
-          ImGui::EndPopup();
-        }
         ImGui::Separator();
 
         if (needsRegen) {
@@ -1614,6 +1640,100 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
         ImGui::Text("Verts: %d | Tris: %d", ts.verticesGenerated,
                     ts.trianglesGenerated);
       }
+    }
+    if (ImGui::BeginPopupModal("Select Terrain Asset", NULL,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::Text("Browse Assets Directory:");
+      ImGui::InputText("##Search", mAssetSearch, sizeof(mAssetSearch));
+
+      ImGui::BeginChild("AssetList", ImVec2(400, 300), true);
+
+      const bool browsingTerrainTexture =
+          (mBrowsePath == "TerrainGroundAlbedo" ||
+           mBrowsePath == "TerrainGroundNormal" ||
+           mBrowsePath == "TerrainGroundRoughness");
+      const bool browsingAudio =
+          (mBrowsePath == "AudioAmbient" || mBrowsePath == "AudioFootsteps");
+
+      std::vector<std::string> exts =
+          browsingAudio
+              ? std::vector<std::string>{".ogg", ".wav", ".mp3", ".flac"}
+              : browsingTerrainTexture
+              ? std::vector<std::string>{".png", ".jpg", ".jpeg", ".tga",
+                                         ".bmp"}
+              : std::vector<std::string>{".obj", ".fbx"};
+
+      std::vector<std::filesystem::path> assetRoots;
+      if (std::filesystem::exists("Assets"))
+        assetRoots.emplace_back("Assets");
+      if (std::filesystem::exists("assets"))
+        assetRoots.emplace_back("assets");
+
+      for (const auto &root : assetRoots) {
+        for (auto &p : std::filesystem::recursive_directory_iterator(root)) {
+          if (!p.is_regular_file())
+            continue;
+
+          std::string ext = p.path().extension().string();
+          for (auto &c : ext)
+            c = (char)std::tolower((unsigned char)c);
+
+          bool match = false;
+          for (const auto &validExt : exts) {
+            if (ext == validExt) {
+              match = true;
+              break;
+            }
+          }
+          if (!match)
+            continue;
+
+          std::string pathStr = p.path().string();
+          if (mAssetSearch[0] != '\0' &&
+              pathStr.find(mAssetSearch) == std::string::npos) {
+            continue;
+          }
+
+          if (ImGui::Selectable(pathStr.c_str())) {
+            if (mBrowsePath == "TerrainTree") {
+              ctx.terrainSettings.customTreeModelPath = pathStr;
+            } else if (mBrowsePath == "TerrainRock") {
+              ctx.terrainSettings.customRockModelPath = pathStr;
+            } else if (mBrowsePath == "TerrainGrass") {
+              ctx.terrainSettings.customGrassModelPath = pathStr;
+            } else if (mBrowsePath == "TerrainFlower") {
+              ctx.terrainSettings.customFlowerModelPath = pathStr;
+            } else if (mBrowsePath == "TerrainCactus") {
+              ctx.terrainSettings.customCactusModelPath = pathStr;
+            } else if (mBrowsePath == "TerrainDeadTree") {
+              ctx.terrainSettings.customDeadTreeModelPath = pathStr;
+            } else if (mBrowsePath == "TerrainGroundAlbedo") {
+              ctx.terrainMaterial.groundAlbedoPath = pathStr;
+            } else if (mBrowsePath == "TerrainGroundNormal") {
+              ctx.terrainMaterial.groundNormalPath = pathStr;
+            } else if (mBrowsePath == "TerrainGroundRoughness") {
+              ctx.terrainMaterial.groundRoughnessPath = pathStr;
+            } else if (mBrowsePath == "AudioAmbient") {
+              ctx.ambientAudioPath = pathStr;
+            } else if (mBrowsePath == "AudioFootsteps") {
+              ctx.footstepAudioPath = pathStr;
+            }
+
+            if (!browsingTerrainTexture && !browsingAudio &&
+                mBrowsePath.rfind("Terrain", 0) == 0) {
+              ctx.terrainSystem.applySettings(ctx.terrainSettings);
+              ctx.terrainSystem.regenerate();
+            }
+            ImGui::CloseCurrentPopup();
+          }
+        }
+      }
+      ImGui::EndChild();
+
+      if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
     }
     ImGui::EndChild();
   }

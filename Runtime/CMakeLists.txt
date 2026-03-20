@@ -13,5 +13,5 @@ target_include_directories(glGen PRIVATE Framework Gameplay ${CMAKE_CURRENT_SOUR
 target_link_libraries(glGen PRIVATE Engine Editor cpr::cpr)
 
 if(APPLE)
-    target_link_libraries(glGen PRIVATE "-framework Cocoa -framework IOKit -framework CoreVideo")
+    target_link_libraries(glGen PRIVATE "-framework Cocoa -framework IOKit -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework CoreAudio")
 endif()

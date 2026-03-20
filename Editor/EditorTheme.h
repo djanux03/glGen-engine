@@ -76,13 +76,16 @@ inline void applyAATheme() {
   style.FrameBorderSize = 0.0f;
   style.TabBorderSize = 0.0f;
 
-  style.WindowRounding = 6.0f;
-  style.ChildRounding = 5.0f;
-  style.FrameRounding = 5.0f;
-  style.PopupRounding = 6.0f;
-  style.ScrollbarRounding = 6.0f;
-  style.GrabRounding = 3.0f;
-  style.TabRounding = 6.0f;
+  style.WindowRounding = 0.0f;
+  style.ChildRounding = 0.0f;
+  style.FrameRounding = 0.0f;
+  style.PopupRounding = 0.0f;
+  style.ScrollbarRounding = 0.0f;
+  style.GrabRounding = 0.0f;
+  style.TabRounding = 0.0f;
+  style.AntiAliasedLines = true;
+  style.AntiAliasedLinesUseTex = true;
+  style.AntiAliasedFill = true;
 
   style.WindowTitleAlign = ImVec2(0.0f, 0.5f);
   style.WindowMenuButtonPosition = ImGuiDir_None; // No collapse button

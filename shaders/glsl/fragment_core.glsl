@@ -69,6 +69,7 @@ uniform float uFarPlane;
 uniform float uShadowStrength;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
+uniform float uFogHeightFalloff;
 uniform bool  uToonEnabled;
 uniform int   uToonSteps;
 uniform float uToonMin;
@@ -87,6 +88,7 @@ uniform vec3  uRimColor;
 // NEW: Campfire point light (no shadows)
 uniform bool  uHasFire;
 uniform vec3  uFirePos;
+uniform vec3  uFireDir;
 uniform vec3  uFireColor;           // e.g. vec3(1.0, 0.45, 0.10)
 uniform float uFireIntensity;       // e.g. 2.0
 uniform float uFireConstant;        // e.g. 1.0
@@ -126,6 +128,13 @@ uniform float uTerrainRoughDirt;
 uniform float uTerrainRoughRock;
 uniform float uTerrainRoughSand;
 uniform float uTerrainRoughSnow;
+uniform bool  uTerrainUseGroundTextures;
+uniform bool  uTerrainHasGroundRoughness;
+uniform float uTerrainGroundTiling;
+uniform float uTerrainGroundBlendStrength;
+uniform float uTerrainGroundRoughnessValue;
+uniform sampler2D uTerrainGroundAlbedo;
+uniform sampler2D uTerrainGroundRoughness;
 uniform bool  uTerrainFlatGreenEnabled;
 uniform vec3  uTerrainFlatGreenColor;
 
@@ -263,6 +272,22 @@ float triplanarNoise(vec3 worldPos, vec3 worldNormal, float scale) {
     return nx * w.x + ny * w.y + nz * w.z;
 }
 
+vec4 triplanarTexture(sampler2D tex, vec3 worldPos, vec3 worldNormal, float scale) {
+    vec3 n = abs(normalize(worldNormal));
+    vec3 w = pow(n, vec3(4.0));
+    float sumW = w.x + w.y + w.z + 0.0001;
+    w /= sumW;
+
+    vec2 uvX = worldPos.yz * scale;
+    vec2 uvY = worldPos.xz * scale;
+    vec2 uvZ = worldPos.xy * scale;
+
+    vec4 sx = texture(tex, uvX);
+    vec4 sy = texture(tex, uvY);
+    vec4 sz = texture(tex, uvZ);
+    return sx * w.x + sy * w.y + sz * w.z;
+}
+
 vec3 sampleNormalWS(vec3 baseNormal) {
     vec3 N = normalize(baseNormal);
     if (!uHasNormalMap) return N;
@@ -329,8 +354,7 @@ void main()
         c.rgb = col * intensity * mask;
         c.a   = (0.50 * glow + 0.35 * core) * mask;
 
-        c.rgb = toneMapReinhard(c.rgb);
-        c.rgb = toSRGB(c.rgb);
+
 
         FragColor = c;
         return;
@@ -378,8 +402,7 @@ void main()
 
         if (finalAlpha <= 0.01) discard;
 
-        cloudLit = toneMapReinhard(cloudLit);
-        cloudLit = toSRGB(cloudLit);
+
 
         FragColor = vec4(cloudLit, finalAlpha);
         return;
@@ -502,6 +525,16 @@ void main()
             colSand  * layerSand  +
             colSnow  * layerSnow;
 
+        if (uTerrainUseGroundTextures) {
+            vec3 groundAlbedo =
+                toLinear(triplanarTexture(uTerrainGroundAlbedo, FragPos, Nw,
+                                          max(uTerrainGroundTiling, 0.0001)).rgb);
+            float groundWeight = clamp((layerGrass + layerDirt) *
+                                       max(uTerrainGroundBlendStrength, 0.0),
+                                       0.0, 1.0);
+            terrainColor = mix(terrainColor, groundAlbedo, groundWeight);
+        }
+
         float macroVarStrength = customMat ? uTerrainMacroVariationStrength : 0.20;
         float cliffDesat = customMat ? uTerrainCliffDesatStrength : 0.35;
         terrainColor *= (0.90 + macroVarStrength * macro);
@@ -520,6 +553,19 @@ void main()
             layerRock  * roughRock  +
             layerSand  * roughSand  +
             layerSnow  * roughSnow;
+        if (uTerrainUseGroundTextures) {
+            float groundWeight = clamp((layerGrass + layerDirt) *
+                                       max(uTerrainGroundBlendStrength, 0.0),
+                                       0.0, 1.0);
+            float sampledGroundRoughness = uTerrainGroundRoughnessValue;
+            if (uTerrainHasGroundRoughness) {
+                vec4 roughTex = triplanarTexture(uTerrainGroundRoughness, FragPos, Nw,
+                                                 max(uTerrainGroundTiling, 0.0001));
+                sampledGroundRoughness = roughTex.r;
+            }
+            materialRoughness =
+                mix(materialRoughness, sampledGroundRoughness, groundWeight);
+        }
         materialRoughness = clamp(materialRoughness, 0.20, 0.98);
 
         materialMetallic = 0.0;
@@ -648,11 +694,26 @@ void main()
         float dist   = length(toFire);
         vec3  Lf     = (dist > 0.0001) ? (toFire / dist) : vec3(0.0, 1.0, 0.0);
         vec3  Hf = normalize(Lf + V);
+        vec3  fireDir = normalize(uFireDir);
+        float forwardBias = clamp(dot(-Lf, fireDir), 0.0, 1.0);
+        forwardBias = mix(0.35, 1.0, forwardBias * forwardBias);
+        float groundBias = clamp(dot(Lf, vec3(0.0, 1.0, 0.0)), 0.0, 1.0);
+        float fireField = fbm(FragPos.xz * 0.95 + vec2(uTime * 0.75, -uTime * 0.58));
+        float fireRipple =
+            0.5 + 0.5 * sin(dist * 5.2 - uTime * 9.4 + fireField * 6.28318);
+        fireRipple = mix(0.78, 1.18, fireRipple);
 
         // Classic attenuation
         float attenuation = 1.0 / (uFireConstant + uFireLinear * dist + uFireQuadratic * (dist * dist));
         float flicker = 1.0 + uFireFlicker * sin(uTime * 17.0 + FragPos.x * 3.0 + FragPos.z * 2.0);
-        vec3 fireRadiance = uFireColor * (uFireIntensity * attenuation * flicker);
+        float coreMask = clamp(1.0 - dist / (uFireAmbientRadius * 0.45), 0.0, 1.0);
+        coreMask = coreMask * coreMask;
+        float bounceMask = clamp(1.0 - dist / (uFireAmbientRadius * 1.35), 0.0, 1.0);
+        bounceMask = bounceMask * bounceMask;
+        vec3 coreColor = mix(uFireColor, vec3(1.0, 0.92, 0.72), 0.45);
+        vec3 bounceColor = mix(uFireColor, vec3(0.40, 0.28, 0.18), 0.38);
+        vec3 fireRadiance =
+            coreColor * (uFireIntensity * attenuation * flicker * forwardBias);
 
         float NdotLf = max(dot(N, Lf), 0.0);
 
@@ -670,11 +731,17 @@ void main()
         kD_fire *= 1.0 - metallic;	
 
         Lo += (kD_fire * albedo / PI + spec_fire) * fireRadiance * NdotLf;
+        Lo += albedo * bounceColor *
+              (uFireAmbient * 0.70 * bounceMask * groundBias * forwardBias *
+               fireRipple);
 
         // Local ambient lift
         float amb = clamp(1.0 - dist / uFireAmbientRadius, 0.0, 1.0);
         amb = amb * amb;
-        ambient += albedo * (uFireAmbient * amb) * uFireColor;
+        ambient += albedo *
+                   (uFireAmbient * amb * 0.45 * forwardBias *
+                    mix(0.85, 1.15, fireField)) * bounceColor;
+        ambient += albedo * (uFireAmbient * 0.35 * coreMask) * coreColor;
     }
 
     vec3 emissive = uEmissiveColor * uEmissiveStrength;
@@ -696,14 +763,14 @@ void main()
     }
 
     // Tonemap + gamma
-    lit = toneMapReinhard(lit);
-    lit = toSRGB(lit);
+
 
     // --- FOG CALCULATION ---
     float dist = length(uCameraPos - FragPos);
     
-    // Exponential fog formula: exp(-(distance * density)^2)
-    float fogFactor = exp(-pow(dist * uFogDensity, 2.0));
+    // Exponential fog with height falloff
+    float heightDensity = uFogDensity * exp(-max(FragPos.y, 0.0) * uFogHeightFalloff);
+    float fogFactor = exp(-pow(dist * heightDensity, 2.0));
     fogFactor = clamp(fogFactor, 0.0, 1.0);
 
     // Mix the scene color with the fog color based on distance

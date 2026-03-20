@@ -327,9 +327,13 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
     mVolumetricShader->setVec3("uLightDir", glm::normalize(lightDir));
     mVolumetricShader->setFloat("sunPosX", sunUV.x);
     mVolumetricShader->setFloat("sunPosY", sunUV.y);
+    mVolumetricShader->setInt("depthTex", 0);
+    mVolumetricShader->setInt("colorTex", 1);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, mDepthTex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, mColorTex);
     renderQuad_();
   } else {
     glBindFramebuffer(GL_FRAMEBUFFER, mVolumetricFBO);
