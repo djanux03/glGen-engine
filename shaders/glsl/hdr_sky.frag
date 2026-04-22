@@ -24,6 +24,12 @@ uniform float uSunSize; // e.g. 0.9995 for small disc
 uniform float uSunDiscIntensity;
 uniform float uSunHaloIntensity;
 uniform float uSunRaysIntensity;
+uniform float uSunDiscSoftness;
+uniform float uSunHaloSize;
+uniform float uSunRaySharpness;
+uniform float uSkyAtmosphereStrength;
+uniform float uSkyGradientPower;
+uniform float uSkyHorizonGlow;
 uniform float uNightFactor;
 uniform float uStarIntensity;
 uniform float uMilkyWayIntensity;
@@ -109,6 +115,85 @@ vec3 inverseACES(vec3 srgb)
     // (-B - sqrt) root to get a positive result.
     vec3 x = (-B - sqrt(disc)) / (2.0 * A);
     return max(x, vec3(0.0));
+}
+
+vec3 customSkyGradient(vec3 worldDir)
+{
+    float vertical = clamp(worldDir.y * 0.5 + 0.5, 0.0, 1.0);
+    vertical = pow(vertical, max(uSkyGradientPower, 0.001));
+    vec3 sky = inverseACES(mix(uSkyHorizon, uSkyTop, vertical)) * uExposure;
+
+    float horizon = pow(1.0 - clamp(abs(worldDir.y), 0.0, 1.0), 2.3);
+    sky += inverseACES(uSkyHorizon) * (horizon * max(uSkyHorizonGlow, 0.0));
+    return sky;
+}
+
+float cloudShape(vec2 uv)
+{
+    vec2 warp = vec2(fbm(uv * 0.36 + vec2(7.4, uTime * 0.012)),
+                     fbm(uv * 0.31 + vec2(-5.1, uTime * 0.009))) - 0.5;
+    uv += warp * 2.2;
+
+    float broad = fbm(uv * 0.70);
+    float puffs = fbm(uv * 1.75 + vec2(13.7, -2.8));
+    float detail = fbm(uv * 5.50 + vec2(-19.0, 8.5));
+    float wisps = fbm(uv * 12.0 + vec2(3.2, -14.8));
+    return broad * 0.58 + puffs * 0.32 + detail * 0.17 - wisps * 0.10;
+}
+
+float cloudCoverageMask(vec2 uv)
+{
+    float shape = cloudShape(uv);
+    float threshold = mix(0.74, 0.30, clamp(uSkyCloudCoverage, 0.0, 1.0));
+    float softness = max(uSkyCloudSoftness, 0.015);
+    float cloud = smoothstep(threshold, threshold + softness, shape);
+    float erosion = smoothstep(0.18, 0.86, fbm(uv * 8.0 + vec2(1.7, 21.0)));
+    cloud *= mix(0.55, 1.0, erosion);
+    return clamp(cloud, 0.0, 1.0);
+}
+
+vec3 applySkyClouds(vec3 mapped, vec3 worldDir, vec3 sunDir)
+{
+    if (!uSkyCloudsEnabled || uSkyCloudDensity <= 0.001)
+        return mapped;
+
+    float horizonFade = smoothstep(0.015, 0.18, worldDir.y);
+    float zenithFade = 1.0 - smoothstep(0.82, 1.0, worldDir.y) * 0.35;
+    if (horizonFade <= 0.001)
+        return mapped;
+
+    float parallax = 1.0 / max(worldDir.y + 0.18, 0.08);
+    vec2 uv = worldDir.xz * parallax * max(uSkyCloudScale, 0.001);
+    vec2 wind = vec2(0.82, 0.34) * uTime * uSkyCloudSpeed * 18.0;
+    uv += wind;
+
+    float cloud = cloudCoverageMask(uv) * horizonFade * zenithFade;
+    cloud = clamp(cloud * uSkyCloudDensity, 0.0, 1.0);
+    if (cloud <= 0.002)
+        return mapped;
+
+    float eps = 0.035;
+    float dx = cloudCoverageMask(uv + vec2(eps, 0.0)) -
+               cloudCoverageMask(uv - vec2(eps, 0.0));
+    float dz = cloudCoverageMask(uv + vec2(0.0, eps)) -
+               cloudCoverageMask(uv - vec2(0.0, eps));
+    vec3 cloudNormal = normalize(vec3(-dx * 2.4, 0.82, -dz * 2.4));
+
+    float sunFacing = clamp(dot(cloudNormal, sunDir) * 0.5 + 0.5, 0.0, 1.0);
+    float forward = pow(max(dot(worldDir, sunDir), 0.0), 8.0);
+    float edge = smoothstep(0.05, 0.55, cloud) *
+                 (1.0 - smoothstep(0.62, 1.0, cloud));
+    float silver = forward * edge * 1.25;
+
+    vec3 cloudBase = inverseACES(clamp(uSkyCloudColor, vec3(0.0), vec3(1.0)));
+    vec3 coolShadow = cloudBase * vec3(0.50, 0.56, 0.66);
+    vec3 warmLight = cloudBase * (0.72 + 0.48 * sunFacing) +
+                     inverseACES(clamp(uSunColor, vec3(0.0), vec3(1.0))) *
+                         (0.22 + silver);
+    vec3 cloudColor = mix(coolShadow, warmLight, sunFacing);
+
+    float alpha = clamp(cloud * uSkyCloudDensity * 0.78, 0.0, 0.92);
+    return mix(mapped, cloudColor * uExposure, alpha);
 }
 
 
@@ -219,9 +304,19 @@ void main()
     vec3 mapped;
     vec3 sunDir = normalize(-uSunDir);
 
-    if (uUseSolidSky)
+    bool solidSky = uUseSolidSky;
+    if (solidSky)
     {
-        mapped = calculateAtmosphere(worldDir, sunDir);
+        vec3 customSky = customSkyGradient(worldDir);
+        float lowSunDamp = mix(0.34, 1.0, smoothstep(0.02, 0.34, sunDir.y));
+        float atmosphereBlend =
+            clamp(uSkyAtmosphereStrength, 0.0, 1.0) * lowSunDamp;
+        if (atmosphereBlend > 0.001) {
+            vec3 atmosphereSky = calculateAtmosphere(worldDir, sunDir);
+            mapped = mix(customSky, atmosphereSky, atmosphereBlend);
+        } else {
+            mapped = customSky;
+        }
     }
     else
     {
@@ -230,108 +325,24 @@ void main()
         mapped = hdr * uExposure;
     }
 
-    // Volumetric 3D Clouds (Raymarched)
-    if (uSkyCloudsEnabled)
-    {
-        // Simple sphere intersection for the cloud layer
-        float cloudMinHeight = 1500.0;
-        float cloudMaxHeight = 4000.0;
-        vec3 rayOrigin = vec3(0.0, R_EARTH + 1.0, 0.0);
-        
-        vec2 cloudBottomIntersect = sphereIntersect(rayOrigin, worldDir, R_EARTH + cloudMinHeight);
-        vec2 cloudTopIntersect = sphereIntersect(rayOrigin, worldDir, R_EARTH + cloudMaxHeight);
-        
-        float tMinC = max(0.0, cloudBottomIntersect.y); // Entering bottom of cloud layer
-        float tMaxC = cloudTopIntersect.y;              // Exiting top
-        
-        // If looking slightly down from mountain tops, adjust
-        if (cloudBottomIntersect.y < 0.0 && cloudTopIntersect.y > 0.0) {
-            tMinC = 0.0;
-            tMaxC = cloudTopIntersect.y;
-        }
+    mapped = applySkyClouds(mapped, worldDir, sunDir);
 
-        if (tMaxC > 0.0 && tMaxC > tMinC) {
-            int cloudSteps = 32;
-            int lightSteps = 4;
-            float stepSizeC = (tMaxC - tMinC) / float(cloudSteps);
-            float tCurrentC = tMinC + stepSizeC * hash21(vUV); // Dither start to reduce banding
-            
-            float transmittance = 1.0;
-            vec3 scatteredLight = vec3(0.0);
-            
-            // Base cloud color affected by environment (sun color)
-            // If uSunColor is very dim or different, we use it directly instead of inverseACES 
-            // to allow physical integration with the new sunset.
-            vec3 ambientLight = inverseACES(uSkyCloudColor) * 0.2;
-            vec3 sunLightColor = uSunColor * 15.0; // Boost sunlight interaction
-            
-            for (int i = 0; i < cloudSteps; ++i) {
-                if (transmittance < 0.01) break;
-                
-                vec3 samplePos = rayOrigin + worldDir * tCurrentC;
-                float heightFraction = (length(samplePos) - R_EARTH - cloudMinHeight) / (cloudMaxHeight - cloudMinHeight);
-                
-                // Cloud density shape
-                vec2 windOffset = vec2(uTime * uSkyCloudSpeed, uTime * uSkyCloudSpeed * 0.5);
-                vec2 worldXZ = samplePos.xz * uSkyCloudScale * 0.0001;
-                
-                float n1 = fbm(worldXZ + windOffset);
-                float n2 = fbm(worldXZ * 2.0 - windOffset * 0.5);
-                float baseNoise = mix(n1, n2, 0.5);
-                
-                // Height gradient shaping (round bottoms, wispy tops)
-                float heightGradient = 1.0 - pow(abs(heightFraction * 2.0 - 1.0), 2.0);
-                float cloudDensity = smoothstep(1.0 - uSkyCloudCoverage, 1.0 - uSkyCloudCoverage + uSkyCloudSoftness, baseNoise * heightGradient);
-                
-                if (cloudDensity > 0.0) {
-                    float extCoeff = uSkyCloudDensity * 0.1;
-                    float stepOpticalDepth = cloudDensity * extCoeff * stepSizeC;
-                    
-                    // March towards sun for self-shadowing
-                    float lightOpticalDepth = 0.0;
-                    float tLight = 0.0;
-                    float lightStepSize = (cloudMaxHeight - cloudMinHeight) / float(lightSteps);
-                    
-                    for (int j = 0; j < lightSteps; ++j) {
-                        vec3 lightPos = samplePos + sunDir * tLight;
-                        float lhf = (length(lightPos) - R_EARTH - cloudMinHeight) / (cloudMaxHeight - cloudMinHeight);
-                        if (lhf < 0.0 || lhf > 1.0) break;
-                        
-                        vec2 lwXZ = lightPos.xz * uSkyCloudScale * 0.0001;
-                        float ln = mix(fbm(lwXZ + windOffset), fbm(lwXZ * 2.0 - windOffset*0.5), 0.5);
-                        float lhg = 1.0 - pow(abs(lhf * 2.0 - 1.0), 2.0);
-                        float lDens = smoothstep(1.0 - uSkyCloudCoverage, 1.0 - uSkyCloudCoverage + uSkyCloudSoftness, ln * lhg);
-                        
-                        lightOpticalDepth += lDens * extCoeff * lightStepSize;
-                        tLight += lightStepSize;
-                    }
-                    
-                    // Beer-Lambert + Powder effect for silver lining
-                    float beer = exp(-lightOpticalDepth);
-                    float powder = 1.0 - exp(-lightOpticalDepth * 2.0);
-                    float phase = mix(beer * powder, beer, 0.5); // blend for forward scattering
-                    
-                    // Henyey-Greenstein phase approximation for sun halo
-                    float mu = dot(worldDir, sunDir);
-                    float hg = (1.0 - 0.5*0.5) / pow(1.0 + 0.5*0.5 - 2.0*0.5*mu, 1.5);
-                    
-                    vec3 S = ambientLight + sunLightColor * phase * (hg * 0.5 + 0.5);
-                    vec3 Sint = (S - S * exp(-stepOpticalDepth)) / extCoeff;
-                    
-                    scatteredLight += transmittance * Sint;
-                    transmittance *= exp(-stepOpticalDepth);
-                }
-                
-                tCurrentC += stepSizeC;
-            }
-            
-            mapped = mapped * transmittance + scatteredLight;
-        }
+    if (solidSky) {
+        float sunDot = max(dot(worldDir, sunDir), 0.0);
+        float lowSunDamp = mix(0.22, 1.0, smoothstep(0.02, 0.34, sunDir.y));
+        float discSoftness = max(uSunDiscSoftness, 0.0001);
+        float disc = smoothstep(uSunSize - discSoftness, uSunSize, sunDot);
+        float haloPower = mix(220.0, 2.4, clamp(uSunHaloSize, 0.0, 1.0));
+        float halo = pow(sunDot, haloPower) * (1.0 - disc * 0.45);
+        float horizon = pow(1.0 - clamp(abs(worldDir.y), 0.0, 1.0), 2.0);
+        float rayNoise = 0.72 + 0.28 * fbm(dirToEquirectUV(worldDir) * 42.0 +
+                                           vec2(uTime * 0.015, 0.0));
+        float rays = pow(sunDot, max(uSunRaySharpness, 1.0)) * horizon * rayNoise;
+        vec3 sunHdr = inverseACES(clamp(uSunColor, vec3(0.0), vec3(1.0)));
+        mapped += sunHdr * (disc * max(uSunDiscIntensity, 0.0) +
+                            halo * max(uSunHaloIntensity, 0.0) * lowSunDamp +
+                            rays * max(uSunRaysIntensity, 0.0) * lowSunDamp);
     }
-
-    // The sun disc and glow are now natively handled by the Mie scattering phase function
-    // in calculateAtmosphere(), which creates a physically accurate bright sun center
-    // and atmospheric glow around it.
 
     // Night sky: stars + milky way + horizon glow
     if (uNightFactor > 0.001) {

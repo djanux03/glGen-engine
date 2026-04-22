@@ -7,7 +7,7 @@ uniform sampler2D depthTex;
 uniform sampler2D noiseTex;
 uniform mat4 uProjection;
 uniform mat4 uInvProjection;
-uniform vec3 samples[32];
+uniform vec3 samples[64];
 uniform int sampleCount;
 uniform float radius;
 uniform float bias;
@@ -38,7 +38,7 @@ void main() {
     mat3 TBN = mat3(tangent, bitangent, normal);
 
     float occlusion = 0.0;
-    int count = clamp(sampleCount, 1, 32);
+    int count = clamp(sampleCount, 1, 64);
     for (int i = 0; i < count; ++i) {
         vec3 samplePos = fragPos + TBN * samples[i] * radius;
         vec4 offset = uProjection * vec4(samplePos, 1.0);

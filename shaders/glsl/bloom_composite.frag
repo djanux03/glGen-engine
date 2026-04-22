@@ -11,6 +11,7 @@ uniform sampler2D depthTex;
 uniform float bloomIntensity;
 uniform float uBrightness;
 uniform bool uEnableSSAO;
+uniform float uSSAOIntensity;
 uniform bool uEnableVolumetric;
 uniform bool uEnableOutline;
 uniform float uOutlineStrength;
@@ -34,6 +35,7 @@ uniform float uGradeGain;
 uniform vec3 uGradeTint;
 uniform bool uEnablePalette;
 uniform int uPaletteSteps;
+uniform float uDisplayGamma;
 
 vec3 applyColorGrade(vec3 c)
 {
@@ -51,7 +53,7 @@ vec3 applyColorGrade(vec3 c)
 
     // Tint
     c *= uGradeTint;
-    return clamp(c, 0.0, 1.0);
+    return max(c, vec3(0.0));
 }
 
 vec3 applyPaletteQuantize(vec3 c)
@@ -68,8 +70,9 @@ void main()
     vec3 volumetric = texture(volumetricTex, TexCoords).rgb;
     
     if (uEnableSSAO) {
-        // Clamp AO to avoid over-darkening stylized assets.
-        sceneColor *= clamp(ao, 0.35, 1.0);
+        float aoTerm = clamp(mix(1.0, clamp(ao, 0.20, 1.0),
+                                 clamp(uSSAOIntensity, 0.0, 2.0)), 0.05, 1.0);
+        sceneColor *= aoTerm;
     }
 
     sceneColor += bloomColor * bloomIntensity;
@@ -119,7 +122,7 @@ void main()
     sceneColor = clamp((sceneColor * (a * sceneColor + b)) / (sceneColor * (c * sceneColor + d) + e), 0.0, 1.0);
 
     // Gamma Correction
-    sceneColor = pow(sceneColor, vec3(1.0 / 2.2));
+    sceneColor = pow(sceneColor, vec3(1.0 / max(uDisplayGamma, 0.001)));
 
     FragColor = vec4(sceneColor, 1.0);
 }

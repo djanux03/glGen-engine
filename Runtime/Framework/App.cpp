@@ -45,6 +45,8 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <fstream>
+#include <filesystem>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -61,6 +63,28 @@
 
 namespace {
 
+void startupTrace(const char *message) {
+  if (!message)
+    return;
+  std::fprintf(stderr, "[glGen startup] %s\n", message);
+  std::fflush(stderr);
+}
+
+void startupGlTrace(const char *stage) {
+  GLenum err = glGetError();
+  if (err == GL_NO_ERROR)
+    return;
+
+  const std::string label = stage ? stage : "startup";
+  while (err != GL_NO_ERROR) {
+    const std::string msg =
+        label + " generated GL error " + std::to_string((int)err);
+    startupTrace(msg.c_str());
+    LOG_ERROR("Render", msg);
+    err = glGetError();
+  }
+}
+
 #include <fstream>
 
 void saveConfig(const AppState &s, const char *filename) {
@@ -76,31 +100,60 @@ void loadConfig(AppState &s, const char *filename) {
 // Render passes have been extracted to RenderLoopSubsystem
 
 bool initWindowAndImGui(AppState &s) {
+  startupTrace("initWindowAndImGui: begin");
   glfwSetErrorCallback(App::errorCallback);
-  if (!glfwInit())
+  if (!glfwInit()) {
+    const char *description = nullptr;
+    glfwGetError(&description);
+    std::fprintf(stderr, "[glGen startup] glfwInit failed: %s\n",
+                 description ? description : "<no description>");
+    std::fflush(stderr);
     return false;
+  }
 
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-  glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
-  glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
-  glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-  glfwWindowHint(GLFW_STENCIL_BITS, 8);
+  auto applyWindowHints = [](int minorVersion) {
+    glfwDefaultWindowHints();
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, minorVersion);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
+    glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    glfwWindowHint(GLFW_STENCIL_BITS, 8);
+  };
+  applyWindowHints(3);
 
   // Make the engine windowed instead of exclusive fullscreen
   s.scrW = 1600;
   s.scrH = 900;
 
   s.window = glfwCreateWindow(s.scrW, s.scrH, "glGen Engine", nullptr, nullptr);
-  if (!s.window)
+  if (!s.window) {
+    const char *description = nullptr;
+    glfwGetError(&description);
+    std::fprintf(stderr,
+                 "[glGen startup] OpenGL 4.3 window failed, retrying 4.1: %s\n",
+                 description ? description : "<no description>");
+    std::fflush(stderr);
+    applyWindowHints(1);
+    s.window =
+        glfwCreateWindow(s.scrW, s.scrH, "glGen Engine", nullptr, nullptr);
+  }
+  if (!s.window) {
+    const char *description = nullptr;
+    glfwGetError(&description);
+    std::fprintf(stderr, "[glGen startup] glfwCreateWindow failed: %s\n",
+                 description ? description : "<no description>");
+    std::fflush(stderr);
     return false;
+  }
 
   glfwMakeContextCurrent(s.window);
   glfwSetInputMode(s.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
   glfwSetWindowUserPointer(s.window, &s);
 
   if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+    startupTrace("initWindowAndImGui: gladLoadGLLoader failed");
     LOG_FATAL("Runtime", "Failed to initialize OpenGL libraries");
     return false;
   }
@@ -120,6 +173,7 @@ bool initWindowAndImGui(AppState &s) {
 
   glEnable(GL_DEPTH_TEST);
   GLDebug::initialize();
+  startupTrace("initWindowAndImGui: success");
   return true;
 }
 
@@ -157,6 +211,8 @@ bool initRuntimeSystems(AppState &s) {
       s.projectConfig.shaderPath(s.projectConfig.projectileVertexShader);
   const std::string projFS =
       s.projectConfig.shaderPath(s.projectConfig.projectileFragmentShader);
+  const std::string laserVS = s.projectConfig.shaderPath("laser.vert");
+  const std::string laserFS = s.projectConfig.shaderPath("laser.frag");
   const std::string cloudVS = s.projectConfig.shaderPath("cloud.vert");
   const std::string cloudFS = s.projectConfig.shaderPath("cloud.frag");
 
@@ -193,9 +249,14 @@ bool initRuntimeSystems(AppState &s) {
                        shadowFS.c_str())) {
     return false;
   }
+  startupGlTrace("runtime init: renderer.init");
 
-  if (!s.sky.init(skyHdr, hdrVS, hdrFS))
+  if (s.skyUI.skyHDRPath.empty())
+    s.skyUI.skyHDRPath = skyHdr;
+
+  if (!s.sky.init(s.skyUI.skyHDRPath, hdrVS, hdrFS))
     return false;
+  startupGlTrace("runtime init: sky.init");
 
   if (!s.fire.init(fireTex.c_str(), fireVS.c_str(), fireFS.c_str(),
                    smokeFS.c_str())) {
@@ -206,17 +267,22 @@ bool initRuntimeSystems(AppState &s) {
   s.postProcessor.init(ppQuadVS, ppBloomExtractFS, ppBloomBlurFS, ppSSAOFS,
                        ppSSAOBlurFS, ppVolumetricFS, ppBloomCompositeFS, s.scrW,
                        s.scrH);
+  startupGlTrace("runtime init: postProcessor.init");
 
-  if (!s.projectiles.init(projVS.c_str(), projFS.c_str()))
+  if (!s.projectiles.init(projVS.c_str(), projFS.c_str(), laserVS.c_str(),
+                          laserFS.c_str()))
     return false;
+  startupGlTrace("runtime init: projectiles.init");
 
   if (!s.cloud.init(cloudVS, cloudFS))
     LOG_WARN("Runtime", "Failed to initialize CloudFX");
+  startupGlTrace("runtime init: cloud.init");
 
   const std::string fireflyVS = s.projectConfig.shaderPath("firefly.vert");
   const std::string fireflyFS = s.projectConfig.shaderPath("firefly.frag");
   if (!s.fireflies.init(fireflyVS.c_str(), fireflyFS.c_str()))
     LOG_WARN("Runtime", "Failed to initialize FireflySystem");
+  startupGlTrace("runtime init: fireflies.init");
 
   (void)s.assets.registerShader(&s.renderer.shader(), mainVS, mainFS);
   (void)s.assets.registerShader(&s.renderer.shadowShader(), shadowVS, shadowFS);
@@ -327,6 +393,7 @@ void App::dropCallback(GLFWwindow *window, int pathCount, const char **paths) {
 }
 
 int App::run() {
+  startupTrace("App::run begin");
   m = std::make_unique<AppState>();
 
 #ifdef NDEBUG
@@ -334,11 +401,18 @@ int App::run() {
 #else
   Logger::instance().setMinLevel(Logger::Level::Trace);
 #endif
+
+  std::filesystem::create_directories("Build");
   Logger::instance().setFileSink("Build/engine.log");
+  startupTrace("Logger initialized");
   CrashHandler::install("Build/crash_report.txt");
   LOG_INFO("Runtime", "Engine startup");
 
-  (void)m->projectConfig.loadFromFile("project_config.json");
+  startupTrace("Loading project_config.json");
+  const bool configLoaded = m->projectConfig.loadFromFile("project_config.json");
+  std::fprintf(stderr, "[glGen startup] project_config.json loaded: %s\n",
+               configLoaded ? "true" : "false");
+  std::fflush(stderr);
 
   m->subsystems.registerSubsystem(std::make_unique<WindowSubsystem>(*m));
 
@@ -371,10 +445,15 @@ int App::run() {
   m->subsystems.registerProfile({"Editor", {"CoreAppLayer"}});
   m->subsystems.registerProfile({"Runtime", {"RenderLoopSubsystem"}});
 
-  if (!m->subsystems.initializeProfile("Editor"))
+  startupTrace("Initializing startup profile: Editor");
+  if (!m->subsystems.initializeProfile("Editor")) {
+    startupTrace("Startup profile initialization failed");
     return -1;
+  }
+  startupTrace("Startup profile initialized");
 
   // ---- Main loop ----
+  startupTrace("Entering main loop");
   while (!glfwWindowShouldClose(m->window)) {
     glfwPollEvents();
 
@@ -393,5 +472,6 @@ int App::run() {
   m->subsystems.shutdownAll();
   LOG_INFO("Runtime", "Engine shutdown");
   Logger::instance().clearFileSink();
+  startupTrace("App::run end");
   return 0;
 }

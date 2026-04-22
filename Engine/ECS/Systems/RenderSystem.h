@@ -4,14 +4,19 @@
 #include "Assets/UFBXModel.h"
 #include "ECS/Components.h"
 #include "ECS/Registry.h"
+#include "Rendering/RenderCapabilities.h"
 #include "Rendering/Shader.h"
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstring>
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>
+#include <limits>
 #include <unordered_map>
+#include <vector>
 
 class RenderSystem {
 public:
@@ -25,9 +30,27 @@ public:
     int drawCallsShadow = 0;
     int instancedDrawCallsMain = 0;
     int instancedDrawCallsShadow = 0;
+    int instancedUploadsMain = 0;
+    int instancedUploadsShadow = 0;
+    int instancedUploadSkipsMain = 0;
+    int instancedUploadSkipsShadow = 0;
+    int instancedUploadBytesMain = 0;
+    int instancedUploadBytesShadow = 0;
+    int instancedClustersTestedMain = 0;
+    int instancedClustersTestedShadow = 0;
+    int instancedClustersVisibleMain = 0;
+    int instancedClustersVisibleShadow = 0;
+    int shadowDistanceCulled = 0;
+    int shadowSmallCasterCulled = 0;
   };
 
-  void beginFrame() { mStats = {}; }
+  void beginFrame() {
+    mStats = {};
+    mUploadBytesUsed = 0;
+    mFramePacketsPrepared = false;
+    mFramePackets.clear();
+    mEntityPacketIndex.clear();
+  }
 
   void setViewProjection(const glm::mat4 &vp) {
     mViewProjection = vp;
@@ -49,8 +72,18 @@ public:
   void setShadowCameraCulling(bool enabled) {
     mShadowCameraCulling = enabled;
   }
+  void setSubmissionBackend(RenderSubmissionBackend backend) {
+    mSubmissionBackend = backend;
+  }
+  void setFrameUploadBudgetBytes(size_t bytes) { mUploadBudgetBytes = bytes; }
+  void setShadowDistanceLimit(float limit) {
+    mShadowDistanceLimit = (limit > 0.0f)
+                               ? limit
+                               : std::numeric_limits<float>::infinity();
+  }
   bool cullingEnabled() const { return mCullingEnabled; }
   const VisibilityStats &stats() const { return mStats; }
+  void prepareFrame(Registry &registry) { prepareFramePackets_(registry); }
 
   void update(Registry &registry, Shader &shader, bool shadowPass = false,
               EntityId selectedEntity = 0, bool outlinePass = false,
@@ -63,6 +96,9 @@ public:
       shader.setBool("uCloudPass", false);
       shader.setInt("texture1", 0);
     }
+
+    if (!updateMeshPackets_(registry, shader, shadowPass, selectedEntity,
+                            outlinePass, viewModelPass, terrainFilter)) {
 
     // Reuse allocations across frames
     mWorldCache.clear();
@@ -128,15 +164,23 @@ public:
           (mesh.isTerrain && !mesh.isWater))
         continue;
 
-      // Frustum culling (main pass + optional shadow camera culling, skip terrain)
-      if (!viewModelPass && mCullingEnabled && !mesh.isTerrain &&
+      // Frustum culling (main pass + optional shadow camera culling).
+      // Terrain chunks provide an explicit bounds center offset because their
+      // vertices are generated in world space while the entity transform stays
+      // at the origin.
+      if (!viewModelPass && mCullingEnabled &&
           (!shadowPass || mShadowCameraCulling)) {
         ++mStats.tested;
         glm::mat4 world = worldMatrix(worldMatrix, entity);
         float radius = 1.0f;
+        glm::vec3 centerOffset(0.0f);
         if (registry.has<BoundsComponent>(entity))
-          radius = registry.get<BoundsComponent>(entity).radius;
-        const glm::vec3 center = glm::vec3(world[3]);
+        {
+          const auto &bounds = registry.get<BoundsComponent>(entity);
+          centerOffset = bounds.centerOffset;
+          radius = bounds.radius;
+        }
+        const glm::vec3 center = glm::vec3(world[3]) + centerOffset;
 
         if (registry.has<LODComponent>(entity)) {
           const auto &lod = registry.get<LODComponent>(entity);
@@ -277,13 +321,14 @@ public:
         }
       }
     }
+    }
 
     // ------------------------------------------------------------------
     // Draw Instanced Meshes
     // ------------------------------------------------------------------
     if (viewModelPass)
       return;
-    const uint64_t frameCullKey = buildCullKey_();
+    const uint64_t frameCullKey = buildCullKey_(shadowPass);
     for (auto entity : registry.view<InstancedMeshComponent>()) {
       if (!registry.has<LifecycleComponent>(entity))
         continue;
@@ -310,77 +355,164 @@ public:
       const float maxDist =
           shadowPass ? std::min(inst.maxDrawDistance, inst.shadowMaxDrawDistance)
                      : inst.maxDrawDistance;
-      const float maxDist2 = maxDist * maxDist;
+      const float shadowDistanceLimit =
+          shadowPass ? mShadowDistanceLimit
+                     : std::numeric_limits<float>::infinity();
+      const float cappedMaxDist =
+          std::isfinite(shadowDistanceLimit)
+              ? std::min(maxDist, shadowDistanceLimit)
+              : maxDist;
+      const float maxDist2 = cappedMaxDist * cappedMaxDist;
       const float baseRadius = std::max(0.25f, inst.instanceCullRadius);
 
-      // Build culled list — only allocate if count would change
+      if (inst.isDirty) {
+        inst.clusterDataDirty = true;
+        inst.mainCacheDirty = true;
+        inst.shadowCacheDirty = true;
+        inst.isDirty = false;
+      }
+      if (inst.clusterDataDirty)
+        buildInstanceClusters_(inst);
+
+      std::vector<glm::mat4> &cachedTransforms =
+          shadowPass ? inst.shadowCulledTransforms : inst.culledTransforms;
+      uint64_t &lastCullKey =
+          shadowPass ? inst.shadowLastCullKey : inst.lastCullKey;
+      int &lastVisibleCount =
+          shadowPass ? inst.shadowLastVisibleCount : inst.lastVisibleCount;
+      int &lastTestedClusterCount = shadowPass
+                                        ? inst.shadowLastTestedClusterCount
+                                        : inst.lastTestedClusterCount;
+      int &lastVisibleClusterCount = shadowPass
+                                         ? inst.shadowLastVisibleClusterCount
+                                         : inst.lastVisibleClusterCount;
+      bool &cacheDirty =
+          shadowPass ? inst.shadowCacheDirty : inst.mainCacheDirty;
+      unsigned int &targetVBO =
+          shadowPass ? inst.shadowInstanceVBO : inst.instanceVBO;
+      size_t &targetCapacity =
+          shadowPass ? inst.shadowInstanceVBOCapacity
+                     : inst.instanceVBOCapacity;
+
       const int totalCount = (int)inst.instanceTransforms.size();
-      int visibleCount = inst.lastVisibleCount;
-      const bool allowCache = !shadowPass;
+      const int cachedVisibleCount = lastVisibleCount;
+      int visibleCount = cachedVisibleCount;
       const bool needsRebuild =
-          !allowCache || inst.isDirty || inst.lastCullKey != frameCullKey ||
-          (allowCache && inst.instanceVBO == 0);
+          cacheDirty || lastCullKey != frameCullKey || targetVBO == 0;
       if (needsRebuild) {
-        std::vector<glm::mat4> &outList =
-            allowCache ? inst.culledTransforms : mCullScratch;
-        outList.clear();
-        outList.reserve(totalCount);
+        cachedTransforms.clear();
+        cachedTransforms.reserve(totalCount);
+        const float r = shadowPass ? baseRadius * 1.5f : baseRadius;
+        const float clusterFullDist =
+            std::max(0.0f, cappedMaxDist - r);
+        const float clusterFullDist2 = clusterFullDist * clusterFullDist;
+        int testedClusters = 0;
+        int visibleClusters = 0;
 
-        for (const glm::mat4 &m : inst.instanceTransforms) {
-          const glm::vec3 worldPos(m[3]);
-          // Distance cull (squared, no sqrt)
-          glm::vec3 d = worldPos - mCameraPos;
-          if (d.x * d.x + d.y * d.y + d.z * d.z > maxDist2)
+        for (const auto &cluster : inst.instanceClusters) {
+          ++testedClusters;
+          const float clusterRadius = cluster.radius + r;
+          const glm::vec3 clusterDelta = cluster.center - mCameraPos;
+          const float clusterDist2 =
+              clusterDelta.x * clusterDelta.x + clusterDelta.y * clusterDelta.y +
+              clusterDelta.z * clusterDelta.z;
+          const float clusterCullDist = cappedMaxDist + clusterRadius;
+          if (clusterDist2 > clusterCullDist * clusterCullDist) {
+            if (shadowPass)
+              recordShadowCasterCull_((int)cluster.indexCount, false);
             continue;
-          // Frustum cull — test if sphere around instance position is visible
-          // Shadow pass uses a slightly looser check to avoid shadow popping
-          bool visible = true;
-          const float r = shadowPass ? baseRadius * 1.5f : baseRadius;
-          for (const glm::vec4 &p : mFrustumPlanes) {
-            if (glm::dot(glm::vec3(p), worldPos) + p.w < -r) {
-              visible = false;
-              break;
-            }
           }
-          if (visible)
-            outList.push_back(m);
-        }
+          if (shadowPass &&
+              shouldCullSmallShadowCaster_(std::sqrt(clusterDist2),
+                                           clusterRadius)) {
+            recordShadowCasterCull_((int)cluster.indexCount, true);
+            continue;
+          }
+          if (!sphereInFrustum_(cluster.center, clusterRadius))
+            continue;
 
-        visibleCount = (int)outList.size();
+          ++visibleClusters;
+          const bool fullyInsideFrustum =
+              sphereFullyInsideFrustum_(cluster.center, clusterRadius);
+          const bool fullyInsideDistance = clusterDist2 <= clusterFullDist2;
+          if (fullyInsideFrustum && fullyInsideDistance) {
+            const uint32_t offset = cluster.indexOffset;
+            const uint32_t end = offset + cluster.indexCount;
+            for (uint32_t i = offset; i < end; ++i) {
+              cachedTransforms.push_back(
+                  inst.instanceTransforms[inst.clusterInstanceIndices[i]]);
+            }
+            continue;
+          }
+
+          const uint32_t offset = cluster.indexOffset;
+          const uint32_t end = offset + cluster.indexCount;
+          for (uint32_t i = offset; i < end; ++i) {
+            const glm::mat4 &m =
+                inst.instanceTransforms[inst.clusterInstanceIndices[i]];
+            const glm::vec3 worldPos(m[3]);
+            glm::vec3 d = worldPos - mCameraPos;
+            if (d.x * d.x + d.y * d.y + d.z * d.z > maxDist2)
+              continue;
+            bool visible = true;
+            for (const glm::vec4 &p : mFrustumPlanes) {
+              if (glm::dot(glm::vec3(p), worldPos) + p.w < -r) {
+                visible = false;
+                break;
+              }
+            }
+            if (visible)
+              cachedTransforms.push_back(m);
+          }
+        }
+        recordClusterStats_(shadowPass, testedClusters, visibleClusters);
+        lastTestedClusterCount = testedClusters;
+        lastVisibleClusterCount = visibleClusters;
+
+        visibleCount = (int)cachedTransforms.size();
+      }
+      else {
+        recordClusterStats_(shadowPass, lastTestedClusterCount,
+                            lastVisibleClusterCount);
       }
 
       if (visibleCount == 0) {
+        if (needsRebuild) {
+          lastVisibleCount = 0;
+          lastCullKey = frameCullKey;
+          cacheDirty = false;
+        }
+        if (!shadowPass)
+          mStats.culled += totalCount;
         shader.setBool("uInstanced", false);
         continue;
       }
 
       if (needsRebuild) {
-        const std::vector<glm::mat4> &uploadList =
-            allowCache ? inst.culledTransforms : mCullScratch;
-        // Upload culled transforms to GPU (orphan when capacity exceeded)
-        unsigned int &targetVBO =
-            shadowPass ? inst.shadowInstanceVBO : inst.instanceVBO;
-        size_t &targetCapacity =
-            shadowPass ? inst.shadowInstanceVBOCapacity
-                       : inst.instanceVBOCapacity;
-        if (targetVBO == 0)
-          glGenBuffers(1, &targetVBO);
-
         const size_t neededBytes = (size_t)visibleCount * sizeof(glm::mat4);
-        glBindBuffer(GL_ARRAY_BUFFER, targetVBO);
-        if (neededBytes > targetCapacity) {
-          glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)neededBytes, nullptr,
-                       GL_DYNAMIC_DRAW);
-          targetCapacity = neededBytes;
+        const bool canReusePrevious =
+            !cacheDirty && targetVBO != 0 && cachedVisibleCount > 0;
+        const bool budgetAccepted = tryConsumeUploadBudget_(neededBytes);
+        if (!budgetAccepted && canReusePrevious) {
+          visibleCount = cachedVisibleCount;
+          recordInstanceUploadSkip_(shadowPass);
+        } else {
+          size_t uploadedBytes = 0;
+          if (uploadInstanceBuffer_(targetVBO, targetCapacity,
+                                    cachedTransforms.data(), visibleCount,
+                                    uploadedBytes)) {
+            if (!budgetAccepted)
+              mUploadBytesUsed += uploadedBytes;
+            recordInstanceUpload_(shadowPass, uploadedBytes);
+          } else {
+            recordInstanceUploadSkip_(shadowPass);
+          }
+          lastVisibleCount = visibleCount;
+          lastCullKey = frameCullKey;
+          cacheDirty = false;
         }
-        glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)neededBytes,
-                        uploadList.data());
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-        if (allowCache) {
-          inst.isDirty = false;
-          inst.lastCullKey = frameCullKey;
-          inst.lastVisibleCount = visibleCount;
-        }
+      } else {
+        recordInstanceUploadSkip_(shadowPass);
       }
 
       shader.setBool("uInstanced", true);
@@ -425,7 +557,504 @@ public:
   }
 
 private:
-  uint64_t buildCullKey_() const {
+  struct FramePacket {
+    EntityId entity = 0;
+    uint64_t sortKey = 0;
+    glm::vec3 position{0.0f};
+    glm::vec3 rotation{0.0f};
+    glm::vec3 scale{1.0f};
+    glm::vec3 boundsCenter{0.0f};
+    float boundsRadius = 1.0f;
+    float lodMinDistance = 0.0f;
+    float lodMaxDistance = std::numeric_limits<float>::max();
+    int submeshCount = 0;
+    bool hasLod = false;
+    bool castsShadow = true;
+    bool isTerrain = false;
+    bool isWater = false;
+    bool isViewModel = false;
+    class OBJModel *objModel = nullptr;
+    class FBXModel *gltfModel = nullptr;
+    class UFBXModel *ufbxModel = nullptr;
+  };
+
+  void prepareFramePackets_(Registry &registry) {
+    if (mFramePacketsPrepared)
+      return;
+    mFramePacketsPrepared = true;
+
+    mWorldCache.clear();
+    mVisit.clear();
+    mFramePackets.clear();
+    mEntityPacketIndex.clear();
+
+    auto worldMatrix = [&](auto &&self, EntityId e) -> glm::mat4 {
+      auto itV = mVisit.find(e);
+      if (itV != mVisit.end() && itV->second == 2)
+        return mWorldCache[e];
+      if (itV != mVisit.end() && itV->second == 1)
+        return registry.get<TransformComponent>(e).getMatrix();
+
+      mVisit[e] = 1;
+      glm::mat4 local = registry.get<TransformComponent>(e).getMatrix();
+      glm::mat4 world = local;
+
+      if (registry.has<HierarchyComponent>(e)) {
+        auto &h = registry.get<HierarchyComponent>(e);
+        if (h.parent != 0 && registry.has<TransformComponent>(h.parent)) {
+          world = self(self, h.parent) * local;
+        }
+      }
+
+      mVisit[e] = 2;
+      mWorldCache[e] = world;
+      return world;
+    };
+
+    for (auto entity :
+         registry.viewWhere<MeshComponent, TransformComponent>([&](EntityId e) {
+           if (!registry.has<LifecycleComponent>(e))
+             return true;
+           auto s = registry.get<LifecycleComponent>(e).state;
+           return s == EntityLifecycleState::Alive;
+         })) {
+      auto &mesh = registry.get<MeshComponent>(entity);
+      if (!mesh.visible)
+        continue;
+      if (!mesh.objModel && !mesh.gltfModel && !mesh.ufbxModel)
+        continue;
+
+      FramePacket packet;
+      packet.entity = entity;
+      packet.objModel = mesh.objModel;
+      packet.gltfModel = mesh.gltfModel;
+      packet.ufbxModel = mesh.ufbxModel;
+      packet.castsShadow = mesh.castsShadow;
+      packet.isTerrain = mesh.isTerrain;
+      packet.isWater = mesh.isWater;
+      packet.isViewModel = mesh.isViewModel;
+
+      glm::mat4 world = worldMatrix(worldMatrix, entity);
+      packet.position = glm::vec3(world[3]);
+      packet.scale = glm::vec3(glm::length(glm::vec3(world[0])),
+                               glm::length(glm::vec3(world[1])),
+                               glm::length(glm::vec3(world[2])));
+      glm::mat4 rotMat = world;
+      if (packet.scale.x > 1e-6f)
+        rotMat[0] /= packet.scale.x;
+      if (packet.scale.y > 1e-6f)
+        rotMat[1] /= packet.scale.y;
+      if (packet.scale.z > 1e-6f)
+        rotMat[2] /= packet.scale.z;
+      packet.rotation = glm::degrees(glm::eulerAngles(glm::quat_cast(rotMat)));
+
+      if (registry.has<BoundsComponent>(entity)) {
+        const auto &bounds = registry.get<BoundsComponent>(entity);
+        packet.boundsCenter = packet.position + bounds.centerOffset;
+        packet.boundsRadius = bounds.radius;
+      } else {
+        packet.boundsCenter = packet.position;
+      }
+
+      if (registry.has<LODComponent>(entity)) {
+        const auto &lod = registry.get<LODComponent>(entity);
+        packet.hasLod = true;
+        packet.lodMinDistance = lod.minDistance;
+        packet.lodMaxDistance = lod.maxDistance;
+      }
+
+      if (mesh.objModel)
+        packet.submeshCount = (int)mesh.objModel->submeshCount();
+      else if (mesh.gltfModel)
+        packet.submeshCount = (int)mesh.gltfModel->submeshCount();
+      else if (mesh.ufbxModel)
+        packet.submeshCount = (int)mesh.ufbxModel->submeshCount();
+
+      uint64_t modelKey = 0;
+      if (mesh.objModel)
+        modelKey = (uint64_t)reinterpret_cast<uintptr_t>(mesh.objModel);
+      else if (mesh.gltfModel)
+        modelKey = (uint64_t)reinterpret_cast<uintptr_t>(mesh.gltfModel);
+      else if (mesh.ufbxModel)
+        modelKey = (uint64_t)reinterpret_cast<uintptr_t>(mesh.ufbxModel);
+
+      uint64_t materialKey = 0;
+      if (registry.has<MaterialOverrideComponent>(entity)) {
+        auto &mo = registry.get<MaterialOverrideComponent>(entity);
+        if (mo.enabled) {
+          if (!mo.material.id.empty()) {
+            materialKey = (uint64_t)std::hash<std::string>{}(mo.material.id);
+          } else {
+            uint64_t h = 1469598103934665603ull;
+            auto mix = [&](uint64_t v) {
+              h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+            };
+            mix((uint64_t)mo.material.texDiffuse);
+            mix((uint64_t)mo.material.texNormal);
+            mix((uint64_t)mo.material.texRoughness);
+            mix((uint64_t)mo.material.texMetallic);
+            mix((uint64_t)mo.material.texAO);
+            mix((uint64_t)mo.material.texEmissive);
+            mix((uint64_t)mo.material.texOpacity);
+            materialKey = h;
+          }
+        }
+      }
+
+      packet.sortKey = materialKey;
+      packet.sortKey ^= modelKey + 0x9e3779b97f4a7c15ull +
+                        (packet.sortKey << 6) + (packet.sortKey >> 2);
+      mFramePackets.push_back(packet);
+    }
+
+    std::sort(mFramePackets.begin(), mFramePackets.end(),
+              [](const FramePacket &a, const FramePacket &b) {
+                if (a.sortKey != b.sortKey)
+                  return a.sortKey < b.sortKey;
+                return a.entity < b.entity;
+              });
+
+    for (size_t i = 0; i < mFramePackets.size(); ++i) {
+      mEntityPacketIndex[mFramePackets[i].entity] = i;
+    }
+  }
+
+  bool updateMeshPackets_(Registry &registry, Shader &shader, bool shadowPass,
+                          EntityId selectedEntity, bool outlinePass,
+                          bool viewModelPass, TerrainFilter terrainFilter) {
+    prepareFramePackets_(registry);
+
+    auto passMatches = [&](const FramePacket &packet) -> bool {
+      if (viewModelPass) {
+        if (!packet.isViewModel)
+          return false;
+      } else if (packet.isViewModel) {
+        return false;
+      }
+      if (shadowPass && !packet.castsShadow)
+        return false;
+      if (terrainFilter == TerrainFilter::OnlyTerrain &&
+          (!packet.isTerrain || packet.isWater))
+        return false;
+      if (terrainFilter == TerrainFilter::ExcludeTerrain &&
+          (packet.isTerrain && !packet.isWater))
+        return false;
+      return true;
+    };
+
+    auto packetVisible = [&](const FramePacket &packet) -> bool {
+      if (viewModelPass)
+        return true;
+      if (!mCullingEnabled || (shadowPass && !mShadowCameraCulling))
+        return true;
+
+      ++mStats.tested;
+      if (shadowPass && std::isfinite(mShadowDistanceLimit)) {
+        const float centerDist = glm::length(mCameraPos - packet.boundsCenter);
+        if (centerDist - packet.boundsRadius > mShadowDistanceLimit) {
+          ++mStats.culled;
+          recordShadowCasterCull_(1, false);
+          return false;
+        }
+        if (shouldCullSmallShadowCaster_(centerDist, packet.boundsRadius)) {
+          ++mStats.culled;
+          recordShadowCasterCull_(1, true);
+          return false;
+        }
+      }
+      if (packet.hasLod) {
+        const float d = glm::length(mCameraPos - packet.boundsCenter);
+        if (d < packet.lodMinDistance || d > packet.lodMaxDistance) {
+          ++mStats.culled;
+          return false;
+        }
+      }
+      if (!sphereInFrustum_(packet.boundsCenter, packet.boundsRadius)) {
+        ++mStats.culled;
+        return false;
+      }
+      return true;
+    };
+
+    auto drawPacket = [&](const FramePacket &packet, bool enableStencilWrite) {
+      if (shadowPass) {
+        mStats.drawCallsShadow += packet.submeshCount;
+        if (packet.objModel) {
+          packet.objModel->drawDepth(shader, packet.position, packet.rotation,
+                                     packet.scale);
+        } else if (packet.gltfModel) {
+          packet.gltfModel->drawDepth(shader, packet.position, packet.rotation,
+                                      packet.scale);
+        } else if (packet.ufbxModel) {
+          packet.ufbxModel->drawDepth(shader, packet.position, packet.rotation,
+                                      packet.scale);
+        }
+        return;
+      }
+
+      mStats.drawCallsMain += packet.submeshCount;
+      if (enableStencilWrite && selectedEntity != 0) {
+        if (packet.entity == selectedEntity) {
+          glStencilFunc(GL_ALWAYS, 1, 0xFF);
+          glStencilMask(0xFF);
+        } else {
+          glStencilMask(0x00);
+        }
+      }
+
+      if (packet.isTerrain && !packet.isWater) {
+        shader.setBool("uTerrainPass", true);
+        shader.setBool("uUseColor", false);
+      }
+
+      const MaterialAsset *materialOverride = nullptr;
+      if (registry.has<MaterialOverrideComponent>(packet.entity)) {
+        auto &mo = registry.get<MaterialOverrideComponent>(packet.entity);
+        if (mo.enabled)
+          materialOverride = &mo.material;
+      }
+
+      if (packet.objModel) {
+        packet.objModel->draw(shader, packet.position, packet.rotation,
+                              packet.scale, materialOverride);
+        ++mStats.drawn;
+      } else if (packet.gltfModel) {
+        packet.gltfModel->draw(shader, packet.position, packet.rotation,
+                               packet.scale, materialOverride);
+        ++mStats.drawn;
+      } else if (packet.ufbxModel) {
+        packet.ufbxModel->draw(shader, packet.position, packet.rotation,
+                               packet.scale, materialOverride);
+        ++mStats.drawn;
+      }
+
+      if (packet.isTerrain && !packet.isWater) {
+        shader.setBool("uTerrainPass", false);
+      }
+    };
+
+    if (outlinePass) {
+      auto it = mEntityPacketIndex.find(selectedEntity);
+      if (it != mEntityPacketIndex.end()) {
+        const FramePacket &packet = mFramePackets[it->second];
+        if (passMatches(packet) && packetVisible(packet))
+          drawPacket(packet, false);
+      }
+    } else {
+      for (const FramePacket &packet : mFramePackets) {
+        if (!passMatches(packet))
+          continue;
+        if (!packetVisible(packet))
+          continue;
+        drawPacket(packet, true);
+      }
+    }
+    return true;
+  }
+
+  void recordClusterStats_(bool shadowPass, int tested, int visible) {
+    if (shadowPass) {
+      mStats.instancedClustersTestedShadow += tested;
+      mStats.instancedClustersVisibleShadow += visible;
+    } else {
+      mStats.instancedClustersTestedMain += tested;
+      mStats.instancedClustersVisibleMain += visible;
+    }
+  }
+
+  void recordShadowCasterCull_(int count, bool smallCaster) {
+    if (count <= 0)
+      return;
+    if (smallCaster) {
+      mStats.shadowSmallCasterCulled += count;
+    } else {
+      mStats.shadowDistanceCulled += count;
+    }
+  }
+
+  bool shouldCullSmallShadowCaster_(float centerDistance, float radius) const {
+    if (!std::isfinite(mShadowDistanceLimit))
+      return false;
+
+    const float safeDistance = std::max(centerDistance, 1.0f);
+    const float safeRadius = std::max(radius, 0.05f);
+    if (safeDistance < mShadowDistanceLimit * 0.38f)
+      return false;
+
+    const float projectedRadius = safeRadius / safeDistance;
+    const float distanceAlpha =
+        std::clamp(safeDistance / std::max(mShadowDistanceLimit, 1.0f), 0.0f,
+                   1.0f);
+    const float minUsefulRadius = 0.18f + distanceAlpha * 0.92f;
+    const float minProjectedRadius = 0.00115f;
+    return safeRadius < minUsefulRadius &&
+           projectedRadius < minProjectedRadius;
+  }
+
+  bool sphereFullyInsideFrustum_(const glm::vec3 &center, float radius) const {
+    for (const glm::vec4 &p : mFrustumPlanes) {
+      if (glm::dot(glm::vec3(p), center) + p.w < radius)
+        return false;
+    }
+    return true;
+  }
+
+  void buildInstanceClusters_(InstancedMeshComponent &inst) const {
+    inst.instanceClusters.clear();
+    inst.clusterInstanceIndices.clear();
+    inst.clusterDataDirty = false;
+
+    const size_t count = inst.instanceTransforms.size();
+    if (count == 0)
+      return;
+
+    struct ClusterCellKey {
+      int x = 0;
+      int y = 0;
+      int z = 0;
+
+      bool operator==(const ClusterCellKey &other) const {
+        return x == other.x && y == other.y && z == other.z;
+      }
+    };
+
+    struct ClusterCellKeyHash {
+      size_t operator()(const ClusterCellKey &key) const {
+        size_t h = (size_t)1469598103934665603ull;
+        auto mix = [&](uint64_t v) {
+          h ^= (size_t)(v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2));
+        };
+        mix((uint64_t)(uint32_t)key.x);
+        mix((uint64_t)(uint32_t)key.y);
+        mix((uint64_t)(uint32_t)key.z);
+        return h;
+      }
+    };
+
+    const float cellSize =
+        std::clamp(std::max(inst.instanceCullRadius * 4.0f, 8.0f), 8.0f, 48.0f);
+    const float invCell = 1.0f / std::max(cellSize, 0.001f);
+    const float verticalCell = cellSize * 1.5f;
+    const float invVerticalCell = 1.0f / std::max(verticalCell, 0.001f);
+
+    std::unordered_map<ClusterCellKey, std::vector<uint32_t>, ClusterCellKeyHash>
+        buckets;
+    buckets.reserve(count);
+
+    for (uint32_t i = 0; i < count; ++i) {
+      const glm::vec3 pos(inst.instanceTransforms[i][3]);
+      const ClusterCellKey key{
+          (int)std::floor(pos.x * invCell),
+          (int)std::floor(pos.y * invVerticalCell),
+          (int)std::floor(pos.z * invCell),
+      };
+      buckets[key].push_back(i);
+    }
+
+    inst.instanceClusters.reserve(buckets.size());
+    inst.clusterInstanceIndices.reserve(count);
+    for (auto &entry : buckets) {
+      auto &indices = entry.second;
+      if (indices.empty())
+        continue;
+
+      glm::vec3 center(0.0f);
+      for (uint32_t idx : indices) {
+        center += glm::vec3(inst.instanceTransforms[idx][3]);
+      }
+      center /= (float)indices.size();
+
+      float radius = 0.0f;
+      for (uint32_t idx : indices) {
+        radius = std::max(
+            radius, glm::length(glm::vec3(inst.instanceTransforms[idx][3]) - center));
+      }
+
+      InstancedMeshComponent::InstanceCluster cluster;
+      cluster.center = center;
+      cluster.radius = radius;
+      cluster.indexOffset = (uint32_t)inst.clusterInstanceIndices.size();
+      cluster.indexCount = (uint32_t)indices.size();
+      inst.clusterInstanceIndices.insert(inst.clusterInstanceIndices.end(),
+                                         indices.begin(), indices.end());
+      inst.instanceClusters.push_back(cluster);
+    }
+  }
+
+  bool tryConsumeUploadBudget_(size_t bytes) {
+    if (bytes == 0)
+      return true;
+    if (mUploadBudgetBytes == std::numeric_limits<size_t>::max()) {
+      mUploadBytesUsed += bytes;
+      return true;
+    }
+    if (mUploadBytesUsed + bytes > mUploadBudgetBytes)
+      return false;
+    mUploadBytesUsed += bytes;
+    return true;
+  }
+
+  void recordInstanceUpload_(bool shadowPass, size_t bytes) {
+    const int safeBytes = (int)std::min<size_t>(
+        bytes, (size_t)std::numeric_limits<int>::max());
+    if (shadowPass) {
+      ++mStats.instancedUploadsShadow;
+      mStats.instancedUploadBytesShadow += safeBytes;
+    } else {
+      ++mStats.instancedUploadsMain;
+      mStats.instancedUploadBytesMain += safeBytes;
+    }
+  }
+
+  void recordInstanceUploadSkip_(bool shadowPass) {
+    if (shadowPass) {
+      ++mStats.instancedUploadSkipsShadow;
+    } else {
+      ++mStats.instancedUploadSkipsMain;
+    }
+  }
+
+  bool uploadInstanceBuffer_(unsigned int &targetVBO, size_t &targetCapacity,
+                             const glm::mat4 *data, int visibleCount,
+                             size_t &uploadedBytes) const {
+    uploadedBytes = 0;
+    if (!data || visibleCount <= 0)
+      return false;
+
+    if (targetVBO == 0)
+      glGenBuffers(1, &targetVBO);
+
+    const size_t neededBytes = (size_t)visibleCount * sizeof(glm::mat4);
+    glBindBuffer(GL_ARRAY_BUFFER, targetVBO);
+    if (neededBytes > targetCapacity) {
+      glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)neededBytes, nullptr,
+                   GL_DYNAMIC_DRAW);
+      targetCapacity = neededBytes;
+    }
+
+    bool uploaded = false;
+    if (mSubmissionBackend == RenderSubmissionBackend::Modern &&
+        glMapBufferRange != nullptr) {
+      void *mapped =
+          glMapBufferRange(GL_ARRAY_BUFFER, 0, (GLsizeiptr)neededBytes,
+                           GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+      if (mapped) {
+        std::memcpy(mapped, data, neededBytes);
+        uploaded = (glUnmapBuffer(GL_ARRAY_BUFFER) == GL_TRUE);
+      }
+    }
+    if (!uploaded) {
+      glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)neededBytes, data);
+      uploaded = true;
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    if (uploaded)
+      uploadedBytes = neededBytes;
+    return uploaded;
+  }
+
+  uint64_t buildCullKey_(bool shadowPass) const {
     uint64_t h = 1469598103934665603ull;
     auto mix = [&](uint64_t v) {
       h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
@@ -433,15 +1062,19 @@ private:
     auto quant = [](float v, float scale) -> int64_t {
       return (int64_t)std::llround(v * scale);
     };
-    // Quantize camera position and frustum planes to avoid tiny jitter.
-    mix((uint64_t)quant(mCameraPos.x, 10.0f));
-    mix((uint64_t)quant(mCameraPos.y, 10.0f));
-    mix((uint64_t)quant(mCameraPos.z, 10.0f));
+    const float cameraScale = shadowPass ? 2.0f : 4.0f;
+    const float planeScale = shadowPass ? 128.0f : 256.0f;
+    mix((uint64_t)shadowPass);
+    // Quantize camera position and frustum planes more coarsely so tiny camera
+    // jitter does not thrash instance uploads.
+    mix((uint64_t)quant(mCameraPos.x, cameraScale));
+    mix((uint64_t)quant(mCameraPos.y, cameraScale));
+    mix((uint64_t)quant(mCameraPos.z, cameraScale));
     for (const glm::vec4 &p : mFrustumPlanes) {
-      mix((uint64_t)quant(p.x, 1000.0f));
-      mix((uint64_t)quant(p.y, 1000.0f));
-      mix((uint64_t)quant(p.z, 1000.0f));
-      mix((uint64_t)quant(p.w, 10.0f));
+      mix((uint64_t)quant(p.x, planeScale));
+      mix((uint64_t)quant(p.y, planeScale));
+      mix((uint64_t)quant(p.z, planeScale));
+      mix((uint64_t)quant(p.w, cameraScale));
     }
     return h;
   }
@@ -467,11 +1100,18 @@ private:
   bool mCullingEnabled = true;
   bool mShadowCameraCulling = true;
   VisibilityStats mStats{};
+  RenderSubmissionBackend mSubmissionBackend =
+      RenderSubmissionBackend::Direct;
+  size_t mUploadBudgetBytes = std::numeric_limits<size_t>::max();
+  size_t mUploadBytesUsed = 0;
+  float mShadowDistanceLimit = std::numeric_limits<float>::infinity();
 
   // Persistent per-frame caches — cleared each frame, capacity retained
   std::unordered_map<EntityId, glm::mat4> mWorldCache;
   std::unordered_map<EntityId, uint8_t> mVisit;
   std::vector<DrawItem> mDrawList;
+  std::vector<FramePacket> mFramePackets;
+  std::unordered_map<EntityId, size_t> mEntityPacketIndex;
+  bool mFramePacketsPrepared = false;
   // Scratch buffer for per-instance frustum culling (avoids malloc each frame)
-  std::vector<glm::mat4> mCullScratch;
 };

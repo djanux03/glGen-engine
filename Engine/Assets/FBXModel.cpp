@@ -79,6 +79,7 @@ static bool getExtVec4(const tinygltf::Value &extObj, const char *key,
 
 bool FBXModel::loadFromFile(const std::string &path) {
   shutdown();
+  mSourcePath = path;
 
   tinygltf::TinyGLTF loader;
   std::string err, warn;
@@ -281,8 +282,12 @@ void FBXModel::processMesh(const tinygltf::Mesh &mesh) {
 
     // Create submesh
     FBXSubmesh submesh;
+    submesh.name =
+        mesh.name.empty() ? ("glTFPrimitive_" + std::to_string(i))
+                          : (mesh.name + "_" + std::to_string(i));
     submesh.indexCount = (GLsizei)indices.size();
     submesh.material.baseColor = glm::vec4(0.8f, 0.8f, 0.8f, 1.0f);
+    submesh.material.sourceAssetPath = mSourcePath;
     submesh.material.texDiffuse = 0;
     submesh.material.texNormal = 0;
     submesh.material.texRoughness = 0;
@@ -297,12 +302,15 @@ void FBXModel::processMesh(const tinygltf::Mesh &mesh) {
     if (primitive.material >= 0) {
       const tinygltf::Material &mat = mModel.materials[primitive.material];
       submesh.materialName = mat.name;
+      submesh.material.sourceMaterialName = mat.name;
       LOG_TRACE("Asset", "Processing material: " + mat.name);
 
       // Base color
       if (mat.pbrMetallicRoughness.baseColorTexture.index >= 0) {
-        submesh.material.texDiffuse = LoadTextureFromGLTF(
-            mat.pbrMetallicRoughness.baseColorTexture.index);
+        submesh.material.texDiffuse =
+            LoadTextureFromGLTF(mat.pbrMetallicRoughness.baseColorTexture.index,
+                                TextureUsage::Color,
+                                &submesh.material.texDiffusePath);
         if (submesh.material.texDiffuse != 0) {
           LOG_TRACE("Asset", "Loaded diffuse texture");
         }
@@ -327,8 +335,9 @@ void FBXModel::processMesh(const tinygltf::Mesh &mesh) {
 
       // Normal map
       if (mat.normalTexture.index >= 0) {
-        submesh.material.texNormal =
-            LoadTextureFromGLTF(mat.normalTexture.index);
+        submesh.material.texNormal = LoadTextureFromGLTF(
+            mat.normalTexture.index, TextureUsage::Data,
+            &submesh.material.texNormalPath);
         if (submesh.material.texNormal != 0) {
           LOG_TRACE("Asset", "Loaded normal texture");
         }
@@ -337,9 +346,11 @@ void FBXModel::processMesh(const tinygltf::Mesh &mesh) {
       // Metallic-roughness texture (packed: R=unused, G=roughness, B=metallic)
       if (mat.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0) {
         submesh.material.texRoughness = LoadTextureFromGLTF(
-            mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
+            mat.pbrMetallicRoughness.metallicRoughnessTexture.index,
+            TextureUsage::Data, &submesh.material.texRoughnessPath);
         submesh.material.texMetallic =
             submesh.material.texRoughness; // Same texture, different channels
+        submesh.material.texMetallicPath = submesh.material.texRoughnessPath;
         submesh.material.roughnessChannel = 1; // G
         submesh.material.metallicChannel = 2;  // B
         if (submesh.material.texRoughness != 0) {
@@ -348,21 +359,27 @@ void FBXModel::processMesh(const tinygltf::Mesh &mesh) {
       }
 
       if (mat.occlusionTexture.index >= 0) {
-        submesh.material.texAO = LoadTextureFromGLTF(mat.occlusionTexture.index);
+        submesh.material.texAO = LoadTextureFromGLTF(
+            mat.occlusionTexture.index, TextureUsage::Data,
+            &submesh.material.texAOPath);
         submesh.material.ao = (float)mat.occlusionTexture.strength;
       }
 
       if (mat.emissiveTexture.index >= 0) {
-        submesh.material.texEmissive = LoadTextureFromGLTF(mat.emissiveTexture.index);
+        submesh.material.texEmissive = LoadTextureFromGLTF(
+            mat.emissiveTexture.index, TextureUsage::Color,
+            &submesh.material.texEmissivePath);
       }
 
       // glTF alpha masking/blending uses base-color alpha.
       if (mat.alphaMode == "MASK") {
         submesh.material.texOpacity = submesh.material.texDiffuse;
+        submesh.material.texOpacityPath = submesh.material.texDiffusePath;
         submesh.material.opacityChannel = 3;
         submesh.material.alphaCutoff = (float)mat.alphaCutoff;
       } else if (mat.alphaMode == "BLEND") {
         submesh.material.texOpacity = submesh.material.texDiffuse;
+        submesh.material.texOpacityPath = submesh.material.texDiffusePath;
         submesh.material.opacityChannel = 3;
         submesh.material.alphaCutoff = 0.001f;
       }
@@ -374,7 +391,9 @@ void FBXModel::processMesh(const tinygltf::Mesh &mesh) {
 
         const int diffuseTex = getExtTextureIndex(ext, "diffuseTexture");
         if (diffuseTex >= 0 && submesh.material.texDiffuse == 0) {
-          submesh.material.texDiffuse = LoadTextureFromGLTF(diffuseTex);
+          submesh.material.texDiffuse =
+              LoadTextureFromGLTF(diffuseTex, TextureUsage::Color,
+                                  &submesh.material.texDiffusePath);
         }
 
         glm::vec4 diffuseFactor;
@@ -384,10 +403,14 @@ void FBXModel::processMesh(const tinygltf::Mesh &mesh) {
 
         const int specGlossTex = getExtTextureIndex(ext, "specularGlossinessTexture");
         if (specGlossTex >= 0) {
-          GLuint packedTex = LoadTextureFromGLTF(specGlossTex);
+          std::string packedPath;
+          GLuint packedTex =
+              LoadTextureFromGLTF(specGlossTex, TextureUsage::Data, &packedPath);
           if (packedTex != 0) {
             submesh.material.texRoughness = packedTex;
             submesh.material.texMetallic = packedTex;
+            submesh.material.texRoughnessPath = packedPath;
+            submesh.material.texMetallicPath = packedPath;
             submesh.material.roughnessChannel = 3; // A=glossiness
             submesh.material.metallicChannel = 2;  // B≈specular intensity proxy
             submesh.material.roughnessMapIsGloss = true;
@@ -410,6 +433,8 @@ void FBXModel::processMesh(const tinygltf::Mesh &mesh) {
     }
     if (submesh.materialName.empty())
       submesh.materialName = "glTFMaterial_" + std::to_string(i);
+    if (submesh.material.sourceMaterialName.empty())
+      submesh.material.sourceMaterialName = submesh.materialName;
     submesh.material.id = submesh.materialName;
 
     // Create GL buffers
@@ -440,7 +465,8 @@ void FBXModel::processMesh(const tinygltf::Mesh &mesh) {
   }
 }
 
-GLuint FBXModel::LoadTextureFromGLTF(int textureIndex) {
+GLuint FBXModel::LoadTextureFromGLTF(int textureIndex, TextureUsage usage,
+                                     std::string *outSourcePath) {
   if (textureIndex < 0 || textureIndex >= mModel.textures.size())
     return 0;
 
@@ -449,16 +475,23 @@ GLuint FBXModel::LoadTextureFromGLTF(int textureIndex) {
     return 0;
 
   const tinygltf::Image &image = mModel.images[tex.source];
+  const std::string sourcePath =
+      image.uri.empty() ? ("embedded://" + std::to_string(tex.source))
+                        : (mDirectory + "/" + image.uri);
+  if (outSourcePath) {
+    *outSourcePath = sourcePath;
+  }
 
   // Check cache
-  std::string key = image.uri.empty()
+  std::string key = (image.uri.empty()
                         ? ("embedded_" + std::to_string(tex.source))
-                        : image.uri;
+                        : image.uri) +
+                    (usage == TextureUsage::Color ? "|color" : "|data");
   if (mTextureCache.find(key) != mTextureCache.end()) {
     return mTextureCache[key];
   }
 
-  GLuint texID = CreateTextureFromImage(image);
+  GLuint texID = CreateTextureFromImage(image, usage);
 
   if (texID != 0) {
     mTextureCache[key] = texID;
@@ -472,7 +505,8 @@ GLuint FBXModel::LoadTextureFromGLTF(int textureIndex) {
   return texID;
 }
 
-GLuint FBXModel::CreateTextureFromImage(const tinygltf::Image &image) {
+GLuint FBXModel::CreateTextureFromImage(const tinygltf::Image &image,
+                                        TextureUsage usage) {
   if (image.width <= 0 || image.height <= 0 || image.image.empty())
     return 0;
 
@@ -481,10 +515,17 @@ GLuint FBXModel::CreateTextureFromImage(const tinygltf::Image &image) {
   glBindTexture(GL_TEXTURE_2D, texID);
 
   GLenum format = GL_RGBA;
+  GLenum internalFormat = GL_RGBA;
   if (image.component == 3) {
     format = GL_RGB;
+    internalFormat =
+        (usage == TextureUsage::Color) ? GL_SRGB : GL_RGB;
   } else if (image.component == 1) {
     format = GL_RED;
+    internalFormat = GL_RED;
+  } else {
+    internalFormat =
+        (usage == TextureUsage::Color) ? GL_SRGB_ALPHA : GL_RGBA;
   }
 
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -493,7 +534,7 @@ GLuint FBXModel::CreateTextureFromImage(const tinygltf::Image &image) {
                   GL_LINEAR_MIPMAP_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-  glTexImage2D(GL_TEXTURE_2D, 0, format, image.width, image.height, 0, format,
+  glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, image.width, image.height, 0, format,
                GL_UNSIGNED_BYTE, image.image.data());
   glGenerateMipmap(GL_TEXTURE_2D);
 
@@ -529,7 +570,6 @@ void FBXModel::draw(Shader &shader, const glm::vec3 &pos, const glm::vec3 &rot,
     GLStateCache::instance().bindVertexArray(sm.vao);
     glDrawElements(GL_TRIANGLES, sm.indexCount, GL_UNSIGNED_INT, 0);
   }
-  GLStateCache::instance().bindVertexArray(0);
 }
 
 void FBXModel::drawDepth(Shader &shadowShader, const glm::vec3 &pos,
@@ -544,7 +584,6 @@ void FBXModel::drawDepth(Shader &shadowShader, const glm::vec3 &pos,
     glDrawElements(GL_TRIANGLES, sm.indexCount, GL_UNSIGNED_INT, 0);
   }
 
-  GLStateCache::instance().bindVertexArray(0);
 }
 
 void FBXModel::shutdown() {
@@ -566,4 +605,5 @@ void FBXModel::shutdown() {
   mTextureCache.clear();
 
   // tinygltf::Model cleans up automatically
+  mSourcePath.clear();
 }

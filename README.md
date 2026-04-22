@@ -42,11 +42,24 @@ glGen features a seamlessly integrated Lua scripting environment powered by `sol
 - C++17
 - OpenGL 4.1+
 - CMake
+- Git
 
 ### Build & Run
 ```bash
 cmake -B Build
 cmake --build Build
 ./run.sh
+```
+
+### Windows
+```powershell
+./build.ps1
+./run.ps1
+```
+
+Or manually:
+```powershell
+cmake -S . -B Build-vs18 -G "Visual Studio 18 2026" -A x64
+cmake --build Build-vs18 --config Release
 ```
 <img width="1467" height="823" alt="Screenshot 2026-02-20 at 18 52 21" src="https://github.com/user-attachments/assets/34ba8f96-b4d0-4fbe-85f3-db3e29b0e771" />

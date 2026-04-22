@@ -10,6 +10,7 @@ file(GLOB_RECURSE ENGINE_SOURCES
     "Scripting/*.cpp"
     "Terrain/*.cpp"
 )
+list(FILTER ENGINE_SOURCES EXCLUDE REGEX [[(^|[\\/])\._]])
 
 add_library(Engine STATIC ${ENGINE_SOURCES})
 

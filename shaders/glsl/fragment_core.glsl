@@ -60,16 +60,45 @@ uniform float uEmissiveBoost;
 uniform float uEmissiveFlicker;
 uniform float uAlphaCutoff;
 uniform float uGamma;
+uniform float uSceneExposure;
 
 // Shadow uniforms (SUN as directional light with shadows)
 uniform sampler2D shadowMap;        // texture unit 1
+uniform sampler2DArray uShadowMapArray; // texture unit 16
+uniform sampler2D uEnvMap;          // texture unit 2
 uniform mat4  uLightSpaceMatrix;
+uniform mat4  uLightSpaceMatrices[4];
+uniform mat4  uViewMatrix;
 uniform vec3  uLightDir;            // sun dir
 uniform float uFarPlane;
 uniform float uShadowStrength;
+uniform bool  uShadowsEnabled;
+uniform bool  uUseCascadedShadows;
+uniform int   uCascadeCount;
+uniform float uCascadeSplits[4];
+uniform float uShadowNormalBias;
+uniform float uShadowDepthBias;
+uniform float uShadowSoftness;
+uniform bool  uShowShadowCascades;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
 uniform float uFogHeightFalloff;
+uniform bool  uAerialPerspectiveEnabled;
+uniform float uAerialPerspectiveDensity;
+uniform float uAerialPerspectiveStart;
+uniform float uAerialPerspectiveHeightFalloff;
+uniform float uAerialPerspectiveSkyBlend;
+uniform float uAerialPerspectiveSunGlow;
+uniform float uAerialPerspectiveDesaturation;
+uniform vec3  uAerialHorizonColor;
+uniform vec3  uAerialZenithColor;
+uniform bool  uAmbientHemiEnabled;
+uniform float uAmbientHemiIntensity;
+uniform float uAmbientHorizonStrength;
+uniform float uAmbientTerrainBoost;
+uniform vec3  uAmbientSkyColor;
+uniform vec3  uAmbientHorizonColor;
+uniform vec3  uAmbientGroundColor;
 uniform bool  uToonEnabled;
 uniform int   uToonSteps;
 uniform float uToonMin;
@@ -84,6 +113,12 @@ uniform bool  uRimEnabled;
 uniform float uRimPower;
 uniform float uRimStrength;
 uniform vec3  uRimColor;
+uniform bool  uEnvMapAvailable;
+uniform mat3  uEnvRotation;
+uniform float uEnvYaw;
+uniform float uEnvIntensity;
+uniform float uEnvDiffuseStrength;
+uniform float uEnvSpecularStrength;
 
 // NEW: Campfire point light (no shadows)
 uniform bool  uHasFire;
@@ -128,15 +163,59 @@ uniform float uTerrainRoughDirt;
 uniform float uTerrainRoughRock;
 uniform float uTerrainRoughSand;
 uniform float uTerrainRoughSnow;
+uniform bool  uTerrainUseLayerTextures;
+uniform bool  uTerrainHasGrassAlbedo;
+uniform bool  uTerrainHasGrassNormal;
+uniform bool  uTerrainHasGrassRoughness;
+uniform bool  uTerrainHasDirtAlbedo;
+uniform bool  uTerrainHasDirtNormal;
+uniform bool  uTerrainHasDirtRoughness;
+uniform float uTerrainLayerTextureTiling;
+uniform float uTerrainLayerTextureStrength;
+uniform float uTerrainLayerNormalStrength;
+uniform float uTerrainLayerRoughnessStrength;
 uniform bool  uTerrainUseGroundTextures;
+uniform bool  uTerrainGroundFullOverride;
+uniform bool  uTerrainHasGroundNormal;
 uniform bool  uTerrainHasGroundRoughness;
+uniform bool  uTerrainHasGroundHeight;
 uniform float uTerrainGroundTiling;
 uniform float uTerrainGroundBlendStrength;
 uniform float uTerrainGroundRoughnessValue;
+uniform float uTerrainGroundHeightStrength;
+uniform bool  uTerrainGroundPseudoHeightEnabled;
+uniform int   uTerrainGroundPseudoHeightSource;
+uniform float uTerrainGroundPseudoHeightContrast;
+uniform float uTerrainGroundPseudoHeightBias;
+uniform bool  uTerrainGroundGradeEnabled;
+uniform float uTerrainGroundGradeSaturation;
+uniform float uTerrainGroundGradeContrast;
+uniform float uTerrainGroundGradeGamma;
+uniform vec3  uTerrainGroundGradeTint;
+uniform float uTerrainGroundBrightness;
+uniform float uTerrainGroundVariationStrength;
+uniform float uTerrainGroundVariationScale;
+uniform bool  uTerrainSunGlintEnabled;
+uniform float uTerrainSunGlintIntensity;
+uniform float uTerrainSunGlintSharpness;
+uniform float uTerrainSunGlintMaskScale;
+uniform float uTerrainSunGlintMaskStrength;
+uniform float uTerrainSunGlintBaseSpecular;
+uniform vec3  uTerrainSunGlintDirection;
+uniform float uTerrainSunGlintBandWidth;
 uniform sampler2D uTerrainGroundAlbedo;
 uniform sampler2D uTerrainGroundRoughness;
+uniform sampler2D uTerrainGroundNormal;
+uniform sampler2D uTerrainGroundHeight;
+uniform sampler2D uTerrainGrassAlbedo;
+uniform sampler2D uTerrainDirtAlbedo;
+uniform sampler2D uTerrainGrassNormal;
+uniform sampler2D uTerrainGrassRoughness;
+uniform sampler2D uTerrainDirtNormal;
+uniform sampler2D uTerrainDirtRoughness;
 uniform bool  uTerrainFlatGreenEnabled;
 uniform vec3  uTerrainFlatGreenColor;
+uniform int   uTerrainMaterialQuality;
 
 uniform sampler2D texDiffuse;
 uniform sampler2D texNormal;
@@ -169,39 +248,110 @@ float fbm(vec2 p) {
     return v;
 }
 
-// --- Directional Shadow Calculation (PCF) ---
-float ShadowDirectional(vec4 fragPosLightSpace) {
-    // perform perspective divide
+int chooseShadowCascade(float viewDepth) {
+    int cascadeIndex = max(uCascadeCount - 1, 0);
+    for (int i = 0; i < 4; ++i) {
+        if (i >= uCascadeCount) break;
+        if (viewDepth <= uCascadeSplits[i]) {
+            cascadeIndex = i;
+            break;
+        }
+    }
+    return clamp(cascadeIndex, 0, 3);
+}
+
+float sampleShadow2D(vec4 fragPosLightSpace, vec3 normal, float softnessScale) {
     vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
-    // transform to [0,1] range
     projCoords = projCoords * 0.5 + 0.5;
     
-    // keep the shadow at 0.0 when outside the far_plane region of the light's frustum.
-    if(projCoords.z > 1.0)
+    if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 ||
+        projCoords.y < 0.0 || projCoords.y > 1.0) {
         return 0.0;
-        
-    // get depth of current fragment from light's perspective
+    }
+
     float currentDepth = projCoords.z;
-    
-    // check whether current frag pos is in shadow
-    vec3 normal = normalize(Normal);
     vec3 lightDir = normalize(-uLightDir);
-    float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.001);
+    float slopeBias = max(0.0, 1.0 - dot(normal, lightDir));
+    float bias = max(uShadowDepthBias + uShadowNormalBias * slopeBias,
+                     uShadowDepthBias);
     
-    // PCF
     float shadow = 0.0;
     vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
-    for(int x = -1; x <= 1; ++x)
-    {
-        for(int y = -1; y <= 1; ++y)
-        {
-            float pcfDepth = texture(shadowMap, projCoords.xy + vec2(x, y) * texelSize).r; 
-            shadow += currentDepth - bias > pcfDepth  ? 1.0 : 0.0;        
-        }    
+    texelSize *= max(0.25, uShadowSoftness * softnessScale);
+    for(int x = -1; x <= 1; ++x) {
+        for(int y = -1; y <= 1; ++y) {
+            float pcfDepth =
+                texture(shadowMap, projCoords.xy + vec2(x, y) * texelSize).r;
+            shadow += currentDepth - bias > pcfDepth ? 1.0 : 0.0;
+        }
     }
-    shadow /= 9.0;
-    
-    return shadow * uShadowStrength;
+    return shadow / 9.0;
+}
+
+float sampleShadowCascade(int cascadeIndex, vec3 normal, float softnessScale) {
+    vec4 fragPosLightSpace =
+        uLightSpaceMatrices[cascadeIndex] * vec4(FragPos, 1.0);
+    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+    projCoords = projCoords * 0.5 + 0.5;
+
+    if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 ||
+        projCoords.y < 0.0 || projCoords.y > 1.0) {
+        return 0.0;
+    }
+
+    float currentDepth = projCoords.z;
+    vec3 lightDir = normalize(-uLightDir);
+    float slopeBias = max(0.0, 1.0 - dot(normal, lightDir));
+    float bias = max(uShadowDepthBias + uShadowNormalBias * slopeBias,
+                     uShadowDepthBias);
+    bias *= 1.0 + float(cascadeIndex) * 0.18;
+
+    ivec3 mapSize = textureSize(uShadowMapArray, 0);
+    vec2 texelSize = 1.0 / vec2(max(mapSize.x, 1), max(mapSize.y, 1));
+    texelSize *= max(0.25, uShadowSoftness * softnessScale *
+                           (1.0 + float(cascadeIndex) * 0.35));
+
+    float shadow = 0.0;
+    for(int x = -1; x <= 1; ++x) {
+        for(int y = -1; y <= 1; ++y) {
+            float pcfDepth = texture(
+                uShadowMapArray,
+                vec3(projCoords.xy + vec2(x, y) * texelSize,
+                     float(cascadeIndex))).r;
+            shadow += currentDepth - bias > pcfDepth ? 1.0 : 0.0;
+        }
+    }
+    return shadow / 9.0;
+}
+
+float ShadowDirectional(vec4 fragPosLightSpace) {
+    if (!uShadowsEnabled || uShadowStrength <= 0.0) {
+        return 0.0;
+    }
+
+    vec3 normal = normalize(Normal);
+    if (!uUseCascadedShadows) {
+        return sampleShadow2D(fragPosLightSpace, normal, 1.0) *
+               uShadowStrength;
+    }
+
+    float viewDepth = abs((uViewMatrix * vec4(FragPos, 1.0)).z);
+    int cascadeIndex = chooseShadowCascade(viewDepth);
+    float shadow = sampleShadowCascade(cascadeIndex, normal, 1.0);
+
+    if (cascadeIndex + 1 < uCascadeCount) {
+        float prevSplit = cascadeIndex == 0 ? 0.0 : uCascadeSplits[cascadeIndex - 1];
+        float split = uCascadeSplits[cascadeIndex];
+        float blendRange = max((split - prevSplit) * 0.12, 2.0);
+        float blendStart = split - blendRange;
+        float blend = smoothstep(blendStart, split, viewDepth);
+        float nextShadow = sampleShadowCascade(cascadeIndex + 1, normal, 1.0);
+        shadow = mix(shadow, nextShadow, blend);
+    }
+
+    float lastSplit = uCascadeSplits[max(uCascadeCount - 1, 0)];
+    float fade = 1.0 - smoothstep(lastSplit * 0.92, lastSplit, viewDepth);
+    return shadow * fade * uShadowStrength;
 }
 
 // Gamma helpers
@@ -209,6 +359,65 @@ vec3 toLinear(vec3 srgb) { return pow(max(srgb, vec3(0.0)), vec3(uGamma)); }
 vec3 toSRGB(vec3 lin)    { return pow(max(lin,  vec3(0.0)), vec3(1.0 / uGamma)); }
 
 vec3 toneMapReinhard(vec3 c) { return c / (c + vec3(1.0)); }
+
+vec3 applyAerialPerspective(vec3 lit) {
+    float dist = length(uCameraPos - FragPos);
+    float heightDensity =
+        uFogDensity * exp(-max(FragPos.y, 0.0) * uFogHeightFalloff);
+    float legacyFog = 1.0 - exp(-pow(dist * heightDensity, 2.0));
+    legacyFog = clamp(legacyFog, 0.0, 1.0);
+
+    if (!uAerialPerspectiveEnabled) {
+        return mix(lit, uFogColor, legacyFog);
+    }
+
+    vec3 viewDir = dist > 0.001 ? normalize(FragPos - uCameraPos)
+                                : vec3(0.0, 0.0, -1.0);
+    float rayDistance = max(dist - max(uAerialPerspectiveStart, 0.0), 0.0);
+    float avgHeight = max((uCameraPos.y + FragPos.y) * 0.5, 0.0);
+    float heightTerm =
+        exp(-avgHeight * max(uAerialPerspectiveHeightFalloff, 0.0));
+    float aerialFog = 1.0 - exp(-rayDistance *
+                                max(uAerialPerspectiveDensity, 0.0) *
+                                heightTerm);
+    aerialFog = clamp(aerialFog, 0.0, 1.0);
+
+    float fogAmount = clamp(1.0 - (1.0 - legacyFog) * (1.0 - aerialFog),
+                            0.0, 1.0);
+    float horizonMask = pow(1.0 - clamp(abs(viewDir.y), 0.0, 1.0), 0.55);
+    float zenithMix = smoothstep(-0.15, 0.85, viewDir.y) * 0.75;
+    vec3 skyTint = mix(uAerialHorizonColor, uAerialZenithColor, zenithMix);
+    skyTint = mix(uFogColor, skyTint, clamp(uAerialPerspectiveSkyBlend, 0.0, 1.0));
+
+    vec3 sunDir = normalize(-uLightDir);
+    vec3 viewScatterDir = normalize(vec3(viewDir.x, viewDir.y * 0.35, viewDir.z));
+    vec3 sunScatterDir = normalize(vec3(sunDir.x, sunDir.y * 0.35, sunDir.z));
+    float sunForward = max(dot(viewScatterDir, sunScatterDir), 0.0);
+    float sunScatter = pow(sunForward, 7.0) * horizonMask *
+                       clamp(uAerialPerspectiveSunGlow, 0.0, 2.0);
+    vec3 atmosphereColor = skyTint + uSunColor * sunScatter;
+
+    float luma = dot(lit, vec3(0.2126, 0.7152, 0.0722));
+    vec3 transmitted =
+        mix(lit, vec3(luma), fogAmount *
+                                clamp(uAerialPerspectiveDesaturation, 0.0, 1.0));
+    return mix(transmitted, atmosphereColor, fogAmount);
+}
+
+vec3 ambientHemisphere(vec3 normal, bool terrainSurface) {
+    if (!uAmbientHemiEnabled) {
+        return vec3(uAmbient);
+    }
+
+    float upT = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 hemi = mix(uAmbientGroundColor, uAmbientSkyColor, upT);
+    float horizon = pow(1.0 - abs(clamp(normal.y, -1.0, 1.0)), 1.35);
+    hemi = mix(hemi, uAmbientHorizonColor,
+               clamp(horizon * uAmbientHorizonStrength, 0.0, 1.0));
+
+    float terrainBoost = terrainSurface ? max(uAmbientTerrainBoost, 0.0) : 1.0;
+    return hemi * uAmbient * max(uAmbientHemiIntensity, 0.0) * terrainBoost;
+}
 
 const float PI = 3.14159265359;
 
@@ -249,6 +458,20 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+vec2 dirToEquirectUV(vec3 dir) {
+    vec3 d = normalize(dir);
+    float yaw = atan(d.z, d.x) * (0.5 / PI) + 0.5 + uEnvYaw;
+    float pitch = acos(clamp(d.y, -1.0, 1.0)) / PI;
+    return vec2(fract(yaw), clamp(pitch, 0.0, 1.0));
+}
+
+vec3 sampleEnvironment(vec3 dir, float lod) {
+    if (!uEnvMapAvailable) return vec3(0.0);
+    vec3 worldDir = normalize(uEnvRotation * dir);
+    vec2 uv = dirToEquirectUV(worldDir);
+    return textureLod(uEnvMap, uv, max(lod, 0.0)).rgb;
+}
+
 float sampleChannelValue(vec4 sampleValue, int channel) {
     if (channel == 1) return sampleValue.g;
     if (channel == 2) return sampleValue.b;
@@ -286,6 +509,143 @@ vec4 triplanarTexture(sampler2D tex, vec3 worldPos, vec3 worldNormal, float scal
     vec4 sy = texture(tex, uvY);
     vec4 sz = texture(tex, uvZ);
     return sx * w.x + sy * w.y + sz * w.z;
+}
+
+vec2 rotateUV(vec2 uv, float angle) {
+    float c = cos(angle);
+    float s = sin(angle);
+    return mat2(c, -s, s, c) * uv;
+}
+
+vec4 triplanarTextureVariation(sampler2D tex, vec3 worldPos, vec3 worldNormal,
+                               float scale, float variationScale,
+                               float variationStrength) {
+    vec3 n = abs(normalize(worldNormal));
+    vec3 w = pow(n, vec3(4.0));
+    float sumW = w.x + w.y + w.z + 0.0001;
+    w /= sumW;
+
+    vec2 cell = floor(worldPos.xz * max(variationScale, 0.0001));
+    float cellNoiseA = noise(cell + vec2(13.1, 7.7));
+    float cellNoiseB = noise(cell + vec2(37.2, 19.4));
+    float angle = floor(cellNoiseA * 4.0) * (PI * 0.5);
+    vec2 offset = vec2(cellNoiseA - 0.5, cellNoiseB - 0.5) * 1.37;
+    float blend = smoothstep(0.2, 0.8, noise(cell + vec2(71.3, 29.8))) *
+                  clamp(variationStrength, 0.0, 1.0);
+
+    vec2 uvX = worldPos.yz * scale;
+    vec2 uvY = worldPos.xz * scale;
+    vec2 uvZ = worldPos.xy * scale;
+
+    vec4 sxA = texture(tex, uvX);
+    vec4 syA = texture(tex, uvY);
+    vec4 szA = texture(tex, uvZ);
+
+    vec4 sxB = texture(tex, rotateUV(uvX + offset, angle));
+    vec4 syB = texture(tex, rotateUV(uvY + offset, angle));
+    vec4 szB = texture(tex, rotateUV(uvZ + offset, angle));
+
+    vec4 sampleA = sxA * w.x + syA * w.y + szA * w.z;
+    vec4 sampleB = sxB * w.x + syB * w.y + szB * w.z;
+    return mix(sampleA, sampleB, blend);
+}
+
+vec3 unpackNormal(vec3 packedNormal) {
+    return normalize(packedNormal * 2.0 - 1.0);
+}
+
+float pseudoHeightFromAlbedo(vec3 albedo) {
+    return dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+}
+
+float pseudoHeightFromNormal(vec3 packedNormal) {
+    vec3 n = unpackNormal(packedNormal);
+    return clamp(1.0 - n.z, 0.0, 1.0);
+}
+
+float shapePseudoHeight(float h) {
+    h = clamp(h + uTerrainGroundPseudoHeightBias, 0.0, 1.0);
+    h = pow(h, max(uTerrainGroundPseudoHeightContrast, 0.001));
+    return clamp(h, 0.0, 1.0);
+}
+
+float sampleTerrainPseudoHeight(vec3 samplePos, vec3 worldNormal,
+                                float groundTexScale, float groundVarScale,
+                                float groundVarStrength) {
+    vec4 sourceA = triplanarTextureVariation(
+        uTerrainGroundAlbedo, samplePos, worldNormal, groundTexScale,
+        groundVarScale, groundVarStrength);
+    float h = pseudoHeightFromAlbedo(sourceA.rgb);
+    if (uTerrainGroundPseudoHeightSource == 1 && uTerrainHasGroundNormal) {
+        vec4 sourceN = triplanarTextureVariation(
+            uTerrainGroundNormal, samplePos, worldNormal, groundTexScale,
+            groundVarScale, groundVarStrength);
+        h = pseudoHeightFromNormal(sourceN.xyz);
+    }
+    return shapePseudoHeight(h);
+}
+
+vec3 applyGroundGrade(vec3 c) {
+    if (!uTerrainGroundGradeEnabled) return c;
+    float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = mix(vec3(luma), c, uTerrainGroundGradeSaturation);
+    c = (c - 0.5) * uTerrainGroundGradeContrast + 0.5;
+    c = pow(max(c, vec3(0.0)), vec3(1.0 / max(uTerrainGroundGradeGamma, 0.001)));
+    c *= uTerrainGroundGradeTint;
+    return clamp(c, vec3(0.0), vec3(1.0));
+}
+
+vec3 triplanarNormalWS(sampler2D tex, vec3 worldPos, vec3 worldNormal, float scale) {
+    vec3 n = abs(normalize(worldNormal));
+    vec3 w = pow(n, vec3(4.0));
+    float sumW = w.x + w.y + w.z + 0.0001;
+    w /= sumW;
+
+    vec3 signN = sign(worldNormal);
+    signN = mix(vec3(1.0), signN, step(vec3(0.0001), abs(signN)));
+
+    vec3 sampleX = unpackNormal(texture(tex, worldPos.yz * scale).xyz);
+    vec3 sampleY = unpackNormal(texture(tex, worldPos.xz * scale).xyz);
+    vec3 sampleZ = unpackNormal(texture(tex, worldPos.xy * scale).xyz);
+
+    vec3 worldX = normalize(vec3(sampleX.z * signN.x, sampleX.x, sampleX.y));
+    vec3 worldY = normalize(vec3(sampleY.x, sampleY.z * signN.y, sampleY.y));
+    vec3 worldZ = normalize(vec3(sampleZ.x, sampleZ.y, sampleZ.z * signN.z));
+
+    return normalize(worldX * w.x + worldY * w.y + worldZ * w.z);
+}
+
+vec3 triplanarNormalWSVariation(sampler2D tex, vec3 worldPos, vec3 worldNormal,
+                                float scale, float variationScale,
+                                float variationStrength) {
+    vec3 n = abs(normalize(worldNormal));
+    vec3 w = pow(n, vec3(4.0));
+    float sumW = w.x + w.y + w.z + 0.0001;
+    w /= sumW;
+
+    vec3 signN = sign(worldNormal);
+    signN = mix(vec3(1.0), signN, step(vec3(0.0001), abs(signN)));
+
+    vec2 cell = floor(worldPos.xz * max(variationScale, 0.0001));
+    float cellNoiseA = noise(cell + vec2(13.1, 7.7));
+    float cellNoiseB = noise(cell + vec2(37.2, 19.4));
+    float angle = floor(cellNoiseA * 4.0) * (PI * 0.5);
+    vec2 offset = vec2(cellNoiseA - 0.5, cellNoiseB - 0.5) * 1.37;
+    float blend = smoothstep(0.2, 0.8, noise(cell + vec2(71.3, 29.8))) *
+                  clamp(variationStrength, 0.0, 1.0);
+
+    vec3 baseNormal = triplanarNormalWS(tex, worldPos, worldNormal, scale);
+
+    vec3 sampleX = unpackNormal(texture(tex, rotateUV(worldPos.yz * scale + offset, angle)).xyz);
+    vec3 sampleY = unpackNormal(texture(tex, rotateUV(worldPos.xz * scale + offset, angle)).xyz);
+    vec3 sampleZ = unpackNormal(texture(tex, rotateUV(worldPos.xy * scale + offset, angle)).xyz);
+
+    vec3 worldX = normalize(vec3(sampleX.z * signN.x, sampleX.x, sampleX.y));
+    vec3 worldY = normalize(vec3(sampleY.x, sampleY.z * signN.y, sampleY.y));
+    vec3 worldZ = normalize(vec3(sampleZ.x, sampleZ.y, sampleZ.z * signN.z));
+    vec3 variedNormal = normalize(worldX * w.x + worldY * w.y + worldZ * w.z);
+
+    return normalize(mix(baseNormal, variedNormal, blend));
 }
 
 vec3 sampleNormalWS(vec3 baseNormal) {
@@ -414,12 +774,58 @@ void main()
     float materialMetallic = uMetallic;
     float materialAO = uAO;
     vec3 terrainNormalWS = normalize(Normal);
+    float terrainSunGlintMask = 1.0;
+    float terrainSpecularMul = 1.0;
 
     vec4 baseColor;
     if (uTerrainPass) {
         vec3 Nw = normalize(Normal);
         float h = FragPos.y;
         float slope = 1.0 - abs(dot(Nw, vec3(0.0, 1.0, 0.0)));
+        vec3 terrainToCamera = uCameraPos - FragPos;
+        float terrainDistanceSq = dot(terrainToCamera, terrainToCamera);
+        int terrainQuality = clamp(uTerrainMaterialQuality, 0, 3);
+        float terrainCheapDistance =
+            terrainQuality >= 3 ? 220.0 :
+            terrainQuality >= 2 ? 620.0 :
+            terrainQuality >= 1 ? 1050.0 : 1550.0;
+        float terrainTextureDistance =
+            terrainQuality >= 3 ? 140.0 :
+            terrainQuality >= 2 ? 420.0 :
+            terrainQuality >= 1 ? 860.0 : 1350.0;
+        float terrainDetailDistance =
+            terrainQuality >= 3 ? 0.0 :
+            terrainQuality >= 2 ? 320.0 :
+            terrainQuality >= 1 ? 720.0 : 1180.0;
+        float terrainNormalDistance =
+            terrainQuality >= 3 ? 0.0 :
+            terrainQuality >= 2 ? 280.0 :
+            terrainQuality >= 1 ? 620.0 : 980.0;
+        float terrainHeightDistance =
+            terrainQuality >= 3 ? 0.0 :
+            terrainQuality >= 2 ? 340.0 :
+            terrainQuality >= 1 ? 760.0 : 1120.0;
+        float terrainGlintDistance =
+            terrainQuality >= 3 ? 0.0 :
+            terrainQuality >= 2 ? 260.0 :
+            terrainQuality >= 1 ? 560.0 : 920.0;
+        bool terrainUseCheapMaterial =
+            terrainDistanceSq > terrainCheapDistance * terrainCheapDistance;
+        bool terrainSkipMaterialTextures =
+            terrainUseCheapMaterial ||
+            terrainDistanceSq > terrainTextureDistance * terrainTextureDistance;
+        bool terrainSkipExpensiveDetails =
+            terrainQuality >= 3 || terrainUseCheapMaterial ||
+            terrainDistanceSq > terrainDetailDistance * terrainDetailDistance;
+        bool terrainSkipNormalDetails =
+            terrainQuality >= 3 || terrainUseCheapMaterial ||
+            terrainDistanceSq > terrainNormalDistance * terrainNormalDistance;
+        bool terrainSkipHeightDetails =
+            terrainQuality >= 3 || terrainUseCheapMaterial ||
+            terrainDistanceSq > terrainHeightDistance * terrainHeightDistance;
+        bool terrainSkipGlint =
+            terrainQuality >= 3 || terrainUseCheapMaterial ||
+            terrainDistanceSq > terrainGlintDistance * terrainGlintDistance;
         bool customMat = uTerrainMaterialEnabled;
         float cliffStart = customMat ? uTerrainCliffStart : 0.22;
         float cliffEnd = customMat ? uTerrainCliffEnd : 0.75;
@@ -427,6 +833,8 @@ void main()
         float snowEnd = customMat ? uTerrainSnowEnd : 20.0;
         float lowStart = customMat ? uTerrainLowStart : -1.0;
         float lowEnd = customMat ? uTerrainLowEnd : 4.0;
+        float dirtStart = mix(cliffStart * 0.35, cliffStart * 0.65, 0.55);
+        float dirtEnd = mix(cliffStart, cliffEnd, 0.42);
 
         // Smooth biome blend from encoded biome channel (0..5).
         float biomeV = clamp(TexCoord.y * 5.0, 0.0, 5.0);
@@ -444,24 +852,32 @@ void main()
             // Fast stylized path: no triplanar noise, no detail normal synthesis,
             // no terrain PBR layer blending. Keep only broad height/slope tinting
             // so the terrain still reads as shaped instead of fully flat.
+            float dirtMask = smoothstep(dirtStart, dirtEnd, slope);
             float cliffMask = smoothstep(cliffStart, cliffEnd, slope);
+            dirtMask *= (1.0 - cliffMask);
             float lowMask = 1.0 - smoothstep(lowStart, lowEnd, h);
             float highMask = smoothstep(snowStart, snowEnd, h);
 
             vec3 baseGreen = uTerrainFlatGreenColor;
             vec3 lowTint = baseGreen * vec3(0.78, 0.86, 0.78);
-            vec3 cliffTint = mix(baseGreen, vec3(0.34, 0.36, 0.32), 0.65);
+            vec3 dirtTint = mix(toLinear(customMat ? uTerrainDirtA : vec3(0.24, 0.18, 0.11)),
+                                toLinear(customMat ? uTerrainDirtB : vec3(0.36, 0.26, 0.14)),
+                                0.45);
+            vec3 rockTint = mix(toLinear(customMat ? uTerrainRockA : vec3(0.31, 0.31, 0.32)),
+                                toLinear(customMat ? uTerrainRockB : vec3(0.46, 0.43, 0.39)),
+                                0.40);
             vec3 highTint = mix(baseGreen, vec3(0.62, 0.70, 0.63), 0.35);
 
             vec3 terrainColor = baseGreen;
             terrainColor = mix(terrainColor, lowTint, lowMask * 0.35);
-            terrainColor = mix(terrainColor, cliffTint, cliffMask * 0.55);
+            terrainColor = mix(terrainColor, dirtTint, dirtMask * 0.75);
+            terrainColor = mix(terrainColor, rockTint, cliffMask * 0.82);
             terrainColor = mix(terrainColor, highTint, highMask * 0.20);
             terrainColor = clamp(terrainColor, vec3(0.0), vec3(1.0));
 
             materialRoughness = 0.92;
             materialMetallic = 0.0;
-            materialAO = clamp(0.92 - cliffMask * 0.08 + lowMask * 0.04, 0.75, 1.0);
+            materialAO = clamp(0.94 - dirtMask * 0.04 - cliffMask * 0.10 + lowMask * 0.04, 0.72, 1.0);
             terrainNormalWS = Nw;
             useTerrainMaterialProps = true;
             baseColor = vec4(terrainColor, 1.0);
@@ -469,17 +885,21 @@ void main()
 
         // Terrain masks used like splat-map channels.
         float cliffMask = smoothstep(cliffStart, cliffEnd, slope);
+        float dirtSlopeMask = smoothstep(dirtStart, dirtEnd, slope) * (1.0 - cliffMask);
         float flatMask  = 1.0 - cliffMask;
         float highMask  = smoothstep(snowStart, snowEnd, h);
         float lowMask   = 1.0 - smoothstep(lowStart, lowEnd, h);
+        float greenBiomeMask = clamp(wPlains + wForest + wTundra * 0.35, 0.0, 1.0);
 
-        float layerGrass = wPlains * 0.80 + wForest * 0.45 + wTundra * 0.10;
-        float layerDirt  = wForest * 0.38 + wPlains * 0.20 + wDesert * 0.10 + lowMask * 0.25;
-        float layerRock  = wMountains * 0.60 + wTundra * 0.28 + wDesert * 0.20 + cliffMask * 0.90;
+        float layerGrass = wPlains * 0.92 + wForest * 0.70 + wTundra * 0.16;
+        float layerDirt  = wForest * 0.28 + wPlains * 0.16 + wDesert * 0.10 + lowMask * 0.22;
+        float layerRock  = wMountains * 0.60 + wTundra * 0.28 + wDesert * 0.20;
         float layerSand  = wDesert * 0.72 + wOcean * 0.70 + lowMask * 0.22;
         float layerSnow  = wTundra * 0.82 + wMountains * highMask * 0.90;
 
-        layerGrass *= flatMask;
+        layerGrass *= max(0.0, 1.0 - dirtSlopeMask * 0.95 - cliffMask * 1.15);
+        layerDirt += dirtSlopeMask * (0.95 * greenBiomeMask + 0.20 * wMountains);
+        layerRock += cliffMask * (1.15 * greenBiomeMask + 0.90) + dirtSlopeMask * 0.18 * wMountains;
         layerSand *= (0.65 + 0.35 * flatMask);
         layerSnow *= (0.45 + 0.55 * flatMask);
 
@@ -493,23 +913,29 @@ void main()
         // Triplanar procedural details (engine-native, no external terrain textures required).
         float macroScale = customMat ? uTerrainMacroScale : 0.05;
         float detailScale = customMat ? uTerrainDetailScale : 1.0;
-        float macro = triplanarNoise(FragPos + vec3(17.3, 0.0, 9.1), Nw, macroScale);
-        float gN = triplanarNoise(FragPos + vec3(11.0, 0.0, 23.0), Nw, detailScale * 0.45);
-        float dN = triplanarNoise(FragPos + vec3(41.0, 0.0, 7.0),  Nw, detailScale * 0.75);
-        float rN = triplanarNoise(FragPos + vec3(67.0, 0.0, 3.0),  Nw, detailScale * 1.05);
-        float sN = triplanarNoise(FragPos + vec3(5.0, 0.0, 59.0),  Nw, detailScale * 0.40);
-        float iN = triplanarNoise(FragPos + vec3(83.0, 0.0, 31.0), Nw, detailScale * 0.85);
+        float macro = terrainSkipExpensiveDetails ? 0.5 :
+            triplanarNoise(FragPos + vec3(17.3, 0.0, 9.1), Nw, macroScale);
+        float gN = terrainSkipExpensiveDetails ? 0.5 :
+            triplanarNoise(FragPos + vec3(11.0, 0.0, 23.0), Nw, detailScale * 0.45);
+        float dN = terrainSkipExpensiveDetails ? 0.5 :
+            triplanarNoise(FragPos + vec3(41.0, 0.0, 7.0),  Nw, detailScale * 0.75);
+        float rN = terrainSkipExpensiveDetails ? 0.5 :
+            triplanarNoise(FragPos + vec3(67.0, 0.0, 3.0),  Nw, detailScale * 1.05);
+        float sN = terrainSkipExpensiveDetails ? 0.5 :
+            triplanarNoise(FragPos + vec3(5.0, 0.0, 59.0),  Nw, detailScale * 0.40);
+        float iN = terrainSkipExpensiveDetails ? 0.5 :
+            triplanarNoise(FragPos + vec3(83.0, 0.0, 31.0), Nw, detailScale * 0.85);
 
-        vec3 grassA = customMat ? uTerrainGrassA : vec3(0.17, 0.39, 0.12);
-        vec3 grassB = customMat ? uTerrainGrassB : vec3(0.30, 0.56, 0.18);
-        vec3 dirtA = customMat ? uTerrainDirtA : vec3(0.24, 0.18, 0.11);
-        vec3 dirtB = customMat ? uTerrainDirtB : vec3(0.36, 0.26, 0.14);
-        vec3 rockA = customMat ? uTerrainRockA : vec3(0.31, 0.31, 0.32);
-        vec3 rockB = customMat ? uTerrainRockB : vec3(0.46, 0.43, 0.39);
-        vec3 sandA = customMat ? uTerrainSandA : vec3(0.63, 0.55, 0.35);
-        vec3 sandB = customMat ? uTerrainSandB : vec3(0.85, 0.76, 0.54);
-        vec3 snowA = customMat ? uTerrainSnowA : vec3(0.78, 0.83, 0.90);
-        vec3 snowB = customMat ? uTerrainSnowB : vec3(0.97, 0.98, 1.00);
+        vec3 grassA = toLinear(customMat ? uTerrainGrassA : vec3(0.17, 0.39, 0.12));
+        vec3 grassB = toLinear(customMat ? uTerrainGrassB : vec3(0.30, 0.56, 0.18));
+        vec3 dirtA = toLinear(customMat ? uTerrainDirtA : vec3(0.24, 0.18, 0.11));
+        vec3 dirtB = toLinear(customMat ? uTerrainDirtB : vec3(0.36, 0.26, 0.14));
+        vec3 rockA = toLinear(customMat ? uTerrainRockA : vec3(0.31, 0.31, 0.32));
+        vec3 rockB = toLinear(customMat ? uTerrainRockB : vec3(0.46, 0.43, 0.39));
+        vec3 sandA = toLinear(customMat ? uTerrainSandA : vec3(0.63, 0.55, 0.35));
+        vec3 sandB = toLinear(customMat ? uTerrainSandB : vec3(0.85, 0.76, 0.54));
+        vec3 snowA = toLinear(customMat ? uTerrainSnowA : vec3(0.78, 0.83, 0.90));
+        vec3 snowB = toLinear(customMat ? uTerrainSnowB : vec3(0.97, 0.98, 1.00));
 
         vec3 colGrass = mix(grassA, grassB, gN);
         colGrass = mix(colGrass, vec3(0.34, 0.41, 0.16), macro * 0.25);
@@ -518,6 +944,25 @@ void main()
         vec3 colSand  = mix(sandA, sandB, sN);
         vec3 colSnow  = mix(snowA, snowB, iN * 0.65 + 0.35);
 
+        if (uTerrainUseLayerTextures && !terrainSkipMaterialTextures) {
+            float layerTexTiling = max(uTerrainLayerTextureTiling, 0.0001);
+            float layerTexStrength = clamp(uTerrainLayerTextureStrength, 0.0, 1.0);
+            if (uTerrainHasGrassAlbedo) {
+                vec3 grassTex = triplanarTextureVariation(
+                    uTerrainGrassAlbedo, FragPos, Nw, layerTexTiling,
+                    max(uTerrainGroundVariationScale, 0.0001),
+                    clamp(uTerrainGroundVariationStrength, 0.0, 1.0)).rgb;
+                colGrass = mix(colGrass, grassTex, layerTexStrength);
+            }
+            if (uTerrainHasDirtAlbedo) {
+                vec3 dirtTex = triplanarTextureVariation(
+                    uTerrainDirtAlbedo, FragPos, Nw, layerTexTiling,
+                    max(uTerrainGroundVariationScale, 0.0001),
+                    clamp(uTerrainGroundVariationStrength, 0.0, 1.0)).rgb;
+                colDirt = mix(colDirt, dirtTex, layerTexStrength);
+            }
+        }
+
         vec3 terrainColor =
             colGrass * layerGrass +
             colDirt  * layerDirt  +
@@ -525,20 +970,30 @@ void main()
             colSand  * layerSand  +
             colSnow  * layerSnow;
 
-        if (uTerrainUseGroundTextures) {
+        if (uTerrainUseGroundTextures && !uTerrainUseLayerTextures &&
+            !terrainSkipMaterialTextures) {
+            float groundVarStrength = clamp(uTerrainGroundVariationStrength, 0.0, 1.0);
+            float groundVarScale = max(uTerrainGroundVariationScale, 0.0001);
             vec3 groundAlbedo =
-                toLinear(triplanarTexture(uTerrainGroundAlbedo, FragPos, Nw,
-                                          max(uTerrainGroundTiling, 0.0001)).rgb);
-            float groundWeight = clamp((layerGrass + layerDirt) *
-                                       max(uTerrainGroundBlendStrength, 0.0),
-                                       0.0, 1.0);
+                triplanarTextureVariation(uTerrainGroundAlbedo, FragPos, Nw,
+                                          max(uTerrainGroundTiling, 0.0001),
+                                          groundVarScale, groundVarStrength).rgb;
+            groundAlbedo = applyGroundGrade(groundAlbedo);
+            groundAlbedo *= max(uTerrainGroundBrightness, 0.0);
+            float groundWeight = uTerrainGroundFullOverride
+                                     ? 1.0
+                                     : clamp((layerGrass + layerDirt) *
+                                                 max(uTerrainGroundBlendStrength, 0.0),
+                                             0.0, 1.0);
             terrainColor = mix(terrainColor, groundAlbedo, groundWeight);
         }
 
         float macroVarStrength = customMat ? uTerrainMacroVariationStrength : 0.20;
         float cliffDesat = customMat ? uTerrainCliffDesatStrength : 0.35;
-        terrainColor *= (0.90 + macroVarStrength * macro);
-        terrainColor = mix(terrainColor, terrainColor * vec3(0.90, 0.92, 0.95), cliffMask * cliffDesat);
+        if (!uTerrainGroundFullOverride || uTerrainUseLayerTextures) {
+            terrainColor *= (0.90 + macroVarStrength * macro);
+            terrainColor = mix(terrainColor, terrainColor * vec3(0.90, 0.92, 0.95), cliffMask * cliffDesat);
+        }
         terrainColor = clamp(terrainColor, vec3(0.0), vec3(1.0));
 
         // Terrain-specific PBR parameters.
@@ -547,20 +1002,44 @@ void main()
         float roughRock = customMat ? uTerrainRoughRock : 0.63;
         float roughSand = customMat ? uTerrainRoughSand : 0.88;
         float roughSnow = customMat ? uTerrainRoughSnow : 0.42;
+        if (uTerrainUseLayerTextures && !terrainSkipMaterialTextures) {
+            float layerTexTiling = max(uTerrainLayerTextureTiling, 0.0001);
+            float roughStrength = clamp(uTerrainLayerRoughnessStrength, 0.0, 1.0);
+            float variationScale = max(uTerrainGroundVariationScale, 0.0001);
+            float variationStrength = clamp(uTerrainGroundVariationStrength, 0.0, 1.0);
+            if (uTerrainHasGrassRoughness) {
+                float sampledGrassRoughness = triplanarTextureVariation(
+                    uTerrainGrassRoughness, FragPos, Nw, layerTexTiling,
+                    variationScale, variationStrength).r;
+                roughGrass = mix(roughGrass, sampledGrassRoughness, roughStrength);
+            }
+            if (uTerrainHasDirtRoughness) {
+                float sampledDirtRoughness = triplanarTextureVariation(
+                    uTerrainDirtRoughness, FragPos, Nw, layerTexTiling,
+                    variationScale, variationStrength).r;
+                roughDirt = mix(roughDirt, sampledDirtRoughness, roughStrength);
+            }
+        }
         materialRoughness =
             layerGrass * roughGrass +
             layerDirt  * roughDirt  +
             layerRock  * roughRock  +
             layerSand  * roughSand  +
             layerSnow  * roughSnow;
-        if (uTerrainUseGroundTextures) {
-            float groundWeight = clamp((layerGrass + layerDirt) *
-                                       max(uTerrainGroundBlendStrength, 0.0),
-                                       0.0, 1.0);
+        if (uTerrainUseGroundTextures && !uTerrainUseLayerTextures &&
+            !terrainSkipMaterialTextures) {
+            float groundWeight = uTerrainGroundFullOverride
+                                     ? 1.0
+                                     : clamp((layerGrass + layerDirt) *
+                                                 max(uTerrainGroundBlendStrength, 0.0),
+                                             0.0, 1.0);
             float sampledGroundRoughness = uTerrainGroundRoughnessValue;
             if (uTerrainHasGroundRoughness) {
-                vec4 roughTex = triplanarTexture(uTerrainGroundRoughness, FragPos, Nw,
-                                                 max(uTerrainGroundTiling, 0.0001));
+                vec4 roughTex = triplanarTextureVariation(
+                    uTerrainGroundRoughness, FragPos, Nw,
+                    max(uTerrainGroundTiling, 0.0001),
+                    max(uTerrainGroundVariationScale, 0.0001),
+                    clamp(uTerrainGroundVariationStrength, 0.0, 1.0));
                 sampledGroundRoughness = roughTex.r;
             }
             materialRoughness =
@@ -569,7 +1048,9 @@ void main()
         materialRoughness = clamp(materialRoughness, 0.20, 0.98);
 
         materialMetallic = 0.0;
-        materialAO = clamp(0.74 + flatMask * 0.16 - cliffMask * 0.07 + lowMask * 0.06, 0.55, 1.0);
+        materialAO = (uTerrainGroundFullOverride && !uTerrainUseLayerTextures)
+                         ? 1.0
+                         : clamp(0.74 + flatMask * 0.16 - cliffMask * 0.07 + lowMask * 0.06, 0.55, 1.0);
 
         // Detail normal from triplanar noise derivatives.
         vec3 tangent = normalize(vec3(Nw.z, 0.0, -Nw.x));
@@ -578,11 +1059,157 @@ void main()
         float eps = 0.45;
         float normalDetailScale = customMat ? uTerrainNormalDetailScale : 1.9;
         float normalStrength = customMat ? uTerrainNormalStrength : 0.85;
-        float dT = triplanarNoise(FragPos + tangent * eps, Nw, normalDetailScale) -
-                   triplanarNoise(FragPos - tangent * eps, Nw, normalDetailScale);
-        float dB = triplanarNoise(FragPos + bitangent * eps, Nw, normalDetailScale) -
-                   triplanarNoise(FragPos - bitangent * eps, Nw, normalDetailScale);
-        terrainNormalWS = normalize(Nw - tangent * dT * normalStrength - bitangent * dB * normalStrength);
+        if (terrainSkipNormalDetails) {
+            terrainNormalWS = normalize(Nw);
+        } else if (uTerrainGroundFullOverride && !uTerrainUseLayerTextures) {
+            terrainNormalWS = normalize(Nw);
+        } else {
+            float dT = triplanarNoise(FragPos + tangent * eps, Nw, normalDetailScale) -
+                       triplanarNoise(FragPos - tangent * eps, Nw, normalDetailScale);
+            float dB = triplanarNoise(FragPos + bitangent * eps, Nw, normalDetailScale) -
+                       triplanarNoise(FragPos - bitangent * eps, Nw, normalDetailScale);
+            terrainNormalWS = normalize(Nw - tangent * dT * normalStrength - bitangent * dB * normalStrength);
+        }
+
+        if (!terrainSkipNormalDetails && uTerrainUseLayerTextures &&
+            (uTerrainHasGrassNormal || uTerrainHasDirtNormal)) {
+            float layerTexTiling = max(uTerrainLayerTextureTiling, 0.0001);
+            float variationScale = max(uTerrainGroundVariationScale, 0.0001);
+            float variationStrength = clamp(uTerrainGroundVariationStrength, 0.0, 1.0);
+            vec3 layerNormalWS = vec3(0.0);
+            float layerNormalWeight = 0.0;
+            if (uTerrainHasGrassNormal) {
+                vec3 grassNormalWS = triplanarNormalWS(
+                    uTerrainGrassNormal, FragPos, Nw, layerTexTiling);
+                if (uTerrainGroundVariationStrength > 0.001) {
+                    grassNormalWS = triplanarNormalWSVariation(
+                        uTerrainGrassNormal, FragPos, Nw, layerTexTiling,
+                        variationScale, variationStrength);
+                }
+                layerNormalWS += grassNormalWS * layerGrass;
+                layerNormalWeight += layerGrass;
+            }
+            if (uTerrainHasDirtNormal) {
+                vec3 dirtNormalWS = triplanarNormalWS(
+                    uTerrainDirtNormal, FragPos, Nw, layerTexTiling);
+                if (uTerrainGroundVariationStrength > 0.001) {
+                    dirtNormalWS = triplanarNormalWSVariation(
+                        uTerrainDirtNormal, FragPos, Nw, layerTexTiling,
+                        variationScale, variationStrength);
+                }
+                layerNormalWS += dirtNormalWS * layerDirt;
+                layerNormalWeight += layerDirt;
+            }
+            if (layerNormalWeight > 0.0001) {
+                layerNormalWS = normalize(layerNormalWS / layerNormalWeight);
+                float normalBlend = clamp(layerNormalWeight *
+                                              max(uTerrainLayerNormalStrength, 0.0),
+                                          0.0, 1.0);
+                terrainNormalWS = normalize(mix(terrainNormalWS, layerNormalWS,
+                                                normalBlend));
+            }
+        }
+
+        if (!terrainSkipNormalDetails &&
+            uTerrainUseGroundTextures && !uTerrainUseLayerTextures &&
+            uTerrainHasGroundNormal) {
+            float groundWeight = uTerrainGroundFullOverride
+                                     ? 1.0
+                                     : clamp((layerGrass + layerDirt) *
+                                                 max(uTerrainGroundBlendStrength, 0.0),
+                                             0.0, 1.0);
+            vec3 groundNormalWS = triplanarNormalWS(
+                uTerrainGroundNormal, FragPos, Nw, max(uTerrainGroundTiling, 0.0001));
+            if (uTerrainGroundVariationStrength > 0.001) {
+                groundNormalWS = triplanarNormalWSVariation(
+                    uTerrainGroundNormal, FragPos, Nw,
+                    max(uTerrainGroundTiling, 0.0001),
+                    max(uTerrainGroundVariationScale, 0.0001),
+                    clamp(uTerrainGroundVariationStrength, 0.0, 1.0));
+            }
+            terrainNormalWS = normalize(mix(terrainNormalWS, groundNormalWS, groundWeight));
+        }
+
+        if (!terrainSkipHeightDetails &&
+            uTerrainUseGroundTextures && !uTerrainUseLayerTextures &&
+            uTerrainHasGroundHeight &&
+            uTerrainGroundHeightStrength > 0.001) {
+            float groundWeight = uTerrainGroundFullOverride
+                                     ? 1.0
+                                     : clamp((layerGrass + layerDirt) *
+                                                 max(uTerrainGroundBlendStrength, 0.0),
+                                             0.0, 1.0);
+            float groundVarStrength = clamp(uTerrainGroundVariationStrength, 0.0, 1.0);
+            float groundVarScale = max(uTerrainGroundVariationScale, 0.0001);
+            float groundTexScale = max(uTerrainGroundTiling, 0.0001);
+            float heightEps = 0.18 / groundTexScale;
+            float hCenter = triplanarTextureVariation(
+                uTerrainGroundHeight, FragPos, Nw, groundTexScale,
+                groundVarScale, groundVarStrength).r;
+            float hT = triplanarTextureVariation(
+                uTerrainGroundHeight, FragPos + tangent * heightEps, Nw, groundTexScale,
+                groundVarScale, groundVarStrength).r;
+            float hB = triplanarTextureVariation(
+                uTerrainGroundHeight, FragPos + bitangent * heightEps, Nw, groundTexScale,
+                groundVarScale, groundVarStrength).r;
+            float dHT = (hT - hCenter) * uTerrainGroundHeightStrength;
+            float dHB = (hB - hCenter) * uTerrainGroundHeightStrength;
+            vec3 heightNormalWS =
+                normalize(terrainNormalWS - tangent * dHT - bitangent * dHB);
+            terrainNormalWS =
+                normalize(mix(terrainNormalWS, heightNormalWS, groundWeight));
+        } else if (!terrainSkipHeightDetails &&
+                   uTerrainUseGroundTextures && !uTerrainUseLayerTextures &&
+                   uTerrainGroundPseudoHeightEnabled &&
+                   uTerrainGroundHeightStrength > 0.001) {
+            float groundWeight = uTerrainGroundFullOverride
+                                     ? 1.0
+                                     : clamp((layerGrass + layerDirt) *
+                                                 max(uTerrainGroundBlendStrength, 0.0),
+                                             0.0, 1.0);
+            float groundVarStrength = clamp(uTerrainGroundVariationStrength, 0.0, 1.0);
+            float groundVarScale = max(uTerrainGroundVariationScale, 0.0001);
+            float groundTexScale = max(uTerrainGroundTiling, 0.0001);
+            float heightEps = 0.18 / groundTexScale;
+
+            float hCenter = sampleTerrainPseudoHeight(
+                FragPos, Nw, groundTexScale, groundVarScale, groundVarStrength);
+            float hT = sampleTerrainPseudoHeight(
+                FragPos + tangent * heightEps, Nw, groundTexScale,
+                groundVarScale, groundVarStrength);
+            float hB = sampleTerrainPseudoHeight(
+                FragPos + bitangent * heightEps, Nw, groundTexScale,
+                groundVarScale, groundVarStrength);
+            float dHT = (hT - hCenter) * uTerrainGroundHeightStrength;
+            float dHB = (hB - hCenter) * uTerrainGroundHeightStrength;
+            vec3 heightNormalWS =
+                normalize(terrainNormalWS - tangent * dHT - bitangent * dHB);
+            terrainNormalWS =
+                normalize(mix(terrainNormalWS, heightNormalWS, groundWeight));
+        }
+
+        if (terrainSkipGlint) {
+            terrainSunGlintMask = 0.0;
+        } else if (uTerrainSunGlintEnabled) {
+            float glintMaskScale = max(uTerrainSunGlintMaskScale, 0.0001);
+            vec2 glintUv = FragPos.xz * glintMaskScale;
+            float glintField =
+                fbm(glintUv + vec2(17.2, -9.4)) * 0.72 +
+                fbm(glintUv * 0.47 + vec2(-31.0, 22.0)) * 0.28;
+            float glintPatch = smoothstep(0.62, 0.90, glintField);
+            float glintLayer = clamp(cliffMask * 0.45 + layerDirt * 0.65 +
+                                         layerGrass * 0.38 + layerRock * 0.34 +
+                                         layerSand * 0.22 + layerSnow * 0.12,
+                                     0.0, 1.0);
+            terrainSunGlintMask =
+                clamp(mix(1.0, glintPatch,
+                          clamp(uTerrainSunGlintMaskStrength, 0.0, 1.0)) *
+                          glintLayer,
+                      0.0, 1.0);
+            terrainSunGlintMask =
+                smoothstep(0.03, 0.55, terrainSunGlintMask);
+            terrainSpecularMul = clamp(uTerrainSunGlintBaseSpecular, 0.0, 1.0);
+        }
 
         useTerrainMaterialProps = true;
         baseColor = vec4(terrainColor, 1.0);
@@ -605,7 +1232,10 @@ void main()
     vec3 N = useTerrainMaterialProps ? normalize(terrainNormalWS) : sampleNormalWS(Normal);
     vec3 V = normalize(uCameraPos - FragPos);
 
-    vec3 albedo = toLinear(baseColor.rgb);
+    vec3 albedo = baseColor.rgb;
+    if (!useTerrainMaterialProps && uUseColor) {
+        albedo = toLinear(baseColor.rgb);
+    }
     
     // Read PBR textures or uniforms
     float roughness = materialRoughness;
@@ -633,16 +1263,30 @@ void main()
     vec3 F0 = vec3(0.04);
     F0 = mix(F0, albedo, metallic);
 
-    // Hemispheric Ambient (sky color vs ground color based on Normal Y)
-    vec3 skyColor = vec3(0.6, 0.7, 0.8) * uAmbient;
-    vec3 groundColor = vec3(0.2, 0.25, 0.2) * uAmbient;
-    vec3 ambient = albedo * mix(groundColor, skyColor, N.y * 0.5 + 0.5) * (1.0 - metallic) + F0 * 0.1 * mix(groundColor, skyColor, N.y * 0.5 + 0.5);
+    vec3 ambientColor = ambientHemisphere(N, useTerrainMaterialProps);
+    vec3 ambient = albedo * ambientColor * (1.0 - metallic) +
+                   F0 * 0.08 * ambientColor;
     if (uAmbientRampEnabled) {
         float rampT = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
         vec3 ramp = mix(uAmbientRampBottom, uAmbientRampTop, rampT);
         ambient += albedo * ramp * uAmbientRampStrength;
     }
     ambient *= ao;
+
+    if (uEnvMapAvailable) {
+        vec3 envDiffuse = sampleEnvironment(N, 5.0);
+        vec3 R = reflect(-V, N);
+        float envLod = mix(0.0, 6.0, roughness * roughness);
+        vec3 envSpecular = sampleEnvironment(R, envLod);
+        float NdotV = max(dot(N, V), 0.0);
+        vec3 envF = fresnelSchlick(NdotV, F0);
+        vec3 envKD = (vec3(1.0) - envF) * (1.0 - metallic);
+        ambient += envDiffuse * albedo * envKD *
+                   (uEnvIntensity * uEnvDiffuseStrength * ao);
+        ambient += envSpecular * envF *
+                   (uEnvIntensity * uEnvSpecularStrength * mix(1.0, ao, 0.35) *
+                    terrainSpecularMul);
+    }
 
     vec3 Lo = vec3(0.0);
 
@@ -668,6 +1312,30 @@ void main()
     vec3 numerator    = NDF * G * F; 
     float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, Ls), 0.0) + 0.0001;
     vec3 specular     = numerator / denominator;
+    float terrainSunGlint = 0.0;
+
+    if (useTerrainMaterialProps && uTerrainSunGlintEnabled) {
+        vec3 Lg = normalize(uTerrainSunGlintDirection);
+        vec3 Hg = normalize(Lg + V);
+        float ng = max(dot(N, Lg), 0.0);
+        float nh = max(dot(N, Hg), 0.0);
+        float nv = max(dot(N, V), 0.0);
+        vec3 reflectedGlint = normalize(reflect(-Lg, N));
+        float mirrorMatch = max(dot(V, reflectedGlint), 0.0);
+        float bandWidth = clamp(uTerrainSunGlintBandWidth, 0.03, 0.90);
+        float reflectionGate = smoothstep(1.0 - bandWidth, 1.0, mirrorMatch);
+        float sunFacing = smoothstep(0.03, 0.36, ng);
+        float horizonGate = smoothstep(0.015, 0.18, Lg.y);
+        float viewGlance = smoothstep(0.08, 0.72, 1.0 - nv);
+        float roughnessGate = mix(1.0, 0.25, smoothstep(0.35, 0.95, roughness));
+        float band = pow(nh, max(uTerrainSunGlintSharpness, 1.0)) *
+                     reflectionGate * sunFacing * horizonGate * viewGlance *
+                     roughnessGate;
+        terrainSunGlint = clamp(band * terrainSunGlintMask *
+                                    max(uTerrainSunGlintIntensity, 0.0),
+                                0.0, 3.0);
+        specular *= terrainSpecularMul;
+    }
 
     vec3 kS = F;
     vec3 kD = vec3(1.0) - kS;
@@ -686,6 +1354,9 @@ void main()
         lightTerm = max(uToonMin, t);
     }
     Lo += (kD * albedo / PI + specular) * sunRadiance * lightTerm;
+    if (useTerrainMaterialProps && uTerrainSunGlintEnabled) {
+        Lo += sunRadiance * terrainSunGlint * mix(0.65, 1.0, shadowFactor) * 0.11;
+    }
 
     // ---------- FIRE (non-shadowed point light) ----------
     if (uHasFire)
@@ -744,9 +1415,9 @@ void main()
         ambient += albedo * (uFireAmbient * 0.35 * coreMask) * coreColor;
     }
 
-    vec3 emissive = uEmissiveColor * uEmissiveStrength;
+    vec3 emissive = toLinear(uEmissiveColor) * uEmissiveStrength;
     if (!useTerrainMaterialProps && uHasEmissiveMap) {
-        emissive += toLinear(texture(texEmissive, TexCoord).rgb) * uEmissiveStrength;
+        emissive += texture(texEmissive, TexCoord).rgb * uEmissiveStrength;
     }
     emissive *= max(uEmissiveBoost, 0.0);
     if (uEmissiveFlicker > 0.0) {
@@ -756,25 +1427,25 @@ void main()
 
     vec3 lit = ambient + Lo + emissive;
 
+    if (uShowShadowCascades && uUseCascadedShadows) {
+        float viewDepth = abs((uViewMatrix * vec4(FragPos, 1.0)).z);
+        int cascadeIndex = chooseShadowCascade(viewDepth);
+        vec3 cascadeTint = vec3(1.0);
+        if (cascadeIndex == 0) cascadeTint = vec3(1.0, 0.84, 0.72);
+        else if (cascadeIndex == 1) cascadeTint = vec3(0.74, 1.0, 0.78);
+        else if (cascadeIndex == 2) cascadeTint = vec3(0.70, 0.82, 1.0);
+        else cascadeTint = vec3(1.0, 0.72, 1.0);
+        lit = mix(lit, lit * cascadeTint, 0.32);
+    }
+
     if (uRimEnabled) {
         float rim = 1.0 - max(dot(N, V), 0.0);
         rim = pow(rim, max(uRimPower, 0.001));
         lit += uRimColor * (rim * uRimStrength);
     }
 
-    // Tonemap + gamma
-
-
-    // --- FOG CALCULATION ---
-    float dist = length(uCameraPos - FragPos);
-    
-    // Exponential fog with height falloff
-    float heightDensity = uFogDensity * exp(-max(FragPos.y, 0.0) * uFogHeightFalloff);
-    float fogFactor = exp(-pow(dist * heightDensity, 2.0));
-    fogFactor = clamp(fogFactor, 0.0, 1.0);
-
-    // Mix the scene color with the fog color based on distance
-    lit = mix(uFogColor, lit, fogFactor); 
+    lit = applyAerialPerspective(lit);
+    lit *= max(uSceneExposure, 0.0);
 
     FragColor = vec4(lit, baseColor.a);
 }

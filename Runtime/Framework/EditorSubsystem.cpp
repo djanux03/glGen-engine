@@ -26,12 +26,27 @@ bool EditorSubsystem::initialize() {
   io.IniFilename = "imgui.ini";
   io.Fonts->Clear();
 
-  const std::vector<std::string> mainFontCandidates = {
+  std::vector<std::string> mainFontCandidates = {
       mState.projectConfig.assetPath("fonts/Inter-Regular.ttf"),
-      mState.projectConfig.assetPath("fonts/Inter-Medium.ttf"),
-      "/System/Library/Fonts/Supplemental/Helvetica.ttc",
-      "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-      "/Library/Fonts/Arial.ttf"};
+      mState.projectConfig.assetPath("fonts/Inter-Medium.ttf")};
+
+#if defined(_WIN32)
+  mainFontCandidates.push_back("C:/Windows/Fonts/segoeui.ttf");
+  mainFontCandidates.push_back("C:/Windows/Fonts/arial.ttf");
+  mainFontCandidates.push_back("C:/Windows/Fonts/calibri.ttf");
+#elif defined(__APPLE__)
+  mainFontCandidates.push_back(
+      "/System/Library/Fonts/Supplemental/Helvetica.ttc");
+  mainFontCandidates.push_back(
+      "/System/Library/Fonts/Supplemental/Arial Unicode.ttf");
+  mainFontCandidates.push_back("/Library/Fonts/Arial.ttf");
+#else
+  mainFontCandidates.push_back(
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
+  mainFontCandidates.push_back("/usr/share/fonts/TTF/DejaVuSans.ttf");
+  mainFontCandidates.push_back(
+      "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf");
+#endif
 
   ImFont *mainFont = nullptr;
   for (const std::string &fontPath : mainFontCandidates) {

@@ -47,17 +47,32 @@ public:
   bool getGlobalBounds(glm::vec3 &outMin, glm::vec3 &outMax) const;
 
 private:
+  struct ShadowMesh {
+    GLuint vao = 0;
+    GLuint vbo = 0;
+    GLuint ebo = 0;
+    GLsizei indexCount = 0;
+    GLuint instancedVBO = 0;
+    bool instancingReady = false;
+  };
+
   std::vector<UFBXSubmesh> mSubmeshes;
+  std::string mSourcePath;
   std::string mDirectory;
   ufbx_scene *mScene = nullptr;
 
   glm::vec3 mAabbMin{1e30f};
   glm::vec3 mAabbMax{-1e30f};
   bool mHasBounds = false;
+  ShadowMesh mShadowMesh;
+  std::vector<glm::vec3> mShadowBuildPositions;
+  std::vector<unsigned int> mShadowBuildIndices;
 
   void processNode(ufbx_node *node);
   void processMesh(ufbx_mesh *mesh, ufbx_node *node);
-  GLuint loadTextureFromUFBX(ufbx_texture *tex);
+  GLuint loadTextureFromUFBX(ufbx_texture *tex,
+                             TextureUsage usage = TextureUsage::Color,
+                             std::string *outSourcePath = nullptr);
 
   // Per-instance texture cache (replaces leaked static global)
   std::map<std::string, GLuint> mTextureCache;

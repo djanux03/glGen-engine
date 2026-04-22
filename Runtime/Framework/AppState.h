@@ -17,6 +17,7 @@
 
 #include "AssetManager.h"
 #include "CloudFX.h"
+#include "Core/PerformanceSnapshot.h"
 #include "ECS/Systems/CameraSystem.h"
 #include "ECS/Systems/EditorCamera.h"
 #include "ECS/Systems/PhysicsSystem.h"
@@ -30,6 +31,8 @@
 #include "PostProcessor.h"
 #include "ProjectConfig.h"
 #include "ProjectileSystem.h"
+#include "PlayerControllerSystem.h"
+#include "PlayerInteractionSystem.h"
 #include "FireflySystem.h"
 #include "RenderGraph.h"
 #include "Renderer.h"
@@ -94,14 +97,42 @@ struct RenderSettings {
   float mixVal = 0.5f;
   float shadowStrength = 1.5f;
   float shadowFarPlane = 250.0f;
+  bool enableCascadedShadows = true;
+  int shadowCascadeCount = 4;
+  int shadowMapResolution = 2048;
+  float shadowCascadeDistance = 700.0f;
+  float shadowCascadeLambda = 0.65f;
+  float shadowNormalBias = 0.035f;
+  float shadowDepthBias = 0.0015f;
+  float shadowSoftness = 1.0f;
+  bool showShadowCascades = false;
   int shadowUpdateInterval = 1; // frames between shadow map updates
   float shadowUpdateDistance = 0.5f; // meters
   float shadowUpdateAngle = 2.0f; // degrees
+  bool shadowStaggeredUpdates = true;
+  int shadowCascadeCadence = 2;
+  float shadowCascadeDistanceScale = 2.0f;
+  float shadowCascadeAngleScale = 1.6f;
   float exposure = 1.0f;
   float gamma = 2.2f;
-  float fogDensity = 0.0025f;
-  float fogHeightFalloff = 0.05f;
+  float fogDensity = 0.0012f;
+  float fogHeightFalloff = 0.018f;
   glm::vec3 fogColor = glm::vec3(0.55f, 0.65f, 0.78f);
+  bool aerialPerspectiveEnabled = true;
+  float aerialPerspectiveDensity = 0.0014f;
+  float aerialPerspectiveStart = 45.0f;
+  float aerialPerspectiveHeightFalloff = 0.006f;
+  float aerialPerspectiveSkyBlend = 0.72f;
+  float aerialPerspectiveSunGlow = 0.38f;
+  float aerialPerspectiveDesaturation = 0.35f;
+  bool ambientHemisphereEnabled = true;
+  float ambientHemisphereIntensity = 1.0f;
+  float ambientSkyInfluence = 0.65f;
+  float ambientHorizonStrength = 0.42f;
+  float ambientTerrainBoost = 1.12f;
+  glm::vec3 ambientSkyColor = glm::vec3(0.62f, 0.74f, 0.88f);
+  glm::vec3 ambientHorizonColor = glm::vec3(0.50f, 0.58f, 0.48f);
+  glm::vec3 ambientGroundColor = glm::vec3(0.18f, 0.21f, 0.16f);
   bool toonEnabled = false;
   int toonSteps = 4;
   float toonMin = 0.12f;
@@ -119,14 +150,20 @@ struct RenderSettings {
 
   bool wireframe = false;
   bool disableShadows = false;
-  bool disableClouds = true; // Use lightweight sky-clouds by default
-  bool disableHDR = true; // Off by default
+  bool disableClouds = false;
+  bool disableHDR = true;
   bool freezeTime = false;
   float frozenTime = 0.0f;
   bool frustumCulling = true;
   bool shadowCameraCulling = true;
 
   glm::mat4 lightSpaceMatrix = glm::mat4(1.0f);
+  glm::mat4 lightSpaceMatrices[4] = {glm::mat4(1.0f), glm::mat4(1.0f),
+                                     glm::mat4(1.0f), glm::mat4(1.0f)};
+  float shadowCascadeSplits[4] = {30.0f, 100.0f, 280.0f, 700.0f};
+  int activeShadowCascadeCount = 1;
+  bool shadowUsingCsm = false;
+  int activeShadowMapResolution = 2048;
 };
 
 struct InputSettings {
@@ -161,6 +198,7 @@ struct SelectionState {
 
 struct SkySettings {
   bool solidSky = true;
+  std::string skyHDRPath;
   // Manual sky colors (used when day/night disabled)
   float skyHorizon[3] = {0.55f, 0.72f, 0.95f};
   float skyTop[3] = {0.22f, 0.42f, 0.82f};
@@ -175,6 +213,19 @@ struct SkySettings {
   glm::vec3 sunDayColor = glm::vec3(1.0f, 0.95f, 0.85f);
   glm::vec3 sunDuskColor = glm::vec3(1.0f, 0.55f, 0.25f);
   glm::vec3 sunNightColor = glm::vec3(0.1f, 0.15f, 0.3f);
+  glm::vec3 visualSunColor = glm::vec3(1.0f, 0.86f, 0.58f);
+  glm::vec3 visualSunDayColor = glm::vec3(1.0f, 0.88f, 0.62f);
+  glm::vec3 visualSunDuskColor = glm::vec3(1.0f, 0.48f, 0.18f);
+  glm::vec3 visualSunNightColor = glm::vec3(0.16f, 0.22f, 0.45f);
+  float skyAtmosphereStrength = 0.28f;
+  float skyGradientPower = 1.15f;
+  float skyHorizonGlow = 0.16f;
+  float skySunDiscIntensity = 14.0f;
+  float skySunHaloIntensity = 0.45f;
+  float skySunRaysIntensity = 0.12f;
+  float skySunDiscSoftness = 0.0014f;
+  float skySunHaloSize = 0.18f;
+  float skySunRaySharpness = 12.0f;
   bool minimalSky = false;
   float skyBackdropBlend = 0.85f;
   float skyFeatureVisibility = 0.08f;
@@ -260,6 +311,8 @@ struct AppState {
   PostProcessor postProcessor;
   EditorUI editor;
   ProjectileSystem projectiles;
+  PlayerControllerSystem playerController;
+  PlayerInteractionSystem playerInteraction;
   FireflySystem fireflies;
 
   // ECS Systems
@@ -324,6 +377,15 @@ struct AppState {
   float debugPitch = 0.0f;
   glm::vec3 debugCamFront = glm::vec3(0.0f, 0.0f, -1.0f);
   glm::vec3 debugCamUp = glm::vec3(0.0f, 1.0f, 0.0f);
+  bool debugGameplayHit = false;
+  uint32_t debugGameplayHitId = 0;
+  float debugGameplayHitDist = 0.0f;
+  std::string debugGameplayHitName;
+  std::string debugGameplayHitKind;
+  std::string debugGameplayMissReason;
+  glm::vec3 debugGameplayAimOrigin = glm::vec3(0.0f);
+  glm::vec3 debugGameplayAimDirection = glm::vec3(0.0f, 0.0f, -1.0f);
+  glm::vec3 debugGameplayHitPosition = glm::vec3(0.0f);
 
   // Magic wand grab (play mode)
   uint32_t grabbedEntityId = 0;
@@ -357,6 +419,9 @@ struct AppState {
   PendingActions pending;
   HistoryState history;
   AudioSettings audio;
+  PlayPerfHudSettings playPerfHud;
+  PerformanceLogSettings performanceLog;
+  FramePerformanceSnapshot performance;
 
   // Infrastructure
   ProjectConfig projectConfig;
@@ -371,10 +436,19 @@ struct AppState {
   float gpuFrameMs = 0.0f;
   float gpuShadowMs = 0.0f;
   float gpuMainMs = 0.0f;
+  float gpuMainSkyMs = 0.0f;
+  float gpuMainTerrainMs = 0.0f;
+  float gpuMainSceneMs = 0.0f;
+  float gpuMainPostMs = 0.0f;
+  int shadowCascadesUpdated = 0;
+  bool shadowCascadeStaggered = false;
   int glProgramBinds = 0;
   int glTextureBinds = 0;
   int glVaoBinds = 0;
   int glStateChanges = 0;
+  uint64_t performanceLogFrameIndex = 0;
+  float performanceLogSummaryTimer = 0.0f;
+  float performanceLogSpikeCooldown = 0.0f;
 
   // Hot reload
   std::vector<std::string> hotReloadMessages;

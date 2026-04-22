@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <random>
 #include <string>
 
@@ -347,8 +348,11 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
   glClear(GL_COLOR_BUFFER_BIT);
   mCompositeShader->activate();
   mCompositeShader->setFloat("bloomIntensity", bloomIntensity);
-  mCompositeShader->setFloat("uBrightness", brightness);
+  const float compositeBrightness =
+      brightness * (enableAutoExposure ? autoExposureValue : 1.0f);
+  mCompositeShader->setFloat("uBrightness", compositeBrightness);
   mCompositeShader->setBool("uEnableSSAO", enableSSAO);
+  mCompositeShader->setFloat("uSSAOIntensity", ssaoIntensity);
   mCompositeShader->setBool("uEnableVolumetric", enableVolumetricFog);
   mCompositeShader->setBool("uEnableOutline", enableOutline);
   mCompositeShader->setFloat("uOutlineStrength", outlineStrength);
@@ -372,6 +376,7 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
   mCompositeShader->setVec3("uGradeTint", gradeTint);
   mCompositeShader->setBool("uEnablePalette", enablePaletteQuantize);
   mCompositeShader->setInt("uPaletteSteps", paletteSteps);
+  mCompositeShader->setFloat("uDisplayGamma", displayGamma);
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, mColorTex);
@@ -451,6 +456,21 @@ void PostProcessor::endRenderPass(const glm::mat4 &view,
   glBindTexture(GL_TEXTURE_2D, aaInputTex);
   renderQuad_();
 
+  if (enableAutoExposure) {
+    const float avgLum = sampleAverageLuminance_(aaInputTex, mWidth, mHeight);
+    const float safeLum = std::max(avgLum, 0.0001f);
+    const float exposureMin = std::min(autoExposureMin, autoExposureMax);
+    const float exposureMax = std::max(autoExposureMin, autoExposureMax);
+    const float targetExposure =
+        std::clamp(autoExposureTarget / safeLum, exposureMin, exposureMax);
+    const float adaptation =
+        std::clamp(autoExposureSpeed, 0.001f, 1.0f);
+    autoExposureValue =
+        autoExposureValue + (targetExposure - autoExposureValue) * adaptation;
+  } else {
+    autoExposureValue = 1.0f;
+  }
+
   mPrevJitterNDC = mCurrentJitterNDC;
   mPrevCameraPos = cameraPos;
   mHasPrevCameraPos = true;
@@ -499,6 +519,31 @@ void PostProcessor::buildSSAOKernel_() {
   glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+float PostProcessor::sampleAverageLuminance_(GLuint tex, int width, int height) {
+  if (tex == 0 || width <= 0 || height <= 0)
+    return 1.0f;
+
+  glBindTexture(GL_TEXTURE_2D, tex);
+  glGenerateMipmap(GL_TEXTURE_2D);
+
+  int mipWidth = width;
+  int mipHeight = height;
+  int mipLevel = 0;
+  while (mipWidth > 1 || mipHeight > 1) {
+    mipWidth = std::max(1, mipWidth / 2);
+    mipHeight = std::max(1, mipHeight / 2);
+    ++mipLevel;
+  }
+
+  float pixel[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+  glGetTexImage(GL_TEXTURE_2D, mipLevel, GL_RGBA, GL_FLOAT, pixel);
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  const glm::vec3 color(pixel[0], pixel[1], pixel[2]);
+  return std::max(glm::dot(color, glm::vec3(0.2126f, 0.7152f, 0.0722f)),
+                  0.0001f);
+}
+
 void PostProcessor::createBuffers_(int width, int height) {
   mWidth = width;
   mHeight = height;
@@ -530,27 +575,24 @@ void PostProcessor::createBuffers_(int width, int height) {
 
   glGenTextures(1, &mDepthTex);
   glBindTexture(GL_TEXTURE_2D, mDepthTex);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0,
-               GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0,
+               GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
-                         mDepthTex, 0);
-
-  glGenRenderbuffers(1, &mStencilRBO);
-  glBindRenderbuffer(GL_RENDERBUFFER, mStencilRBO);
-  glRenderbufferStorage(GL_RENDERBUFFER, GL_STENCIL_INDEX8, width, height);
-  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT,
-                            GL_RENDERBUFFER, mStencilRBO);
-  glBindRenderbuffer(GL_RENDERBUFFER, 0);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                         GL_TEXTURE_2D, mDepthTex, 0);
+  mStencilRBO = 0;
 
   GLuint attachments[1] = {GL_COLOR_ATTACHMENT0};
   glDrawBuffers(1, attachments);
-  if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-    LOG_ERROR("PostProcessor", "HDR Framebuffer not complete!");
+  {
+    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE)
+      LOG_ERROR("PostProcessor", "HDR Framebuffer not complete! status=" +
+                                     std::to_string(static_cast<int>(status)));
+  }
 
   glGenFramebuffers(2, mPingPongFBO);
   glGenTextures(2, mPingPongTex);

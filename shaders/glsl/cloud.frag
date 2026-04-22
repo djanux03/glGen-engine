@@ -20,6 +20,7 @@ uniform vec3  uCloudWind;
 uniform vec3  uCameraPos;
 uniform vec3  uSunColor;
 uniform float uSunIntensity;
+uniform vec3  uSunDir;
 uniform float uTime;
 
 float rand(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
@@ -44,50 +45,80 @@ float fbm(vec2 p) {
     return v;
 }
 
-vec3 toneMapReinhard(vec3 c) { return c / (c + vec3(1.0)); }
-vec3 toSRGB(vec3 lin) { return pow(max(lin, vec3(0.0)), vec3(1.0 / 2.2)); }
+float hgPhase(float cosTheta, float g)
+{
+    float gg = g * g;
+    return (1.0 - gg) / max(pow(1.0 + gg - 2.0 * g * cosTheta, 1.5), 0.001);
+}
+
+float cloudDensityAt(vec3 p)
+{
+    float h = clamp((p.y - uCloudHeight) / max(uCloudThickness, 0.001), 0.0, 1.0);
+    float heightShape = smoothstep(0.02, 0.24, h) *
+                        (1.0 - smoothstep(0.72, 1.0, h));
+    vec2 uv = p.xz * 0.006 * max(uCloudScale, 0.001);
+    uv += uCloudWind.xz * uTime * uCloudSpeed;
+
+    vec2 warp = vec2(fbm(uv * 0.42 + vec2(4.2, -1.7)),
+                     fbm(uv * 0.37 + vec2(-8.1, 6.9))) - 0.5;
+    uv += warp * 1.8;
+
+    float broad = fbm(uv);
+    float puffs = fbm(uv * 2.7 + vec2(12.0, -5.0));
+    float erosion = fbm(uv * 7.0 + vec2(-2.0, 17.0));
+    float shape = broad * 0.62 + puffs * 0.32 - erosion * 0.16;
+    float threshold = mix(0.74, 0.30, clamp(uCloudCover, 0.0, 1.0));
+    float d = smoothstep(threshold, threshold + max(uCloudSoftness, 0.015),
+                         shape);
+    return d * heightShape * max(uCloudDensity, 0.0);
+}
 
 void main()
 {
     vec3 viewDir = normalize(FragPos - uCameraPos);
-    float dirY = max(viewDir.y, 0.05);
-    float distToTop = uCloudThickness / dirY;
+    if (viewDir.y <= 0.015)
+        discard;
 
-    int numSteps = 16;
+    float dirY = max(viewDir.y, 0.05);
+    float distToTop = min(uCloudThickness / dirY, 220.0);
+
+    int numSteps = 24;
     float stepSize = distToTop / float(numSteps);
     vec3 rayStep = viewDir * stepSize;
 
     vec3 p = FragPos;
     float T = 1.0;
     vec3 cloudLit = vec3(0.0);
+    vec3 toSun = normalize(-uSunDir);
+    float phase = hgPhase(max(dot(viewDir, toSun), 0.0), clamp(uCloudPhaseG, 0.0, 0.92));
+    vec3 ambientSky = uCloudColor * vec3(0.38, 0.44, 0.56);
 
     for (int i = 0; i < numSteps; i++) {
-        vec2 uv = p.xz * 0.01 * uCloudScale;
-        uv += uCloudWind.xz * uTime * uCloudSpeed;
-
-        float n = fbm(uv);
-        float d = smoothstep(1.0 - uCloudCover, 1.0 - uCloudCover + uCloudSoftness, n);
-        d *= uCloudDensity;
+        float d = cloudDensityAt(p);
 
         if (d > 0.0) {
+            float opticalDepth = d * stepSize * 0.030;
             float lightTransmittance = exp(-d * uCloudLightAbsorption);
-            vec3 S = uSunColor * uSunIntensity * lightTransmittance + vec3(0.2);
+            float powder = 1.0 - exp(-d * 2.8);
+            vec3 direct = uSunColor * uSunIntensity *
+                          (0.25 + 0.75 * phase) *
+                          lightTransmittance * (0.55 + 0.45 * powder);
+            vec3 S = ambientSky + direct;
 
-            cloudLit += T * S * d * stepSize * uCloudColor;
-            T *= exp(-d * stepSize);
+            cloudLit += T * S * opticalDepth * uCloudColor;
+            T *= exp(-opticalDepth);
             if (T < 0.01) break;
         }
         p += rayStep;
     }
 
-    float finalAlpha = (1.0 - T) * uCloudAlpha;
+    float finalAlpha = clamp((1.0 - T) * uCloudAlpha, 0.0, 0.88);
 
     float edgeFade = 1.0 - smoothstep(0.3, 0.5, length(TexCoord - vec2(0.5)));
     finalAlpha *= edgeFade;
 
     if (finalAlpha <= 0.01) discard;
 
-
-
-    FragColor = vec4(cloudLit, finalAlpha);
+    vec3 color = cloudLit / max(1.0 - T, 0.08);
+    FragColor = vec4(color, finalAlpha);
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Shader.h"
+#include "Texture.h"
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -14,6 +15,8 @@ enum class ShaderVariant {
 
 struct MaterialAsset {
   std::string id;
+  std::string sourceAssetPath;
+  std::string sourceMaterialName;
   ShaderVariant variant = ShaderVariant::Lit;
 
   glm::vec4 baseColor = glm::vec4(1.0f);
@@ -28,12 +31,19 @@ struct MaterialAsset {
   int opacityChannel = 3;
 
   GLuint texDiffuse = 0;
+  std::string texDiffusePath;
   GLuint texNormal = 0;
+  std::string texNormalPath;
   GLuint texRoughness = 0;
+  std::string texRoughnessPath;
   GLuint texMetallic = 0;
+  std::string texMetallicPath;
   GLuint texAO = 0;
+  std::string texAOPath;
   GLuint texEmissive = 0;
+  std::string texEmissivePath;
   GLuint texOpacity = 0;
+  std::string texOpacityPath;
 
   glm::vec3 emissiveColor = glm::vec3(0.0f);
   float emissiveStrength = 1.0f;
@@ -41,4 +51,5 @@ struct MaterialAsset {
   bool roughnessMapIsGloss = false;
 
   void apply(Shader &shader) const;
+  bool usesAnyTextureMaps() const;
 };

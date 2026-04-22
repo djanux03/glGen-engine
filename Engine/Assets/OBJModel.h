@@ -113,6 +113,14 @@ private:
     bool instancingReady = false;
   };
 
+  struct ShadowMesh {
+    GLuint vao = 0;
+    GLuint vbo = 0;
+    GLsizei vertexCount = 0;
+    GLuint instancedVBO = 0;
+    bool instancingReady = false;
+  };
+
 private:
   struct ObjectTRSOverride {
     glm::vec3 posLocal{0.0f};
@@ -142,4 +150,5 @@ private:
   };
 
   std::unordered_map<std::string, YawOverride> mYawOverride;
+  ShadowMesh mShadowMesh;
 };

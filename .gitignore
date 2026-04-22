@@ -74,6 +74,8 @@ CMakeCache.txt
 
 CMakeFiles
 
+Testing/
+
 Makefile
 
 cmake_install.cmake
@@ -82,11 +84,27 @@ install_manifest.txt
 
 /Build/
 
+/Build-vs18/
+
+/Build-win/
+
+/out/
+
+/compile_commands.json
+
+/CMakeUserPresets.json
+
+/build_log.txt
+
 
 
 # Editor specific
 
 .vscode/
+
+.vs/
+
+.cache/
 
 .idea/
 
@@ -94,7 +112,41 @@ install_manifest.txt
 
 *.swo
 
+*.suo
+
+*.user
+
+*.userosscache
+
+*.sln.docstates
+
+*.VC.db
+
+*.VC.opendb
+
+*.vsidx
+
+*.wsuo
+
+*.ipch
+
+*.ilk
+
+*.iobj
+
+*.ipdb
+
+*.pdb
+
+*.recipe
+
+*.tlog
+
+*.lastbuildstate
+
 .DS_Store
+
+._*
 
 
 

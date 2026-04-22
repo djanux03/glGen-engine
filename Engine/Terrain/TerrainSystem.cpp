@@ -3,14 +3,17 @@
 #include "Assets/OBJModel.h"
 #include "Assets/UFBXModel.h"
 #include "ECS/Systems/PhysicsSystem.h"
+#include "TerrainGpuRenderer.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <future>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <mutex>
+#include <unordered_set>
 #include <glm/gtx/matrix_decompose.hpp>
 
 // ═══════════════════════════════════════════════════════════════
@@ -26,34 +29,344 @@ static constexpr int SPHERE_SECTORS = 6;
 static constexpr int ROCK_SEGMENTS = 6;
 static constexpr int WATER_RESOLUTION = 16;
 
-static void applyVegetationCullProfile(const std::string &prefabName,
+static float saturate01(float v) { return std::clamp(v, 0.0f, 1.0f); }
+
+static float smooth01(float a, float b, float v) {
+  float t = saturate01((v - a) / std::max(0.0001f, b - a));
+  return t * t * (3.0f - 2.0f * t);
+}
+
+struct TerrainMacroSample {
+  float warpedX = 0.0f;
+  float warpedZ = 0.0f;
+  float temp = 0.5f;
+  float moist = 0.5f;
+  float continental = 0.5f;
+  float mountainMask = 0.0f;
+  float macroMountain = 0.0f;
+  float macroValley = 0.0f;
+  float macroRidge = 0.0f;
+  float broadShape = 0.0f;
+  float baseShape = 0.0f;
+  float ridgeShape = 0.0f;
+};
+
+static TerrainMacroSample sampleTerrainMacro(const TerrainSettings &settings,
+                                             const PerlinNoise &noise,
+                                             const PerlinNoise &tempNoise,
+                                             const PerlinNoise &moistNoise,
+                                             float worldX, float worldZ) {
+  TerrainMacroSample s;
+
+  const float biomeFreq = std::max(0.0001f, settings.biomeScale);
+  const float terrainFreq = std::max(0.0001f, settings.noiseFrequency);
+
+  const float warpFreq = biomeFreq * 0.45f;
+  const float warpAmp = settings.chunkWorldSize * 1.75f;
+  const float warpX =
+      tempNoise.noise(worldX * warpFreq + 31.7f, worldZ * warpFreq - 14.2f);
+  const float warpZ =
+      moistNoise.noise(worldX * warpFreq - 53.1f, worldZ * warpFreq + 22.8f);
+  s.warpedX = worldX + warpX * warpAmp;
+  s.warpedZ = worldZ + warpZ * warpAmp;
+
+  const float climateFreq = biomeFreq * 0.55f;
+  s.temp = tempNoise.fbm(s.warpedX * climateFreq + 100.0f,
+                         s.warpedZ * climateFreq - 40.0f, 3, 2.0f, 0.5f);
+  s.moist = moistNoise.fbm(s.warpedX * climateFreq - 140.0f,
+                           s.warpedZ * climateFreq + 80.0f, 3, 2.0f, 0.5f);
+  s.temp = s.temp * 0.5f + 0.5f;
+  s.moist = s.moist * 0.5f + 0.5f;
+
+  const float continentFreq = biomeFreq * 0.20f;
+  float continentA =
+      noise.fbm(s.warpedX * continentFreq - 500.0f,
+                s.warpedZ * continentFreq + 270.0f, 4, 2.0f, 0.5f) *
+          0.5f +
+      0.5f;
+  float continentB =
+      tempNoise.fbm(s.warpedX * continentFreq * 0.6f + 810.0f,
+                    s.warpedZ * continentFreq * 0.6f - 620.0f, 3, 2.0f, 0.5f) *
+          0.5f +
+      0.5f;
+  s.continental = smooth01(0.18f, 0.82f, continentA * 0.7f + continentB * 0.3f);
+
+  const float mountainFreq = biomeFreq * 0.35f;
+  float mountainA =
+      noise.ridgeNoise(s.warpedX * mountainFreq + 230.0f,
+                       s.warpedZ * mountainFreq - 170.0f, 4, 2.05f, 0.5f);
+  float mountainB =
+      moistNoise.fbm(s.warpedX * mountainFreq * 0.55f - 900.0f,
+                     s.warpedZ * mountainFreq * 0.55f + 300.0f, 3, 2.0f, 0.5f) *
+          0.5f +
+      0.5f;
+  s.mountainMask =
+      smooth01(0.50f, 0.88f, mountainA * 0.8f + mountainB * 0.2f) *
+      smooth01(0.34f, 0.62f, s.continental);
+
+  const float landscapeScale = std::max(0.35f, settings.landscapeScale);
+  const float macroFreq = biomeFreq * (0.12f / landscapeScale);
+  float macroA =
+      noise.fbm(s.warpedX * macroFreq + 1240.0f,
+                s.warpedZ * macroFreq - 860.0f, 3, 2.0f, 0.5f) *
+          0.5f +
+      0.5f;
+  float macroB =
+      tempNoise.fbm(s.warpedX * macroFreq * 0.55f - 410.0f,
+                    s.warpedZ * macroFreq * 0.55f + 640.0f, 2, 2.0f, 0.5f) *
+          0.5f +
+      0.5f;
+  float macroField = macroA * 0.72f + macroB * 0.28f;
+  float mountainSpan = std::max(0.35f, settings.mountainSpan);
+  float valleySpan = std::max(0.35f, settings.valleySpan);
+  float mountainStart = 0.56f - (mountainSpan - 1.0f) * 0.10f;
+  float mountainEnd = 0.88f - (mountainSpan - 1.0f) * 0.05f;
+  float valleyStart = 0.16f;
+  float valleyEnd = 0.44f + (valleySpan - 1.0f) * 0.18f;
+  s.macroMountain = smooth01(mountainStart, mountainEnd, macroField);
+  s.macroValley = 1.0f - smooth01(valleyStart, valleyEnd, macroField);
+  s.macroRidge =
+      noise.ridgeNoise(s.warpedX * macroFreq * 1.15f - 250.0f,
+                       s.warpedZ * macroFreq * 1.15f + 510.0f, 3, 2.0f, 0.5f) *
+      (0.45f + 0.55f * s.macroMountain);
+
+  s.broadShape =
+      noise.fbm(s.warpedX * terrainFreq * 0.18f - 320.0f,
+                s.warpedZ * terrainFreq * 0.18f + 190.0f, 3, 2.0f, 0.5f);
+  s.baseShape = noise.fbm(s.warpedX * terrainFreq * 0.65f,
+                          s.warpedZ * terrainFreq * 0.65f, settings.octaves,
+                          settings.lacunarity, settings.gain);
+  s.ridgeShape = settings.useRidgeNoise
+                     ? noise.ridgeNoise(s.warpedX * terrainFreq * 0.80f,
+                                       s.warpedZ * terrainFreq * 0.80f,
+                                       settings.octaves, settings.lacunarity,
+                                       settings.gain)
+                     : std::abs(noise.fbm(s.warpedX * terrainFreq * 0.80f,
+                                          s.warpedZ * terrainFreq * 0.80f,
+                                          settings.octaves, settings.lacunarity,
+                                          settings.gain));
+  return s;
+}
+
+static BiomeType classifyLandscapeBiome(const TerrainSettings &settings,
+                                        const TerrainMacroSample &s) {
+  if (settings.singleBiomeOnly)
+    return BiomeType::Plains;
+
+  if (s.continental < 0.33f)
+    return BiomeType::Ocean;
+
+  if (s.temp < 0.28f) {
+    if (s.mountainMask > 0.52f)
+      return BiomeType::Mountains;
+    return BiomeType::Tundra;
+  }
+
+  if (s.mountainMask > 0.64f && s.continental > 0.42f)
+    return BiomeType::Mountains;
+
+  if (s.temp > 0.66f && s.moist < 0.38f && s.continental > 0.42f)
+    return BiomeType::Desert;
+
+  if (s.moist > 0.57f && s.continental > 0.38f)
+    return BiomeType::Forest;
+
+  return BiomeType::Plains;
+}
+
+static float computeTerrainHeightValue(const TerrainSettings &settings,
+                                       const TerrainMacroSample &sample,
+                                       const PerlinNoise &noise,
+                                       const PerlinNoise &detailNoise) {
+  const BiomeType biome = classifyLandscapeBiome(settings, sample);
+  const float hs = settings.heightScale;
+  const float land = smooth01(0.33f, 0.70f, sample.continental);
+  const float inland = smooth01(0.48f, 0.85f, sample.continental);
+  const float broad = sample.broadShape;
+  const float rolling = broad * 0.65f + sample.baseShape * 0.35f;
+  const float foothills = broad * 0.45f + sample.baseShape * 0.20f;
+  const float mountains =
+      foothills + sample.ridgeShape * (1.2f + sample.mountainMask * 1.4f);
+
+  const float macroStrength = std::max(0.0f, settings.macroStrength);
+  const float macroMountain =
+      std::pow(saturate01(sample.macroMountain), 0.85f) *
+      (0.55f + 0.45f * land);
+  const float macroValley =
+      std::pow(saturate01(sample.macroValley), 1.10f) *
+      (0.70f + 0.30f * land);
+  const float macroRidge = sample.macroRidge * macroMountain;
+  const float macroMass = std::max(macroMountain, macroValley);
+
+  float h = 0.0f;
+  if (settings.singleBiomeOnly) {
+    float macroShape = macroMountain * 1.45f + macroRidge * 0.55f -
+                       macroValley * 0.95f;
+    h = rolling * hs * 0.42f + broad * hs * 0.22f + inland * hs * 0.18f +
+        macroShape * hs * macroStrength;
+  } else {
+    switch (biome) {
+    case BiomeType::Ocean: {
+      float shelf = smooth01(0.15f, 0.33f, sample.continental);
+      float depth = (1.0f - shelf) * (hs * 2.4f + 6.0f);
+      h = std::min(settings.seaLevel - depth + broad * hs * 0.12f -
+                       macroValley * hs * 0.10f,
+                   settings.seaLevel);
+      break;
+    }
+    case BiomeType::Plains:
+      h = rolling * hs * 0.40f + inland * hs * 0.20f +
+          (macroMountain * 0.85f + macroRidge * 0.15f - macroValley * 0.78f) *
+              hs * macroStrength;
+      break;
+    case BiomeType::Forest:
+      h = (rolling * 0.72f + 0.06f) * hs * 0.58f + inland * hs * 0.16f +
+          (macroMountain * 0.95f + macroRidge * 0.22f - macroValley * 0.82f) *
+              hs * macroStrength;
+      break;
+    case BiomeType::Desert:
+      h = (broad * 0.58f + std::abs(sample.baseShape) * 0.12f) * hs * 0.42f +
+          land * hs * 0.10f +
+          (macroMountain * 0.50f + macroRidge * 0.10f - macroValley * 0.60f) *
+              hs * macroStrength;
+      break;
+    case BiomeType::Mountains:
+      h = mountains * hs * 0.82f + inland * hs * 0.32f +
+          (macroMountain * 1.95f + macroRidge * 0.85f - macroValley * 0.45f) *
+              hs * macroStrength;
+      break;
+    case BiomeType::Tundra:
+      h = (broad * 0.42f + sample.baseShape * 0.12f + 0.06f) * hs * 0.48f +
+          land * hs * 0.10f +
+          (macroMountain * 1.05f + macroRidge * 0.28f - macroValley * 0.70f) *
+              hs * macroStrength;
+      break;
+    default:
+      h = rolling * hs;
+      break;
+    }
+  }
+
+  float tDists[] = {std::abs(sample.temp - 0.28f),
+                    std::abs(sample.temp - 0.66f)};
+  float mDists[] = {std::abs(sample.moist - 0.38f),
+                    std::abs(sample.moist - 0.57f),
+                    std::abs(sample.continental - 0.33f),
+                    std::abs(sample.mountainMask - 0.64f)};
+  float minDist = 1.0f;
+  for (float d : tDists)
+    minDist = std::min(minDist, d);
+  for (float d : mDists)
+    minDist = std::min(minDist, d);
+
+  const float blendZone = 0.10f;
+  if (minDist < blendZone) {
+    float blend = minDist / blendZone;
+    float neutralH = rolling * hs * 0.38f + inland * hs * 0.10f +
+                     (macroMountain * 0.75f - macroValley * 0.65f) * hs *
+                         macroStrength;
+    h = h * blend + neutralH * (1.0f - blend);
+  }
+
+  const float freq = std::max(0.0001f, settings.noiseFrequency);
+  float erosion =
+      noise.noise(sample.warpedX * freq * 2.0f, sample.warpedZ * freq * 2.0f) *
+      0.10f;
+  float micro = detailNoise.noise(sample.warpedX * freq * 4.0f + 150.0f,
+                                  sample.warpedZ * freq * 4.0f - 70.0f) *
+                0.035f;
+  float fine = detailNoise.noise(sample.warpedX * freq * 8.0f - 320.0f,
+                                 sample.warpedZ * freq * 8.0f + 260.0f) *
+               0.012f;
+  float detailStrength =
+      (biome == BiomeType::Ocean) ? 0.18f : (0.42f + land * 0.18f);
+  detailStrength *= 1.0f - macroMass * 0.35f;
+  detailStrength = std::max(0.12f, detailStrength);
+  h += (erosion + micro + fine) * hs * detailStrength;
+  return h;
+}
+
+static void applyVegetationCullProfile(const TerrainSettings &settings,
+                                       const std::string &prefabName,
                                        InstancedMeshComponent &inst) {
-  inst.maxDrawDistance = 220.0f;
-  inst.shadowMaxDrawDistance = 140.0f;
+  const float meshDistance =
+      std::max(40.0f, (float)settings.meshVegetationDistance);
+  const float shadowDistance =
+      std::max(0.0f, (float)settings.vegetationShadowDistance);
+
+  inst.maxDrawDistance = meshDistance;
+  inst.shadowMaxDrawDistance = std::min(meshDistance, shadowDistance);
   inst.instanceCullRadius = 6.0f;
 
   if (prefabName == "prefab_pine" || prefabName == "prefab_oak" ||
       prefabName == "prefab_birch" || prefabName == "prefab_deadtree") {
-    inst.maxDrawDistance = 320.0f;
-    inst.shadowMaxDrawDistance = 200.0f;
+    inst.maxDrawDistance = meshDistance * 1.45f;
+    inst.shadowMaxDrawDistance =
+        std::min(inst.maxDrawDistance, shadowDistance);
     inst.instanceCullRadius = 9.0f;
   } else if (prefabName == "prefab_rock") {
-    inst.maxDrawDistance = 180.0f;
-    inst.shadowMaxDrawDistance = 110.0f;
+    inst.maxDrawDistance = meshDistance * 0.82f;
+    inst.shadowMaxDrawDistance =
+        std::min(inst.maxDrawDistance, shadowDistance * 0.75f);
     inst.instanceCullRadius = 4.0f;
   } else if (prefabName == "prefab_grass" || prefabName == "prefab_flower") {
-    inst.maxDrawDistance = 90.0f;
-    inst.shadowMaxDrawDistance = 45.0f;
+    inst.maxDrawDistance = meshDistance * 0.40f;
+    inst.shadowMaxDrawDistance =
+        std::min(inst.maxDrawDistance, shadowDistance * 0.35f);
     inst.instanceCullRadius = 1.4f;
   } else if (prefabName == "prefab_bush") {
-    inst.maxDrawDistance = 140.0f;
-    inst.shadowMaxDrawDistance = 85.0f;
+    inst.maxDrawDistance = meshDistance * 0.64f;
+    inst.shadowMaxDrawDistance =
+        std::min(inst.maxDrawDistance, shadowDistance * 0.55f);
     inst.instanceCullRadius = 2.8f;
   } else if (prefabName == "prefab_cactus") {
-    inst.maxDrawDistance = 240.0f;
-    inst.shadowMaxDrawDistance = 150.0f;
+    inst.maxDrawDistance = meshDistance * 1.10f;
+    inst.shadowMaxDrawDistance =
+        std::min(inst.maxDrawDistance, shadowDistance * 0.85f);
     inst.instanceCullRadius = 5.5f;
   }
+}
+
+static constexpr uint32_t INVALID_TREE_INSTANCE_INDEX =
+    std::numeric_limits<uint32_t>::max();
+
+static bool isInteractiveTreePrefab(const std::string &prefabName) {
+  return prefabName == "prefab_pine";
+}
+
+static bool shouldSpawnInteractiveTree(const TerrainSettings &settings,
+                                       int cameraChunkX, int cameraChunkZ,
+                                       int chunkX, int chunkZ,
+                                       const glm::vec3 &worldPos,
+                                       const PerlinNoise &noise,
+                                       int currentChunkCount) {
+  const int dx = std::abs(chunkX - cameraChunkX);
+  const int dz = std::abs(chunkZ - cameraChunkZ);
+  if (std::max(dx, dz) > std::max(0, settings.interactiveTreeChunkRadius))
+    return false;
+  if (currentChunkCount >= std::max(0, settings.maxInteractiveTreesPerChunk))
+    return false;
+
+  const float ratio = std::clamp(settings.interactiveTreeRatio, 0.0f, 1.0f);
+  if (ratio >= 0.999f)
+    return true;
+  if (ratio <= 0.0f)
+    return false;
+
+  const float keep =
+      noise.noise(worldPos.x * 0.071f + 17.3f, worldPos.z * 0.071f - 9.1f) *
+          0.5f +
+      0.5f;
+  return keep <= ratio;
+}
+
+static bool chunkNeedsCollision(const TerrainSettings &settings,
+                                int cameraChunkX, int cameraChunkZ,
+                                int chunkX, int chunkZ) {
+  const int radius = std::max(0, settings.collisionChunkRadius);
+  const int dist =
+      std::max(std::abs(chunkX - cameraChunkX), std::abs(chunkZ - cameraChunkZ));
+  return dist <= radius;
 }
 
 // Generate a tapered cylinder (trunk shapes)
@@ -222,6 +535,8 @@ static void addBox(std::vector<OBJModel::VertexData> &verts, glm::vec3 minC,
 // INITIALIZATION & LIFECYCLE
 // ═══════════════════════════════════════════════════════════════
 
+TerrainSystem::~TerrainSystem() { shutdown(); }
+
 void TerrainSystem::init(const TerrainSettings &settings, Scene &scene,
                          AssetManager *assets) {
   mSettings = settings;
@@ -234,8 +549,15 @@ void TerrainSystem::init(const TerrainSettings &settings, Scene &scene,
   mRockNoise = PerlinNoise(mSettings.seed + 4000);
   mDetailNoise = PerlinNoise(mSettings.seed + 5000);
   mLastCameraChunk = {INT_MAX, INT_MAX};
+  ++mGenerationId;
   mStats = {};
+  mGpuMainPassStats = {};
+  mGpuShadowPassStats = {};
+  mHasGpuMainPassStats = false;
+  mHasGpuShadowPassStats = false;
+  mGpuTerrainFallbackActive = false;
 
+  ensureGpuRenderer();
   initPrefabs();
 
   std::cout << "[Terrain] Initialized with seed " << mSettings.seed
@@ -243,12 +565,21 @@ void TerrainSystem::init(const TerrainSettings &settings, Scene &scene,
 }
 
 void TerrainSystem::applySettings(const TerrainSettings &settings) {
+  const bool gpuShapeChanged =
+      settings.chunkSize != mSettings.chunkSize ||
+      settings.terrainGpuPageCapacity != mSettings.terrainGpuPageCapacity ||
+      settings.useGpuTerrain != mSettings.useGpuTerrain;
   if (settings.chunkSize != mSettings.chunkSize ||
       std::abs(settings.chunkWorldSize - mSettings.chunkWorldSize) > 0.001f) {
     mHeightOffsets.clear();
     mPaintedInstances.clear();
   }
   mSettings = settings;
+  if (gpuShapeChanged && mGpuRenderer) {
+    mGpuRenderer->shutdown();
+    mGpuRenderer.reset();
+  }
+  ensureGpuRenderer();
 }
 
 void TerrainSystem::regenerate() {
@@ -264,6 +595,10 @@ void TerrainSystem::regenerate() {
     std::lock_guard<std::mutex> lk(mPendingMutex);
     mPendingReady.clear();
   }
+  mPendingCollisionUpdates.clear();
+  ++mGenerationId;
+  if (mGpuRenderer)
+    mGpuRenderer->clear();
 
   std::vector<ChunkCoord> all;
   for (auto &[coord, data] : mChunks)
@@ -282,18 +617,151 @@ void TerrainSystem::regenerate() {
   mDetailNoise = PerlinNoise(mSettings.seed + 5000);
   mLastCameraChunk = {INT_MAX, INT_MAX};
   mStats = {};
+  mGpuMainPassStats = {};
+  mGpuShadowPassStats = {};
+  mHasGpuMainPassStats = false;
+  mHasGpuShadowPassStats = false;
+  mGpuTerrainFallbackActive = false;
+  ensureGpuRenderer();
   std::cout << "[Terrain] Regenerated with seed " << mSettings.seed
             << std::endl;
 }
 
 void TerrainSystem::shutdown() {
+  for (auto &f : mChunkFutures)
+    if (f.valid())
+      f.wait();
+  mChunkFutures.clear();
+  mInFlight.clear();
+  {
+    std::lock_guard<std::mutex> lk(mPendingMutex);
+    mPendingReady.clear();
+  }
+  mPendingCollisionUpdates.clear();
+  ++mGenerationId;
   std::vector<ChunkCoord> all;
   for (auto &[coord, data] : mChunks)
     all.push_back(coord);
   for (auto &coord : all)
     unloadChunk(coord.x, coord.z);
   clearPrefabs();
+  if (mGpuRenderer) {
+    mGpuRenderer->shutdown();
+    mGpuRenderer.reset();
+  }
   mStats = {};
+  mGpuMainPassStats = {};
+  mGpuShadowPassStats = {};
+  mHasGpuMainPassStats = false;
+  mHasGpuShadowPassStats = false;
+  mGpuTerrainFallbackActive = false;
+}
+
+bool TerrainSystem::ensureGpuRenderer() {
+  mStats.gpuTerrainActive = false;
+  if (!mSettings.enabled || !mSettings.useGpuTerrain)
+    return false;
+  if (!mGpuRenderer)
+    mGpuRenderer = std::make_unique<TerrainGpuRenderer>();
+  mGpuRenderer->setSubmissionBackend(mSubmissionBackend);
+  if (!mGpuRenderer->active()) {
+    if (!mGpuRenderer->initialize(mSettings.chunkSize,
+                                  mSettings.terrainGpuPageCapacity)) {
+      mGpuTerrainFallbackActive = true;
+      mStats.gpuTerrainFallback = true;
+      return false;
+    }
+  }
+  mStats.gpuTerrainActive = true;
+  mStats.gpuTerrainFallback = mGpuTerrainFallbackActive;
+  return true;
+}
+
+bool TerrainSystem::gpuTerrainActive() const {
+  return mSettings.enabled && mSettings.useGpuTerrain && mGpuRenderer &&
+         mGpuRenderer->active();
+}
+
+void TerrainSystem::applyGpuRenderStats(const TerrainGpuRendererStats &gs) {
+  mStats.visibleChunks = gs.visibleChunks;
+  mStats.horizonCulledChunks = gs.horizonCulledChunks;
+  mStats.frustumCulledChunks = gs.frustumCulledChunks;
+  mStats.terrainDrawCalls = gs.drawCalls;
+  mStats.terrainGpuPagesUsed = gs.pagesUsed;
+  mStats.terrainGpuInstanceUploads = gs.instanceUploads;
+  mStats.terrainGpuInstanceUploadSkips = gs.instanceUploadSkips;
+  mStats.terrainGpuInstanceUploadBytes = gs.instanceUploadBytes;
+  mStats.gpuTerrainActive = gs.active;
+  mStats.gpuTerrainFallback = gs.fallback || mGpuTerrainFallbackActive;
+}
+
+void TerrainSystem::syncStreamingStats() {
+  if (!mGpuRenderer) {
+    mStats.visibleChunks = mStats.loadedChunks;
+    mStats.horizonCulledChunks = 0;
+    mStats.frustumCulledChunks = 0;
+    mStats.terrainDrawCalls = 0;
+    mStats.terrainGpuPagesUsed = 0;
+    mStats.terrainGpuInstanceUploads = 0;
+    mStats.terrainGpuInstanceUploadSkips = 0;
+    mStats.terrainGpuInstanceUploadBytes = 0;
+    mStats.gpuTerrainActive = false;
+    mStats.gpuTerrainFallback = mGpuTerrainFallbackActive;
+  } else {
+    mStats.gpuTerrainActive = mGpuRenderer->active();
+    mStats.gpuTerrainFallback = mGpuTerrainFallbackActive;
+  }
+
+  mStats.pendingJobs = (int)mInFlight.size();
+  {
+    std::lock_guard<std::mutex> lk(mPendingMutex);
+    mStats.pendingUploads = (int)mPendingReady.size();
+  }
+  int collisionBodies = 0;
+  for (const auto &[_, cd] : mChunks) {
+    if (cd.physicsBodyId != 0xFFFFFFFF)
+      ++collisionBodies;
+  }
+  mStats.collisionBodies = collisionBodies;
+}
+
+void TerrainSystem::syncGpuStats() {
+  if (mGpuRenderer && mHasGpuMainPassStats) {
+    applyGpuRenderStats(mGpuMainPassStats);
+  } else if (!mGpuRenderer) {
+    mStats.visibleChunks = mStats.loadedChunks;
+    mStats.horizonCulledChunks = 0;
+    mStats.frustumCulledChunks = 0;
+    mStats.terrainDrawCalls = 0;
+    mStats.terrainGpuPagesUsed = 0;
+    mStats.terrainGpuInstanceUploads = 0;
+    mStats.terrainGpuInstanceUploadSkips = 0;
+    mStats.terrainGpuInstanceUploadBytes = 0;
+    mStats.gpuTerrainActive = false;
+    mStats.gpuTerrainFallback = mGpuTerrainFallbackActive;
+  }
+  syncStreamingStats();
+}
+
+void TerrainSystem::renderGpuTerrain(Shader &shader,
+                                     const glm::mat4 &viewProjection,
+                                     const glm::vec3 &cameraPos,
+                                     bool shadowPass) {
+  if (!ensureGpuRenderer())
+    return;
+  const TerrainGpuRendererStats passStats =
+      mGpuRenderer->render(shader, viewProjection, cameraPos, shadowPass,
+                           mSettings.enableHorizonCulling,
+                           mSettings.horizonCullingSectors);
+  if (shadowPass) {
+    mGpuShadowPassStats = passStats;
+    mHasGpuShadowPassStats = true;
+  } else {
+    mGpuMainPassStats = passStats;
+    mHasGpuMainPassStats = true;
+    applyGpuRenderStats(passStats);
+  }
+  syncStreamingStats();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -301,34 +769,10 @@ void TerrainSystem::shutdown() {
 // ═══════════════════════════════════════════════════════════════
 
 BiomeType TerrainSystem::getBiome(float worldX, float worldZ) const {
-  if (mSettings.singleBiomeOnly)
-    return BiomeType::Plains;
-
-  float bs = mSettings.biomeScale;
-  float temp = mTempNoise.fbm(worldX * bs, worldZ * bs, 4, 2.0f, 0.5f);
-  float moist = mMoistNoise.fbm(worldX * bs, worldZ * bs, 4, 2.0f, 0.5f);
-  temp = temp * 0.5f + 0.5f; // Normalize to [0,1]
-  moist = moist * 0.5f + 0.5f;
-
-  // Whittaker-style biome classification
-  if (temp < 0.25f) {
-    return (moist > 0.5f) ? BiomeType::Tundra : BiomeType::Mountains;
-  }
-  if (temp > 0.72f) {
-    return (moist < 0.4f) ? BiomeType::Desert : BiomeType::Plains;
-  }
-  if (moist > 0.55f)
-    return BiomeType::Forest;
-  if (moist < 0.3f)
-    return BiomeType::Desert;
-
-  // Check for ocean in low-lying moderate areas
-  float baseH = mNoise.fbm(worldX * mSettings.noiseFrequency,
-                           worldZ * mSettings.noiseFrequency, 3, 2.0f, 0.5f);
-  if (baseH < -0.4f && moist > 0.35f)
-    return BiomeType::Ocean;
-
-  return BiomeType::Plains;
+  TerrainMacroSample sample =
+      sampleTerrainMacro(mSettings, mNoise, mTempNoise, mMoistNoise, worldX,
+                         worldZ);
+  return classifyLandscapeBiome(mSettings, sample);
 }
 
 BiomeType TerrainSystem::getChunkDominantBiome(int cx, int cz) const {
@@ -355,15 +799,17 @@ BiomeType TerrainSystem::getChunkDominantBiome(int cx, int cz) const {
 // ═══════════════════════════════════════════════════════════════
 
 float TerrainSystem::sampleBaseNoise(float worldX, float worldZ) const {
-  float freq = mSettings.noiseFrequency;
-  return mNoise.fbm(worldX * freq, worldZ * freq, mSettings.octaves,
-                    mSettings.lacunarity, mSettings.gain);
+  TerrainMacroSample sample =
+      sampleTerrainMacro(mSettings, mNoise, mTempNoise, mMoistNoise, worldX,
+                         worldZ);
+  return sample.baseShape;
 }
 
 float TerrainSystem::sampleRidgeNoise(float worldX, float worldZ) const {
-  float freq = mSettings.noiseFrequency;
-  return mNoise.ridgeNoise(worldX * freq, worldZ * freq, mSettings.octaves,
-                           mSettings.lacunarity, mSettings.gain);
+  TerrainMacroSample sample =
+      sampleTerrainMacro(mSettings, mNoise, mTempNoise, mMoistNoise, worldX,
+                         worldZ);
+  return sample.ridgeShape;
 }
 
 float TerrainSystem::shapeBiomeHeight(BiomeType biome, float baseH,
@@ -371,61 +817,28 @@ float TerrainSystem::shapeBiomeHeight(BiomeType biome, float baseH,
   float hs = mSettings.heightScale;
   switch (biome) {
   case BiomeType::Ocean:
-    return std::min(baseH * 3.0f, mSettings.seaLevel);
+    return std::min(mSettings.seaLevel - hs * 0.6f + baseH * hs * 0.10f,
+                    mSettings.seaLevel);
   case BiomeType::Plains:
-    return baseH * 0.3f * hs;
+    return baseH * hs * 0.45f;
   case BiomeType::Forest:
-    return (baseH * 0.5f + 0.1f) * hs;
+    return (baseH * 0.55f + 0.08f) * hs;
   case BiomeType::Desert:
-    return std::abs(baseH) * 0.35f * hs;
+    return (baseH * 0.35f + std::abs(baseH) * 0.18f) * hs;
   case BiomeType::Mountains:
-    return ridgeH * 1.8f * hs;
+    return (baseH * 0.20f + ridgeH * 1.8f) * hs;
   case BiomeType::Tundra:
-    return (baseH * 0.25f + 0.3f) * hs * 0.5f;
+    return (baseH * 0.22f + 0.12f) * hs;
   default:
     return baseH * hs;
   }
 }
 
 float TerrainSystem::sampleHeight(float worldX, float worldZ) const {
-  float baseH = sampleBaseNoise(worldX, worldZ);
-  float ridgeH = sampleRidgeNoise(worldX, worldZ);
-
-  BiomeType biome = getBiome(worldX, worldZ);
-  float h = shapeBiomeHeight(biome, baseH, ridgeH);
-
-  // Cheap biome edge smoothing via threshold distance
-  float bs = mSettings.biomeScale;
-  float temp =
-      mTempNoise.fbm(worldX * bs, worldZ * bs, 4, 2.0f, 0.5f) * 0.5f + 0.5f;
-  float moist =
-      mMoistNoise.fbm(worldX * bs, worldZ * bs, 4, 2.0f, 0.5f) * 0.5f + 0.5f;
-
-  float tDists[] = {std::abs(temp - 0.25f), std::abs(temp - 0.72f)};
-  float mDists[] = {std::abs(moist - 0.3f), std::abs(moist - 0.4f),
-                    std::abs(moist - 0.5f), std::abs(moist - 0.55f)};
-  float minDist = 1.0f;
-  for (float d : tDists)
-    minDist = std::min(minDist, d);
-  for (float d : mDists)
-    minDist = std::min(minDist, d);
-
-  float blendZone = 0.08f;
-  if (minDist < blendZone) {
-    float blend = minDist / blendZone;
-    float neutralH = baseH * 0.35f * mSettings.heightScale;
-    h = h * blend + neutralH * (1.0f - blend);
-  }
-
-  // Erosion detail noise layers
-  float freq = mSettings.noiseFrequency;
-  float erosion =
-      mNoise.noise(worldX * freq * 4.0f, worldZ * freq * 4.0f) * 0.15f;
-  float micro =
-      mDetailNoise.noise(worldX * freq * 8.0f, worldZ * freq * 8.0f) * 0.06f;
-  float fine =
-      mDetailNoise.noise(worldX * freq * 16.0f, worldZ * freq * 16.0f) * 0.02f;
-  h += erosion + micro + fine;
+  TerrainMacroSample sample =
+      sampleTerrainMacro(mSettings, mNoise, mTempNoise, mMoistNoise, worldX,
+                         worldZ);
+  float h = computeTerrainHeightValue(mSettings, sample, mNoise, mDetailNoise);
 
   // Apply sculpted height offsets if any exist for this chunk.
   if (!mHeightOffsets.empty()) {
@@ -650,11 +1063,14 @@ bool TerrainSystem::applyVegetationBrush(const glm::vec3 &center, float radius,
           continue;
         auto &mats = itM->second;
         auto &ents = cd.prefabInstanceEntities[prefabName];
+        auto &globals = cd.prefabInstanceGlobalIndices[prefabName];
 
         std::vector<glm::mat4> newMats;
         std::vector<uint32_t> newEnts;
+        std::vector<uint32_t> newGlobals;
         newMats.reserve(mats.size());
         newEnts.reserve(ents.size());
+        newGlobals.reserve(globals.size());
 
         for (size_t i = 0; i < mats.size(); ++i) {
           glm::vec3 pos = glm::vec3(mats[i][3]);
@@ -662,21 +1078,20 @@ bool TerrainSystem::applyVegetationBrush(const glm::vec3 &center, float radius,
           float dz = pos.z - center.z;
           float dist = std::sqrt(dx * dx + dz * dz);
           bool remove = dist <= radius;
+          const uint32_t eid = (i < ents.size()) ? ents[i] : 0;
           if (remove) {
-            if (i < ents.size()) {
-              uint32_t eid = ents[i];
-              if (eid != 0) {
-                if (mPhysicsSystem && reg.has<RigidbodyComponent>(eid)) {
-                  auto &rb = reg.get<RigidbodyComponent>(eid);
+            if (eid != 0) {
+              if (mPhysicsSystem && reg.has<RigidbodyComponent>(eid)) {
+                auto &rb = reg.get<RigidbodyComponent>(eid);
+                if (rb.bodyID != 0xFFFFFFFF)
                   mPhysicsSystem->removeBody(rb.bodyID);
-                }
-                mScene->deleteEntity(eid);
               }
+              mScene->deleteEntity(eid);
             }
             if (prefabName == "prefab_pine") {
-              if (cd.treeCount > 0)
+              if (eid != 0 && cd.treeCount > 0)
                 cd.treeCount--;
-              if (mStats.totalTreeEntities > 0)
+              if (eid != 0 && mStats.totalTreeEntities > 0)
                 mStats.totalTreeEntities--;
             } else if (prefabName == "prefab_rock") {
               if (cd.rockCount > 0)
@@ -687,13 +1102,17 @@ bool TerrainSystem::applyVegetationBrush(const glm::vec3 &center, float radius,
             changed = true;
           } else {
             newMats.push_back(mats[i]);
-            if (i < ents.size())
-              newEnts.push_back(ents[i]);
+            newEnts.push_back(eid);
+            if (i < globals.size())
+              newGlobals.push_back(globals[i]);
+            else
+              newGlobals.push_back(INVALID_TREE_INSTANCE_INDEX);
           }
         }
 
         mats.swap(newMats);
         ents.swap(newEnts);
+        globals.swap(newGlobals);
         cd.prefabInstanceCounts[prefabName] = (int)mats.size();
         // Update painted cache for this chunk
         auto itPaint = mPaintedInstances.find({cx, cz});
@@ -755,7 +1174,11 @@ bool TerrainSystem::applyVegetationBrush(const glm::vec3 &center, float radius,
             .push_back(itInst->instanceTransforms[idx]);
       }
       if (prefabName == "prefab_pine") {
-        registerTreeInstance(prefabName, idx, pos, scale, cx, cz, &cd);
+        const size_t chunkSlot = cd.prefabInstanceMatrices[prefabName].empty()
+                                     ? 0
+                                     : cd.prefabInstanceMatrices[prefabName].size() - 1;
+        registerTreeInstance(prefabName, idx, chunkSlot, pos, scale, cx, cz,
+                             &cd);
         cd.treeCount++;
         mStats.totalTreeEntities++;
       } else if (prefabName == "prefab_rock") {
@@ -796,6 +1219,8 @@ void TerrainSystem::update(const glm::vec3 &cameraPos) {
   if (!mSettings.enabled || !mScene)
     return;
 
+  ensureGpuRenderer();
+
   // Always upload finished chunk jobs, even if the camera stayed in the same
   // chunk this frame.
   flushPendingChunks();
@@ -803,46 +1228,104 @@ void TerrainSystem::update(const glm::vec3 &cameraPos) {
   int cx = (int)std::floor(cameraPos.x / mSettings.chunkWorldSize);
   int cz = (int)std::floor(cameraPos.z / mSettings.chunkWorldSize);
 
+  int collisionBudget = std::max(0, mSettings.collisionUpdatesPerFrame);
+  while (collisionBudget > 0 && !mPendingCollisionUpdates.empty()) {
+    ChunkCoord coord = mPendingCollisionUpdates.back();
+    mPendingCollisionUpdates.pop_back();
+    auto it = mChunks.find(coord);
+    if (it == mChunks.end())
+      continue;
+    updateCollisionForChunk(coord.x, coord.z, it->second);
+    --collisionBudget;
+  }
+
   ChunkCoord currentChunk = {cx, cz};
-  if (currentChunk == mLastCameraChunk)
-    return;
+  const bool cameraChunkChanged = !(currentChunk == mLastCameraChunk);
   mLastCameraChunk = currentChunk;
 
   // Get desired chunks sorted by distance (nearest loaded first)
   auto desired = getChunksByDistance(cx, cz, mSettings.viewDistance);
+  std::unordered_set<ChunkCoord, ChunkCoordHash> desiredSet;
+  desiredSet.reserve(desired.size());
+  for (const auto &coord : desired)
+    desiredSet.insert(coord);
 
-  // Unload chunks outside view distance
-  std::vector<ChunkCoord> toUnload;
-  for (auto &[coord, data] : mChunks) {
-    bool found = false;
-    for (auto &d : desired)
-      if (d == coord) {
-        found = true;
-        break;
-      }
-    if (!found)
-      toUnload.push_back(coord);
+  if (cameraChunkChanged) {
+    // Unload chunks outside view distance only when the anchor moves. This
+    // keeps idle streaming cheap while still updating the active window.
+    std::vector<ChunkCoord> toUnload;
+    std::unordered_set<std::string> prefabsToRebuild;
+    for (auto &[coord, data] : mChunks) {
+      if (desiredSet.find(coord) == desiredSet.end())
+        toUnload.push_back(coord);
+    }
+    for (auto &coord : toUnload)
+      unloadChunk(coord.x, coord.z, &prefabsToRebuild);
+    for (const auto &prefabName : prefabsToRebuild)
+      rebuildPrefabInstances(prefabName);
   }
-  for (auto &coord : toUnload)
-    unloadChunk(coord.x, coord.z);
 
-  // Load missing chunks async (nearest first due to sorted order)
+  // Load missing chunks async (nearest first due to sorted order). This must
+  // run every frame, not only after crossing a chunk boundary; otherwise the
+  // first small worker batch finishes and the rest of the view distance never
+  // gets queued until the editor camera is dragged into a new chunk.
+  const int maxInFlight = std::max(
+      1, mSettings.terrainWorkerThreads > 0 ? mSettings.terrainWorkerThreads
+                                            : mSettings.maxConcurrentChunkJobs);
+  const int currentInFlight = (int)mInFlight.size();
+  int availableJobSlots = std::max(0, maxInFlight - currentInFlight);
+  int loadsThisUpdate = 0;
+  const bool useGpuPath = gpuTerrainActive();
   for (auto &coord : desired) {
+    if (availableJobSlots <= 0 ||
+        loadsThisUpdate >= std::max(1, mSettings.maxChunkLoadsPerUpdate))
+      break;
     if (mChunks.find(coord) == mChunks.end() &&
-        mInFlight.find(coord) == mInFlight.end())
-      loadChunkAsync(coord.x, coord.z,
-                     computeChunkLod(cx, cz, coord.x, coord.z));
+        mInFlight.find(coord) == mInFlight.end()) {
+      loadChunkAsync(coord.x, coord.z, computeChunkLod(cx, cz, coord.x, coord.z),
+                     chunkNeedsCollision(mSettings, cx, cz, coord.x, coord.z),
+                     useGpuPath);
+      availableJobSlots--;
+      loadsThisUpdate++;
+    }
+  }
+
+  if (!cameraChunkChanged) {
+    updateInteractiveTreeResidency(cx, cz);
+    syncGpuStats();
+    return;
   }
 
   // Existing loaded chunks can move between LOD bands as the camera crosses
   // chunk boundaries. Rebuild render meshes only; collision stays full-res.
   for (auto &[coord, data] : mChunks) {
     const int desiredLod = computeChunkLod(cx, cz, coord.x, coord.z);
-    if (desiredLod == data.terrainLod)
+    const bool wantsCollision =
+        chunkNeedsCollision(mSettings, cx, cz, coord.x, coord.z);
+    const bool hasCollision = data.physicsBodyId != 0xFFFFFFFF;
+    const bool collisionChanged = wantsCollision != hasCollision;
+    if (desiredLod == data.terrainLod && !collisionChanged)
       continue;
     data.terrainLod = desiredLod;
-    rebuildChunkTerrain(coord.x, coord.z, false);
+    if (collisionChanged) {
+      if (collisionBudget > 0) {
+        rebuildChunkTerrain(coord.x, coord.z, true);
+        --collisionBudget;
+      } else {
+        if (std::find(mPendingCollisionUpdates.begin(),
+                      mPendingCollisionUpdates.end(),
+                      coord) == mPendingCollisionUpdates.end()) {
+          mPendingCollisionUpdates.push_back(coord);
+        }
+        rebuildChunkTerrain(coord.x, coord.z, false);
+      }
+    } else {
+      rebuildChunkTerrain(coord.x, coord.z, false);
+    }
   }
+
+  updateInteractiveTreeResidency(cx, cz);
+  syncGpuStats();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -931,14 +1414,18 @@ int TerrainSystem::computeChunkLod(int cameraChunkX, int cameraChunkZ,
                             std::abs(chunkZ - cameraChunkZ));
   if (dist <= 1)
     return 0;
-  if (dist <= 2)
+  if (dist <= 3)
     return 1;
-  return 2;
+  if (dist <= 6)
+    return 2;
+  if (dist <= 12)
+    return 3;
+  return 4;
 }
 
 int TerrainSystem::lodResolution(int lod) const {
   const int base = std::max(4, mSettings.chunkSize);
-  const int shift = std::clamp(lod, 0, 2);
+  const int shift = std::clamp(lod, 0, 4);
   return std::max(4, base >> shift);
 }
 
@@ -1028,7 +1515,7 @@ void TerrainSystem::addPrefabFromVerts(
   inst.useTerrainShading = true;
   inst.visible = true;
   inst.castsShadow = true;
-  applyVegetationCullProfile(name, inst);
+  applyVegetationCullProfile(mSettings, name, inst);
 
   PrefabData pd;
   pd.entity = eid;
@@ -1069,15 +1556,20 @@ size_t TerrainSystem::addPrefabInstance(const std::string &name,
   m = glm::scale(m, finalScale);
 
   inst.instanceTransforms.push_back(m);
+  const size_t globalIndex = inst.instanceTransforms.size() - 1;
   inst.isDirty = true;
 
   chunk.prefabInstanceCounts[name]++;
   chunk.prefabInstanceMatrices[name].push_back(m);
-  return inst.instanceTransforms.size() - 1;
+  chunk.prefabInstanceGlobalIndices[name].push_back(
+      static_cast<uint32_t>(globalIndex));
+  chunk.prefabInstanceEntities[name].push_back(0);
+  return globalIndex;
 }
 
 void TerrainSystem::registerTreeInstance(const std::string &prefabName,
                                          size_t instanceIndex,
+                                         size_t chunkInstanceSlot,
                                          const glm::vec3 &pos,
                                          const glm::vec3 &scale, int cx,
                                          int cz, ChunkData *chunk) {
@@ -1138,6 +1630,7 @@ void TerrainSystem::registerTreeInstance(const std::string &prefabName,
   auto &tree = reg.emplace<TreeComponent>(eid);
   tree.health = 3.0f;
   tree.instanceIndex = static_cast<uint32_t>(instanceIndex);
+  tree.chunkInstanceSlot = static_cast<uint32_t>(chunkInstanceSlot);
   tree.prefabName = prefabName;
   tree.chunkX = cx;
   tree.chunkZ = cz;
@@ -1147,7 +1640,16 @@ void TerrainSystem::registerTreeInstance(const std::string &prefabName,
     vec.resize(instanceIndex + 1, 0);
   vec[instanceIndex] = eid;
   if (chunk) {
-    chunk->prefabInstanceEntities[prefabName].push_back(eid);
+    auto &chunkEntities = chunk->prefabInstanceEntities[prefabName];
+    if (chunkEntities.size() <= chunkInstanceSlot)
+      chunkEntities.resize(chunkInstanceSlot + 1, 0);
+    chunkEntities[chunkInstanceSlot] = eid;
+
+    auto &chunkGlobals = chunk->prefabInstanceGlobalIndices[prefabName];
+    if (chunkGlobals.size() <= chunkInstanceSlot)
+      chunkGlobals.resize(chunkInstanceSlot + 1,
+                          static_cast<uint32_t>(instanceIndex));
+    chunkGlobals[chunkInstanceSlot] = static_cast<uint32_t>(instanceIndex);
   }
 }
 
@@ -1176,6 +1678,155 @@ void TerrainSystem::removeLastPrefabInstances(const std::string &prefabName,
   }
 }
 
+void TerrainSystem::demoteInteractiveTreeEntity(EntityId treeEntity) {
+  if (!mScene)
+    return;
+
+  auto &reg = mScene->registry();
+  if (!reg.has<TreeComponent>(treeEntity) || reg.has<MeshComponent>(treeEntity))
+    return;
+
+  const TreeComponent tree = reg.get<TreeComponent>(treeEntity);
+  if (tree.instanceIndex == INVALID_TREE_INSTANCE_INDEX)
+    return;
+
+  auto itMap = mPrefabInstanceEntities.find(tree.prefabName);
+  if (itMap != mPrefabInstanceEntities.end() &&
+      tree.instanceIndex < itMap->second.size()) {
+    itMap->second[tree.instanceIndex] = 0;
+  }
+
+  auto itChunk = mChunks.find({tree.chunkX, tree.chunkZ});
+  if (itChunk != mChunks.end()) {
+    auto &chunk = itChunk->second;
+    auto &chunkEntities = chunk.prefabInstanceEntities[tree.prefabName];
+    size_t chunkSlot = tree.chunkInstanceSlot;
+    if (chunkSlot >= chunkEntities.size() ||
+        chunkEntities[chunkSlot] != treeEntity) {
+      auto found =
+          std::find(chunkEntities.begin(), chunkEntities.end(), treeEntity);
+      chunkSlot = (found != chunkEntities.end())
+                      ? static_cast<size_t>(std::distance(chunkEntities.begin(),
+                                                          found))
+                      : std::numeric_limits<size_t>::max();
+    }
+    if (chunkSlot != std::numeric_limits<size_t>::max())
+      chunkEntities[chunkSlot] = 0;
+    if (chunk.treeCount > 0)
+      chunk.treeCount--;
+  }
+
+  if (mStats.totalTreeEntities > 0)
+    mStats.totalTreeEntities--;
+
+  if (mPhysicsSystem && reg.has<RigidbodyComponent>(treeEntity)) {
+    auto &rb = reg.get<RigidbodyComponent>(treeEntity);
+    if (rb.bodyID != 0xFFFFFFFF)
+      mPhysicsSystem->removeBody(rb.bodyID);
+  }
+  mScene->deleteEntity(treeEntity);
+}
+
+void TerrainSystem::updateInteractiveTreeResidency(int cameraChunkX,
+                                                   int cameraChunkZ) {
+  if (!mScene)
+    return;
+
+  auto &reg = mScene->registry();
+  std::vector<EntityId> toDemote;
+  const int chunkRadius = std::max(0, mSettings.interactiveTreeChunkRadius);
+
+  for (auto entity : reg.view<TreeComponent>()) {
+    if (!reg.has<TreeComponent>(entity))
+      continue;
+    const auto &tree = reg.get<TreeComponent>(entity);
+    if (!isInteractiveTreePrefab(tree.prefabName) ||
+        reg.has<MeshComponent>(entity) ||
+        tree.instanceIndex == INVALID_TREE_INSTANCE_INDEX) {
+      continue;
+    }
+
+    const int dist = std::max(std::abs(tree.chunkX - cameraChunkX),
+                              std::abs(tree.chunkZ - cameraChunkZ));
+    if (dist > chunkRadius)
+      toDemote.push_back(entity);
+  }
+
+  for (EntityId entity : toDemote)
+    demoteInteractiveTreeEntity(entity);
+
+  for (auto &[coord, chunk] : mChunks) {
+    if (std::max(std::abs(coord.x - cameraChunkX), std::abs(coord.z - cameraChunkZ)) >
+        chunkRadius) {
+      continue;
+    }
+
+    const std::string prefabName = "prefab_pine";
+    auto itMats = chunk.prefabInstanceMatrices.find(prefabName);
+    if (itMats == chunk.prefabInstanceMatrices.end())
+      continue;
+
+    auto &mats = itMats->second;
+    auto &chunkEntities = chunk.prefabInstanceEntities[prefabName];
+    auto &chunkGlobals = chunk.prefabInstanceGlobalIndices[prefabName];
+    if (chunkEntities.size() < mats.size())
+      chunkEntities.resize(mats.size(), 0);
+    if (chunkGlobals.size() < mats.size())
+      chunkGlobals.resize(mats.size(), INVALID_TREE_INSTANCE_INDEX);
+
+    int interactiveCount = 0;
+    for (size_t i = 0; i < mats.size(); ++i) {
+      const uint32_t eid = chunkEntities[i];
+      if (eid == 0)
+        continue;
+      if (!reg.has<TreeComponent>(eid) || reg.has<MeshComponent>(eid)) {
+        auto itMap = mPrefabInstanceEntities.find(prefabName);
+        if (itMap != mPrefabInstanceEntities.end() && i < chunkGlobals.size() &&
+            chunkGlobals[i] < itMap->second.size()) {
+          itMap->second[chunkGlobals[i]] = 0;
+        }
+        chunkEntities[i] = 0;
+        continue;
+      }
+      auto &tree = reg.get<TreeComponent>(eid);
+      if (chunkGlobals[i] != INVALID_TREE_INSTANCE_INDEX)
+        tree.instanceIndex = chunkGlobals[i];
+      tree.chunkInstanceSlot = static_cast<uint32_t>(i);
+      tree.chunkX = coord.x;
+      tree.chunkZ = coord.z;
+      interactiveCount++;
+    }
+    chunk.treeCount = interactiveCount;
+
+    for (size_t i = 0; i < mats.size(); ++i) {
+      if (interactiveCount >= std::max(0, mSettings.maxInteractiveTreesPerChunk))
+        break;
+      if (chunkEntities[i] != 0)
+        continue;
+
+      const uint32_t globalIndex = chunkGlobals[i];
+      if (globalIndex == INVALID_TREE_INSTANCE_INDEX)
+        continue;
+
+      const glm::vec3 pos = glm::vec3(mats[i][3]);
+      if (!shouldSpawnInteractiveTree(mSettings, cameraChunkX, cameraChunkZ,
+                                      coord.x, coord.z, pos, mTreeNoise,
+                                      interactiveCount)) {
+        continue;
+      }
+
+      glm::vec3 scale(glm::length(glm::vec3(mats[i][0])),
+                      glm::length(glm::vec3(mats[i][1])),
+                      glm::length(glm::vec3(mats[i][2])));
+      registerTreeInstance(prefabName, globalIndex, i, pos, scale, coord.x,
+                           coord.z, &chunk);
+      chunk.treeCount++;
+      mStats.totalTreeEntities++;
+      interactiveCount++;
+    }
+  }
+}
+
 bool TerrainSystem::chopTree(EntityId treeEntity) {
   if (!mScene || !mScene->registry().has<TreeComponent>(treeEntity))
     return false;
@@ -1192,65 +1843,50 @@ bool TerrainSystem::chopTree(EntityId treeEntity) {
   if (!reg.has<InstancedMeshComponent>(itPrefab->second.entity))
     return false;
 
-  auto &inst = reg.get<InstancedMeshComponent>(itPrefab->second.entity);
-  auto &map = mPrefabInstanceEntities[tree.prefabName];
-  const size_t idx = tree.instanceIndex;
-  const size_t last = inst.instanceTransforms.empty()
-                          ? 0
-                          : inst.instanceTransforms.size() - 1;
-
-  if (idx < inst.instanceTransforms.size()) {
-    inst.instanceTransforms[idx] = inst.instanceTransforms[last];
-    inst.instanceTransforms.pop_back();
-    inst.isDirty = true;
-  }
-
-  if (idx < map.size() && !map.empty()) {
-    uint32_t swappedEntity = map[last];
-    map[idx] = swappedEntity;
-    map.pop_back();
-    if (swappedEntity != 0 && reg.has<TreeComponent>(swappedEntity)) {
-      reg.get<TreeComponent>(swappedEntity).instanceIndex =
-          static_cast<uint32_t>(idx);
-    }
-  }
-
   auto itChunk = mChunks.find({tree.chunkX, tree.chunkZ});
   if (itChunk != mChunks.end()) {
     auto &cd = itChunk->second;
+    auto &mats = cd.prefabInstanceMatrices[tree.prefabName];
+    auto &ents = cd.prefabInstanceEntities[tree.prefabName];
+    auto &globals = cd.prefabInstanceGlobalIndices[tree.prefabName];
+    if (ents.size() < mats.size())
+      ents.resize(mats.size(), 0);
+    if (globals.size() < mats.size())
+      globals.resize(mats.size(), INVALID_TREE_INSTANCE_INDEX);
+
+    size_t chunkSlot = tree.chunkInstanceSlot;
+    if (chunkSlot >= mats.size() || ents[chunkSlot] != treeEntity) {
+      auto found = std::find(ents.begin(), ents.end(), treeEntity);
+      if (found != ents.end()) {
+        chunkSlot = static_cast<size_t>(std::distance(ents.begin(), found));
+      } else if (tree.instanceIndex != INVALID_TREE_INSTANCE_INDEX) {
+        auto gIt = std::find(globals.begin(), globals.end(), tree.instanceIndex);
+        if (gIt != globals.end())
+          chunkSlot = static_cast<size_t>(std::distance(globals.begin(), gIt));
+      }
+    }
+
+    if (chunkSlot < mats.size()) {
+      mats.erase(mats.begin() + static_cast<std::ptrdiff_t>(chunkSlot));
+      ents.erase(ents.begin() + static_cast<std::ptrdiff_t>(chunkSlot));
+      globals.erase(globals.begin() + static_cast<std::ptrdiff_t>(chunkSlot));
+    }
+
     auto itCount = cd.prefabInstanceCounts.find(tree.prefabName);
     if (itCount != cd.prefabInstanceCounts.end() && itCount->second > 0)
       itCount->second--;
     if (cd.treeCount > 0)
       cd.treeCount--;
-    auto itEnts = cd.prefabInstanceEntities.find(tree.prefabName);
-    auto itMats = cd.prefabInstanceMatrices.find(tree.prefabName);
-    if (itEnts != cd.prefabInstanceEntities.end() &&
-        itMats != cd.prefabInstanceMatrices.end()) {
-      auto &ents = itEnts->second;
-      auto &mats = itMats->second;
-      for (size_t i = 0; i < ents.size(); ++i) {
-        if (ents[i] == treeEntity) {
-          const size_t lastIdx = ents.size() - 1;
-          ents[i] = ents[lastIdx];
-          ents.pop_back();
-          if (i < mats.size() && lastIdx < mats.size()) {
-            mats[i] = mats[lastIdx];
-            mats.pop_back();
-          } else if (!mats.empty()) {
-            mats.pop_back();
-          }
-          break;
-        }
-      }
-    }
   }
   if (mStats.totalTreeEntities > 0)
     mStats.totalTreeEntities--;
 
+  rebuildPrefabInstances(tree.prefabName);
+
   if (mPhysicsSystem && reg.has<RigidbodyComponent>(treeEntity)) {
     auto &rb = reg.get<RigidbodyComponent>(treeEntity);
-    mPhysicsSystem->removeBody(rb.bodyID);
+    if (rb.bodyID != 0xFFFFFFFF)
+      mPhysicsSystem->removeBody(rb.bodyID);
   }
   mScene->deleteEntity(treeEntity);
   return true;
@@ -1271,6 +1907,23 @@ bool TerrainSystem::movePrefabInstance(const std::string &prefabName,
   if (instanceIndex >= inst.instanceTransforms.size())
     return false;
   inst.instanceTransforms[instanceIndex][3] += glm::vec4(delta, 0.0f);
+  for (auto &[coord, chunk] : mChunks) {
+    auto itGlobals = chunk.prefabInstanceGlobalIndices.find(prefabName);
+    auto itMats = chunk.prefabInstanceMatrices.find(prefabName);
+    if (itGlobals == chunk.prefabInstanceGlobalIndices.end() ||
+        itMats == chunk.prefabInstanceMatrices.end()) {
+      continue;
+    }
+
+    auto &globals = itGlobals->second;
+    auto &mats = itMats->second;
+    for (size_t i = 0; i < globals.size() && i < mats.size(); ++i) {
+      if (globals[i] == instanceIndex) {
+        mats[i] = inst.instanceTransforms[instanceIndex];
+        break;
+      }
+    }
+  }
   inst.isDirty = true;
   return true;
 }
@@ -1308,6 +1961,23 @@ bool TerrainSystem::setPrefabInstanceMatrix(const std::string &prefabName,
   if (instanceIndex >= inst.instanceTransforms.size())
     return false;
   inst.instanceTransforms[instanceIndex] = m;
+  for (auto &[coord, chunk] : mChunks) {
+    auto itGlobals = chunk.prefabInstanceGlobalIndices.find(prefabName);
+    auto itMats = chunk.prefabInstanceMatrices.find(prefabName);
+    if (itGlobals == chunk.prefabInstanceGlobalIndices.end() ||
+        itMats == chunk.prefabInstanceMatrices.end()) {
+      continue;
+    }
+
+    auto &globals = itGlobals->second;
+    auto &mats = itMats->second;
+    for (size_t i = 0; i < globals.size() && i < mats.size(); ++i) {
+      if (globals[i] == instanceIndex) {
+        mats[i] = m;
+        break;
+      }
+    }
+  }
   inst.isDirty = true;
   return true;
 }
@@ -1325,34 +1995,39 @@ bool TerrainSystem::convertTreeToEntity(EntityId treeEntity) {
     return false;
 
   auto &inst = reg.get<InstancedMeshComponent>(itPrefab->second.entity);
-  auto &map = mPrefabInstanceEntities[tree.prefabName];
-  const size_t idx = tree.instanceIndex;
-  const size_t last = inst.instanceTransforms.empty()
-                          ? 0
-                          : inst.instanceTransforms.size() - 1;
   glm::mat4 instM(1.0f);
-  if (idx < inst.instanceTransforms.size())
-    instM = inst.instanceTransforms[idx];
-
-  if (idx < inst.instanceTransforms.size()) {
-    inst.instanceTransforms[idx] = inst.instanceTransforms[last];
-    inst.instanceTransforms.pop_back();
-    inst.isDirty = true;
-  }
-
-  if (idx < map.size() && !map.empty()) {
-    uint32_t swappedEntity = map[last];
-    map[idx] = swappedEntity;
-    map.pop_back();
-    if (swappedEntity != 0 && reg.has<TreeComponent>(swappedEntity)) {
-      reg.get<TreeComponent>(swappedEntity).instanceIndex =
-          static_cast<uint32_t>(idx);
-    }
-  }
+  if (tree.instanceIndex < inst.instanceTransforms.size())
+    instM = inst.instanceTransforms[tree.instanceIndex];
 
   auto itChunk = mChunks.find({tree.chunkX, tree.chunkZ});
   if (itChunk != mChunks.end()) {
     auto &cd = itChunk->second;
+    auto &mats = cd.prefabInstanceMatrices[tree.prefabName];
+    auto &ents = cd.prefabInstanceEntities[tree.prefabName];
+    auto &globals = cd.prefabInstanceGlobalIndices[tree.prefabName];
+    if (ents.size() < mats.size())
+      ents.resize(mats.size(), 0);
+    if (globals.size() < mats.size())
+      globals.resize(mats.size(), INVALID_TREE_INSTANCE_INDEX);
+
+    size_t chunkSlot = tree.chunkInstanceSlot;
+    if (chunkSlot >= mats.size() || ents[chunkSlot] != treeEntity) {
+      auto found = std::find(ents.begin(), ents.end(), treeEntity);
+      if (found != ents.end()) {
+        chunkSlot = static_cast<size_t>(std::distance(ents.begin(), found));
+      } else if (tree.instanceIndex != INVALID_TREE_INSTANCE_INDEX) {
+        auto gIt = std::find(globals.begin(), globals.end(), tree.instanceIndex);
+        if (gIt != globals.end())
+          chunkSlot = static_cast<size_t>(std::distance(globals.begin(), gIt));
+      }
+    }
+
+    if (chunkSlot < mats.size()) {
+      mats.erase(mats.begin() + static_cast<std::ptrdiff_t>(chunkSlot));
+      ents.erase(ents.begin() + static_cast<std::ptrdiff_t>(chunkSlot));
+      globals.erase(globals.begin() + static_cast<std::ptrdiff_t>(chunkSlot));
+    }
+
     auto itCount = cd.prefabInstanceCounts.find(tree.prefabName);
     if (itCount != cd.prefabInstanceCounts.end() && itCount->second > 0)
       itCount->second--;
@@ -1361,6 +2036,8 @@ bool TerrainSystem::convertTreeToEntity(EntityId treeEntity) {
   }
   if (mStats.totalTreeEntities > 0)
     mStats.totalTreeEntities--;
+
+  rebuildPrefabInstances(tree.prefabName);
 
   // Update transform from instance matrix so physics matches render.
   {
@@ -1389,7 +2066,8 @@ bool TerrainSystem::convertTreeToEntity(EntityId treeEntity) {
       mc.assetId = itPrefab->second.assetId;
     }
   }
-  tree.instanceIndex = std::numeric_limits<uint32_t>::max();
+  tree.instanceIndex = INVALID_TREE_INSTANCE_INDEX;
+  tree.chunkInstanceSlot = INVALID_TREE_INSTANCE_INDEX;
   return true;
 }
 
@@ -1479,7 +2157,7 @@ void TerrainSystem::initPrefabs() {
       inst.useTerrainShading = false;
       inst.visible = true;
       inst.castsShadow = true;
-      applyVegetationCullProfile(prefabName, inst);
+      applyVegetationCullProfile(mSettings, prefabName, inst);
 
       PrefabData pd;
       pd.entity = eid;
@@ -1563,7 +2241,7 @@ void TerrainSystem::initPrefabs() {
     inst.useTerrainShading = false;
     inst.visible = true;
     inst.castsShadow = true;
-    applyVegetationCullProfile(prefabName, inst);
+    applyVegetationCullProfile(mSettings, prefabName, inst);
 
     PrefabData pd;
     pd.entity = eid;
@@ -1680,6 +2358,11 @@ void TerrainSystem::spawnTreesForest(int cx, int cz, ChunkData &chunk) {
   float spacing = 5.0f;
   int grid = (int)(ws / spacing);
   float biomeUV = 0.4f; // Forest = 2/5
+  int interactiveTreeCount = 0;
+  const int cameraChunkX =
+      (mLastCameraChunk.x == INT_MAX) ? cx : mLastCameraChunk.x;
+  const int cameraChunkZ =
+      (mLastCameraChunk.z == INT_MAX) ? cz : mLastCameraChunk.z;
 
   for (int gz = 0; gz < grid; ++gz) {
     for (int gx = 0; gx < grid; ++gx) {
@@ -1733,10 +2416,22 @@ void TerrainSystem::spawnTreesForest(int cx, int cz, ChunkData &chunk) {
         size_t idx = addPrefabInstance("prefab_pine", {wx, groundY, wz},
                                        glm::vec3(1.0f + sizeVar), treeRot,
                                        chunk);
-        if (idx != std::numeric_limits<size_t>::max()) {
-          registerTreeInstance("prefab_pine", idx,
+        if (idx != std::numeric_limits<size_t>::max() &&
+            shouldSpawnInteractiveTree(mSettings, cameraChunkX, cameraChunkZ,
+                                       cx, cz, glm::vec3(wx, groundY, wz),
+                                       mTreeNoise, interactiveTreeCount)) {
+          const size_t chunkSlot = chunk.prefabInstanceMatrices["prefab_pine"]
+                                       .empty()
+                                       ? 0
+                                       : chunk.prefabInstanceMatrices["prefab_pine"]
+                                                 .size() -
+                                             1;
+          registerTreeInstance("prefab_pine", idx, chunkSlot,
                                glm::vec3(wx, groundY, wz),
                                glm::vec3(1.0f + sizeVar), cx, cz, &chunk);
+          chunk.treeCount++;
+          mStats.totalTreeEntities++;
+          interactiveTreeCount++;
         }
 
       } else if (type == TreeType::Oak) {
@@ -1746,9 +2441,6 @@ void TerrainSystem::spawnTreesForest(int cx, int cz, ChunkData &chunk) {
         addPrefabInstance("prefab_birch", {wx, groundY, wz},
                           glm::vec3(1.0f + sizeVar), treeRot, chunk);
       }
-
-      chunk.treeCount++;
-      mStats.totalTreeEntities++;
     }
   }
 }
@@ -1808,8 +2500,6 @@ void TerrainSystem::spawnDesertCacti(int cx, int cz, ChunkData &chunk) {
                           glm::vec3(0, rotY, 0), chunk);
       }
 
-      chunk.treeCount++;
-      mStats.totalTreeEntities++;
     }
   }
 }
@@ -1855,8 +2545,6 @@ void TerrainSystem::spawnTundraDecor(int cx, int cz, ChunkData &chunk) {
       addPrefabInstance("prefab_deadtree", {wx, groundY, wz}, glm::vec3(scale),
                         glm::vec3(0, rotY, 0), chunk);
 
-      chunk.treeCount++;
-      mStats.totalTreeEntities++;
     }
   }
 }
@@ -1869,59 +2557,139 @@ void TerrainSystem::spawnRocksMountain(int cx, int cz, ChunkData &chunk) {
   float ws = mSettings.chunkWorldSize;
   float ox = cx * ws;
   float oz = cz * ws;
-  float spacing = 8.0f;
-  int grid = (int)(ws / spacing);
-  float biomeUV = 0.8f; // Mountains = 4/5
   float rockDensity = std::clamp(mSettings.rockDensity, 0.0f, 1.0f);
   float rockScale = std::max(0.1f, mSettings.rockScale);
+  if (rockDensity <= 0.0001f)
+    return;
 
-  for (int gz = 0; gz < grid; ++gz) {
-    for (int gx = 0; gx < grid; ++gx) {
-      float wx = ox + (gx + 0.5f) * spacing;
-      float wz = oz + (gz + 0.5f) * spacing;
+  const float clusterSpacing = 13.5f;
+  const int clusterGrid = std::max(1, (int)(ws / clusterSpacing));
+  const float baseClusterChance = 0.16f + rockDensity * 0.44f;
 
-      BiomeType b = getBiome(wx, wz);
-      // Allow rocks in "green" biomes too for richer terrain composition.
-      if (b != BiomeType::Mountains && b != BiomeType::Tundra &&
-          b != BiomeType::Forest && b != BiomeType::Plains)
+  auto allowedRockBiome = [](BiomeType b) {
+    return b == BiomeType::Mountains || b == BiomeType::Tundra;
+  };
+
+  auto trySpawnRock = [&](float wx, float wz, float scaleMul,
+                          float buryMul) -> bool {
+    BiomeType b = getBiome(wx, wz);
+    if (!allowedRockBiome(b))
+      return false;
+
+    const float groundY = sampleHeight(wx, wz);
+    if (groundY < mSettings.seaLevel)
+      return false;
+
+    const float slope = getSlopeAt(wx, wz);
+    const float slopeMask = smooth01(10.0f, 28.0f, slope);
+    const float biomeBoost =
+        (b == BiomeType::Mountains) ? 1.0f
+        : (b == BiomeType::Tundra) ? 0.78f
+                                   : 0.42f;
+    if (slopeMask * biomeBoost < 0.16f)
+      return false;
+
+    float sizeJitter =
+        0.66f +
+        (mRockNoise.noise(wx * 0.9f + 77.0f, wz * 0.9f - 33.0f) * 0.5f + 0.5f) *
+            0.55f;
+    float sr =
+        (0.32f + mRockNoise.noise(wx * 3.0f, wz * 3.0f) * 0.72f) * rockScale *
+        sizeJitter * scaleMul * (0.78f + slopeMask * 0.35f);
+    sr = std::max(0.12f, sr);
+
+    float rotY = mRockNoise.noise(wx * 0.6f, wz * 0.6f) * TWO_PI;
+    float tiltX = mRockNoise.noise(wx * 1.9f + 410.0f, wz * 2.1f - 210.0f) *
+                  glm::radians(8.0f);
+    float tiltZ = mRockNoise.noise(wx * 2.4f - 150.0f, wz * 1.6f + 90.0f) *
+                  glm::radians(6.0f);
+    addPrefabInstance("prefab_rock", {wx, groundY - sr * buryMul, wz},
+                      glm::vec3(sr * 1.15f, sr * 0.75f, sr * 1.05f),
+                      glm::vec3(tiltX, rotY, tiltZ), chunk);
+    chunk.rockCount++;
+    mStats.totalRockEntities++;
+    return true;
+  };
+
+  for (int gz = 0; gz < clusterGrid; ++gz) {
+    for (int gx = 0; gx < clusterGrid; ++gx) {
+      float centerX = ox + (gx + 0.5f) * clusterSpacing;
+      float centerZ = oz + (gz + 0.5f) * clusterSpacing;
+
+      float clusterNoise =
+          mRockNoise.noise(centerX * 0.12f + 140.0f, centerZ * 0.12f - 80.0f) *
+              0.5f +
+          0.5f;
+      float ridgeNoise =
+          mRockNoise.noise(centerX * 0.045f - 600.0f, centerZ * 0.045f + 220.0f) *
+              0.5f +
+          0.5f;
+      float clusterChance = baseClusterChance * (0.72f + ridgeNoise * 0.60f);
+      if (clusterNoise > clusterChance)
         continue;
 
-      if (rockDensity <= 0.0001f)
+      float jx = mRockNoise.noise(centerX * 0.7f + 100.0f,
+                                  centerZ * 0.8f + 35.0f) *
+                 clusterSpacing * 0.32f;
+      float jz = mRockNoise.noise(centerX * 0.8f - 60.0f,
+                                  centerZ * 0.7f + 140.0f) *
+                 clusterSpacing * 0.32f;
+      centerX += jx;
+      centerZ += jz;
+
+      BiomeType centerBiome = getBiome(centerX, centerZ);
+      if (!allowedRockBiome(centerBiome))
         continue;
 
-      float val = mRockNoise.noise(wx * 0.25f, wz * 0.25f) * 0.5f + 0.5f;
-      if (val > rockDensity)
+      const float clusterSlope = getSlopeAt(centerX, centerZ);
+      const float clusterSlopeMask = smooth01(8.0f, 26.0f, clusterSlope);
+      if (centerBiome == BiomeType::Mountains && clusterSlopeMask < 0.15f)
         continue;
 
-      float jx =
-          mRockNoise.noise(wx * 1.3f + 100.0f, wz * 1.7f) * spacing * 0.35f;
-      float jz =
-          mRockNoise.noise(wx * 1.8f, wz * 1.2f + 100.0f) * spacing * 0.35f;
-      wx += jx;
-      wz += jz;
+      const int clusterCount = 3 + (clusterNoise > 0.70f ? 1 : 0) +
+                               (ridgeNoise > 0.64f ? 1 : 0) +
+                               (rockDensity > 0.72f ? 1 : 0);
+      const float clusterRadius =
+          0.9f + clusterNoise * 1.8f + ridgeNoise * 1.1f + rockScale * 0.35f;
 
-      float groundY = sampleHeight(wx, wz);
-      if (groundY < mSettings.seaLevel)
-        continue;
+      // Anchor rock keeps the cluster grounded without turning into a giant boulder.
+      trySpawnRock(centerX, centerZ, 0.72f + ridgeNoise * 0.28f, 0.38f);
 
-      float sizeJitter =
-          0.7f +
-          (mRockNoise.noise(wx * 0.9f + 77.0f, wz * 0.9f - 33.0f) * 0.5f +
-           0.5f) *
-              0.8f;
-      float sr =
-          (0.5f + mRockNoise.noise(wx * 3.0f, wz * 3.0f) * 1.5f) * rockScale *
-          sizeJitter;
-      sr = std::max(
-          0.2f, sr); // Clamp scale so they don't corrupt matrices by inverting
+      for (int i = 0; i < clusterCount; ++i) {
+        float angleSeed =
+            mRockNoise.noise(centerX * 0.3f + i * 17.0f, centerZ * 0.3f - i * 11.0f) *
+                0.5f +
+            0.5f;
+        float radiusSeed =
+            mRockNoise.noise(centerX * 0.55f - i * 21.0f,
+                             centerZ * 0.55f + i * 9.0f) *
+                0.5f +
+            0.5f;
+        float angle = angleSeed * TWO_PI;
+        float radius = clusterRadius * (0.28f + radiusSeed * 0.58f);
+        float wx = centerX + std::cos(angle) * radius;
+        float wz = centerZ + std::sin(angle) * radius;
+        float scaleMul = 0.28f + radiusSeed * 0.45f;
+        float buryMul = 0.34f + radiusSeed * 0.12f;
+        trySpawnRock(wx, wz, scaleMul, buryMul);
+      }
 
-      float rotY = mRockNoise.noise(wx * 0.6f, wz * 0.6f) * TWO_PI;
-      addPrefabInstance("prefab_rock", {wx, groundY - sr * 0.3f, wz},
-                        glm::vec3(sr * 1.2f, sr * 0.8f, sr * 1.1f),
-                        glm::vec3(0, rotY, 0), chunk);
-
-      chunk.rockCount++;
-      mStats.totalRockEntities++;
+      // Occasional small offset pair to avoid perfect circular clumps.
+      if (ridgeNoise > 0.58f || clusterNoise > 0.74f) {
+        float secondaryAngle =
+            (mRockNoise.noise(centerX * 0.17f + 910.0f,
+                              centerZ * 0.17f - 510.0f) *
+                 0.5f +
+             0.5f) *
+            TWO_PI;
+        float secondaryDist = clusterRadius * (0.75f + ridgeNoise * 0.35f);
+        float secondaryX = centerX + std::cos(secondaryAngle) * secondaryDist;
+        float secondaryZ = centerZ + std::sin(secondaryAngle) * secondaryDist;
+        trySpawnRock(secondaryX, secondaryZ, 0.42f + ridgeNoise * 0.20f, 0.36f);
+        trySpawnRock(secondaryX + std::cos(secondaryAngle + 1.2f) * 0.9f,
+                     secondaryZ + std::sin(secondaryAngle + 1.2f) * 0.9f,
+                     0.24f, 0.40f);
+      }
     }
   }
 }
@@ -2053,7 +2821,8 @@ void TerrainSystem::spawnVegetation(int cx, int cz, ChunkData &chunk) {
 // CHUNK LOAD / UNLOAD
 // ═══════════════════════════════════════════════════════════════
 
-void TerrainSystem::loadChunkAsync(int cx, int cz, int lod) {
+void TerrainSystem::loadChunkAsync(int cx, int cz, int lod,
+                                   bool withCollision, bool useGpuTerrain) {
   mInFlight[{cx, cz}] = true;
 
   // Capture noise objects by VALUE so the lambda is thread-safe.
@@ -2065,89 +2834,14 @@ void TerrainSystem::loadChunkAsync(int cx, int cz, int lod) {
   auto rockNoise = mRockNoise;
   auto detailNoise = mDetailNoise;
   TerrainSettings settings = mSettings;
+  const uint64_t generationId = mGenerationId;
 
   // Helper lambdas that capture only the copied noise objects
   auto sampleH = [&, noise, detailNoise, tempNoise, moistNoise,
                   settings](float wx, float wz) -> float {
-    // Inline simplified sampleHeight (calls captured noises)
-    float freq = settings.noiseFrequency;
-    float baseH = noise.fbm(wx * freq, wz * freq, settings.octaves,
-                            settings.lacunarity, settings.gain);
-    float ridgeH = noise.ridgeNoise(wx * freq, wz * freq, settings.octaves,
-                                    settings.lacunarity, settings.gain);
-    if (settings.singleBiomeOnly) {
-      float h = baseH * 0.3f * settings.heightScale;
-      h += noise.noise(wx * freq * 4.0f, wz * freq * 4.0f) * 0.15f +
-           detailNoise.noise(wx * freq * 8.0f, wz * freq * 8.0f) * 0.06f +
-           detailNoise.noise(wx * freq * 16.0f, wz * freq * 16.0f) * 0.02f;
-      return h;
-    }
-    float bs = settings.biomeScale;
-    float temp = tempNoise.fbm(wx * bs, wz * bs, 4, 2.0f, 0.5f) * 0.5f + 0.5f;
-    float moist = moistNoise.fbm(wx * bs, wz * bs, 4, 2.0f, 0.5f) * 0.5f + 0.5f;
-
-    BiomeType biome;
-    if (temp < 0.25f)
-      biome = (moist > 0.5f) ? BiomeType::Tundra : BiomeType::Mountains;
-    else if (temp > 0.72f)
-      biome = (moist < 0.4f) ? BiomeType::Desert : BiomeType::Plains;
-    else if (moist > 0.55f)
-      biome = BiomeType::Forest;
-    else if (moist < 0.3f)
-      biome = BiomeType::Desert;
-    else
-      biome = BiomeType::Plains;
-
-    if (baseH < -0.4f && moist > 0.35f)
-      biome = BiomeType::Ocean;
-
-    float hs = settings.heightScale;
-    float h = 0.0f;
-    switch (biome) {
-    case BiomeType::Ocean:
-      h = std::min(baseH * 3.0f, settings.seaLevel);
-      break;
-    case BiomeType::Plains:
-      h = baseH * 0.3f * hs;
-      break;
-    case BiomeType::Forest:
-      h = (baseH * 0.5f + 0.1f) * hs;
-      break;
-    case BiomeType::Desert:
-      h = std::abs(baseH) * 0.35f * hs;
-      break;
-    case BiomeType::Mountains:
-      h = ridgeH * 1.8f * hs;
-      break;
-    case BiomeType::Tundra:
-      h = (baseH * 0.25f + 0.3f) * hs * 0.5f;
-      break;
-    default:
-      h = baseH * hs;
-      break;
-    }
-
-    // Match sync path's biome-edge smoothing.
-    float tDists[] = {std::abs(temp - 0.25f), std::abs(temp - 0.72f)};
-    float mDists[] = {std::abs(moist - 0.3f), std::abs(moist - 0.4f),
-                      std::abs(moist - 0.5f), std::abs(moist - 0.55f)};
-    float minDist = 1.0f;
-    for (float d : tDists)
-      minDist = std::min(minDist, d);
-    for (float d : mDists)
-      minDist = std::min(minDist, d);
-
-    const float blendZone = 0.08f;
-    if (minDist < blendZone) {
-      float blend = minDist / blendZone;
-      float neutralH = baseH * 0.35f * hs;
-      h = h * blend + neutralH * (1.0f - blend);
-    }
-
-    h += noise.noise(wx * freq * 4.0f, wz * freq * 4.0f) * 0.15f +
-         detailNoise.noise(wx * freq * 8.0f, wz * freq * 8.0f) * 0.06f +
-         detailNoise.noise(wx * freq * 16.0f, wz * freq * 16.0f) * 0.02f;
-    return h;
+    TerrainMacroSample sample =
+        sampleTerrainMacro(settings, noise, tempNoise, moistNoise, wx, wz);
+    return computeTerrainHeightValue(settings, sample, noise, detailNoise);
   };
 
   // Capture 'this' pointer only for mPendingReady / mPendingMutex push
@@ -2155,51 +2849,32 @@ void TerrainSystem::loadChunkAsync(int cx, int cz, int lod) {
   auto pending = std::make_shared<PendingChunk>();
   pending->cx = cx;
   pending->cz = cz;
+  pending->generationId = generationId;
   pending->terrainLod = lod;
+  pending->useGpuTerrain = useGpuTerrain;
 
   auto fut = std::async(std::launch::async, [pending, cx, cz, settings, noise,
                                              tempNoise, moistNoise, treeNoise,
                                              rockNoise, detailNoise, sampleH,
-                                             lod,
-                                             self]() mutable {
+                                             lod, withCollision, useGpuTerrain,
+                                             generationId, self]() mutable {
     // ── 1. Terrain mesh (pure CPU) ──────────────────────────
-    int renderSiz = std::max(4, settings.chunkSize >> std::clamp(lod, 0, 2));
-    int physicsSiz = settings.chunkSize;
+    int renderSiz =
+        useGpuTerrain
+            ? std::max(4, settings.chunkSize)
+            : std::max(4, settings.chunkSize >> std::clamp(lod, 0, 4));
+    int physicsSiz = withCollision ? settings.chunkSize : 0;
     float ws = settings.chunkWorldSize;
     float renderStep = ws / (float)renderSiz;
-    float physicsStep = ws / (float)physicsSiz;
+    float physicsStep = withCollision ? (ws / (float)physicsSiz) : 0.0f;
     float ox = cx * ws;
     float oz = cz * ws;
     float uvS = 1.0f / (float)renderSiz;
 
     auto classifyBiome = [&](float wx, float wz) -> BiomeType {
-      if (settings.singleBiomeOnly)
-        return BiomeType::Plains;
-
-      float freq = settings.noiseFrequency;
-      float bs = settings.biomeScale;
-
-      float temp = tempNoise.fbm(wx * bs, wz * bs, 4, 2.0f, 0.5f) * 0.5f + 0.5f;
-      float moist =
-          moistNoise.fbm(wx * bs, wz * bs, 4, 2.0f, 0.5f) * 0.5f + 0.5f;
-      float baseH = noise.fbm(wx * freq, wz * freq, settings.octaves,
-                              settings.lacunarity, settings.gain);
-
-      BiomeType biome;
-      if (temp < 0.25f)
-        biome = (moist > 0.5f) ? BiomeType::Tundra : BiomeType::Mountains;
-      else if (temp > 0.72f)
-        biome = (moist < 0.4f) ? BiomeType::Desert : BiomeType::Plains;
-      else if (moist > 0.55f)
-        biome = BiomeType::Forest;
-      else if (moist < 0.3f)
-        biome = BiomeType::Desert;
-      else
-        biome = BiomeType::Plains;
-
-      if (baseH < -0.4f && moist > 0.35f)
-        biome = BiomeType::Ocean;
-      return biome;
+      TerrainMacroSample sample =
+          sampleTerrainMacro(settings, noise, tempNoise, moistNoise, wx, wz);
+      return classifyLandscapeBiome(settings, sample);
     };
 
     // Determine dominant biome from center
@@ -2212,13 +2887,33 @@ void TerrainSystem::loadChunkAsync(int cx, int cz, int lod) {
                                           std::vector<float>(renderSiz + 1));
     std::vector<std::vector<float>> bGrid(renderSiz + 1,
                                           std::vector<float>(renderSiz + 1));
+    float minHeight = std::numeric_limits<float>::infinity();
+    float maxHeight = -std::numeric_limits<float>::infinity();
     for (int z = 0; z <= renderSiz; ++z)
       for (int x = 0; x <= renderSiz; ++x) {
         float wx = ox + x * renderStep, wz = oz + z * renderStep;
         BiomeType biomeAtVertex = classifyBiome(wx, wz);
         hGrid[z][x] = sampleH(wx, wz);
         bGrid[z][x] = (float)(int)biomeAtVertex / 5.0f;
+        minHeight = std::min(minHeight, hGrid[z][x]);
+        maxHeight = std::max(maxHeight, hGrid[z][x]);
       }
+    pending->minHeight = minHeight;
+    pending->maxHeight = maxHeight;
+
+    if (useGpuTerrain) {
+      const uint32_t sc = (uint32_t)(renderSiz + 1);
+      pending->gpuSampleCount = sc;
+      pending->gpuHeightSamples.resize((size_t)sc * sc);
+      pending->gpuBiomeSamples.resize((size_t)sc * sc);
+      for (int z = 0; z <= renderSiz; ++z) {
+        for (int x = 0; x <= renderSiz; ++x) {
+          const size_t idx = (size_t)z * sc + x;
+          pending->gpuHeightSamples[idx] = hGrid[z][x];
+          pending->gpuBiomeSamples[idx] = bGrid[z][x];
+        }
+      }
+    }
 
     auto getNorm = [&](int x, int z) -> glm::vec3 {
       float hL = (x > 0) ? hGrid[z][x - 1] : hGrid[z][x];
@@ -2229,40 +2924,44 @@ void TerrainSystem::loadChunkAsync(int cx, int cz, int lod) {
           glm::vec3(-(hR - hL), 2.0f * renderStep, -(hU - hD)));
     };
 
-    pending->terrainVerts.reserve(renderSiz * renderSiz * 6);
-    for (int z = 0; z < renderSiz; ++z)
-      for (int x = 0; x < renderSiz; ++x) {
-        float wx0 = ox + x * renderStep, wx1 = ox + (x + 1) * renderStep;
-        float wz0 = oz + z * renderStep, wz1 = oz + (z + 1) * renderStep;
-        glm::vec3 p00(wx0, hGrid[z][x], wz0);
-        glm::vec3 p10(wx1, hGrid[z][x + 1], wz0);
-        glm::vec3 p01(wx0, hGrid[z + 1][x], wz1);
-        glm::vec3 p11(wx1, hGrid[z + 1][x + 1], wz1);
-        glm::vec2 uv00(x * uvS, bGrid[z][x]),
-            uv10((x + 1) * uvS, bGrid[z][x + 1]);
-        glm::vec2 uv01(x * uvS, bGrid[z + 1][x]),
-            uv11((x + 1) * uvS, bGrid[z + 1][x + 1]);
-        auto n00 = getNorm(x, z), n10 = getNorm(x + 1, z),
-             n01 = getNorm(x, z + 1), n11 = getNorm(x + 1, z + 1);
-        pending->terrainVerts.push_back({p00, uv00, n00});
-        pending->terrainVerts.push_back({p01, uv01, n01});
-        pending->terrainVerts.push_back({p10, uv10, n10});
-        pending->terrainVerts.push_back({p10, uv10, n10});
-        pending->terrainVerts.push_back({p01, uv01, n01});
-        pending->terrainVerts.push_back({p11, uv11, n11});
-      }
+    if (!useGpuTerrain) {
+      pending->terrainVerts.reserve(renderSiz * renderSiz * 6);
+      for (int z = 0; z < renderSiz; ++z)
+        for (int x = 0; x < renderSiz; ++x) {
+          float wx0 = ox + x * renderStep, wx1 = ox + (x + 1) * renderStep;
+          float wz0 = oz + z * renderStep, wz1 = oz + (z + 1) * renderStep;
+          glm::vec3 p00(wx0, hGrid[z][x], wz0);
+          glm::vec3 p10(wx1, hGrid[z][x + 1], wz0);
+          glm::vec3 p01(wx0, hGrid[z + 1][x], wz1);
+          glm::vec3 p11(wx1, hGrid[z + 1][x + 1], wz1);
+          glm::vec2 uv00(x * uvS, bGrid[z][x]),
+              uv10((x + 1) * uvS, bGrid[z][x + 1]);
+          glm::vec2 uv01(x * uvS, bGrid[z + 1][x]),
+              uv11((x + 1) * uvS, bGrid[z + 1][x + 1]);
+          auto n00 = getNorm(x, z), n10 = getNorm(x + 1, z),
+               n01 = getNorm(x, z + 1), n11 = getNorm(x + 1, z + 1);
+          pending->terrainVerts.push_back({p00, uv00, n00});
+          pending->terrainVerts.push_back({p01, uv01, n01});
+          pending->terrainVerts.push_back({p10, uv10, n10});
+          pending->terrainVerts.push_back({p10, uv10, n10});
+          pending->terrainVerts.push_back({p01, uv01, n01});
+          pending->terrainVerts.push_back({p11, uv11, n11});
+        }
+    }
 
     // Flatten hGrid into a row-major float array for HeightFieldShape.
     // HeightFieldShape expects samples[z * sampleCount + x].
-    const uint32_t sc = (uint32_t)(physicsSiz + 1);
-    pending->heightSamples.resize((size_t)sc * sc);
-    pending->heightSampleCount = sc;
-    for (int z = 0; z <= physicsSiz; ++z)
-      for (int x = 0; x <= physicsSiz; ++x) {
-        float wx = ox + x * physicsStep;
-        float wz = oz + z * physicsStep;
-        pending->heightSamples[(size_t)z * sc + x] = sampleH(wx, wz);
-      }
+    if (withCollision) {
+      const uint32_t sc = (uint32_t)(physicsSiz + 1);
+      pending->heightSamples.resize((size_t)sc * sc);
+      pending->heightSampleCount = sc;
+      for (int z = 0; z <= physicsSiz; ++z)
+        for (int x = 0; x <= physicsSiz; ++x) {
+          float wx = ox + x * physicsStep;
+          float wz = oz + z * physicsStep;
+          pending->heightSamples[(size_t)z * sc + x] = sampleH(wx, wz);
+        }
+    }
 
     // ── 2. Water plane (pure CPU) ────────────────────────────
     if (settings.spawnWater && dom == BiomeType::Ocean) {
@@ -2332,6 +3031,7 @@ void TerrainSystem::loadChunkAsync(int cx, int cz, int lod) {
     }
 
     // Push to ready queue
+    pending->generationId = generationId;
     std::lock_guard<std::mutex> lk(self->mPendingMutex);
     self->mPendingReady.push_back(std::move(*pending));
   });
@@ -2357,47 +3057,118 @@ void TerrainSystem::flushPendingChunks() {
     ready.swap(mPendingReady);
   }
 
+  const int cameraChunkX =
+      (mLastCameraChunk.x == INT_MAX) ? 0 : mLastCameraChunk.x;
+  const int cameraChunkZ =
+      (mLastCameraChunk.z == INT_MAX) ? 0 : mLastCameraChunk.z;
+  const int uploadBudget =
+      std::max(1, mSettings.maxCompletedChunksPerFrame > 0
+                      ? mSettings.maxCompletedChunksPerFrame
+                      : mSettings.maxChunkUploadsPerFrame);
+  const size_t gpuUploadBudget =
+      (mFrameGpuUploadBudgetBytes > 0)
+          ? mFrameGpuUploadBudgetBytes
+          : (size_t)std::max(1024 * 1024, mSettings.maxGpuUploadBytesPerFrame);
+  size_t gpuBytesUploaded = mFrameGpuUploadBytesUsed;
+  int uploadedThisFrame = 0;
+  std::vector<PendingChunk> deferred;
+
   for (auto &pc : ready) {
+    if (pc.generationId != mGenerationId) {
+      mInFlight.erase({pc.cx, pc.cz});
+      continue;
+    }
+    const size_t pendingGpuBytes =
+        pc.gpuHeightSamples.size() * sizeof(float) +
+        pc.gpuBiomeSamples.size() * sizeof(float);
+    if (uploadedThisFrame >= uploadBudget) {
+      deferred.push_back(std::move(pc));
+      continue;
+    }
+    if (pc.useGpuTerrain && pendingGpuBytes > 0 &&
+        gpuBytesUploaded + pendingGpuBytes > gpuUploadBudget &&
+        uploadedThisFrame > 0) {
+      deferred.push_back(std::move(pc));
+      continue;
+    }
+
     // Clear in-flight marker
     mInFlight.erase({pc.cx, pc.cz});
     // Skip if already loaded (e.g. double-queued during regenerate)
     if (mChunks.count({pc.cx, pc.cz}))
       continue;
 
-    std::string name =
-        "terrain_" + std::to_string(pc.cx) + "_" + std::to_string(pc.cz);
-
-    // GPU upload — terrain mesh
-    auto model = std::make_unique<OBJModel>();
-    model->loadFromVertices(pc.terrainVerts, name);
-    OBJHandle terrainHandle = {};
-    if (mAssets)
-      terrainHandle = mAssets->registerRuntimeOBJ(name, std::move(model));
-    OBJModel *terrainModel = mAssets ? mAssets->getOBJ(terrainHandle) : nullptr;
-    if (!terrainHandle.valid() || !terrainModel)
-      continue;
-
-    EntityId eid = mScene->createEmptyEntity(name);
     auto &reg = mScene->registry();
-    reg.emplace<TransientComponent>(eid);
-    auto &t = reg.get<TransformComponent>(eid);
-    t.position = glm::vec3(0.0f);
-    t.scale = glm::vec3(1.0f);
-    reg.emplace<MeshComponent>(eid);
-    auto &mesh = reg.get<MeshComponent>(eid);
-    mesh.objModel = terrainModel;
-    mesh.objHandle = terrainHandle;
-    mesh.type = MeshComponent::AssetType::OBJ;
-    mesh.visible = true;
-    mesh.castsShadow = true;
-    mesh.isTerrain = true;
-    mesh.assetId = name;
+    const float ws = mSettings.chunkWorldSize;
 
     ChunkData cd;
-    cd.entity = eid;
-    cd.terrainAssetId = name;
     cd.terrainLod = pc.terrainLod;
     cd.dominantBiome = pc.dominantBiome;
+
+    bool uploadedGpuTerrain = false;
+    if (pc.useGpuTerrain && ensureGpuRenderer() && !pc.gpuHeightSamples.empty()) {
+      TerrainGpuChunkUpload upload;
+      upload.cx = pc.cx;
+      upload.cz = pc.cz;
+      upload.lod = pc.terrainLod;
+      upload.worldSize = mSettings.chunkWorldSize;
+      upload.sampleCount = pc.gpuSampleCount;
+      upload.heights = std::move(pc.gpuHeightSamples);
+      upload.biomes = std::move(pc.gpuBiomeSamples);
+      upload.minHeight = pc.minHeight;
+      upload.maxHeight = pc.maxHeight;
+      uploadedGpuTerrain = mGpuRenderer->uploadChunk(upload);
+      if (uploadedGpuTerrain) {
+        gpuBytesUploaded += pendingGpuBytes;
+        mFrameGpuUploadBytesUsed = gpuBytesUploaded;
+      } else {
+        mGpuTerrainFallbackActive = true;
+        mStats.gpuTerrainFallback = true;
+      }
+    }
+
+    if (!uploadedGpuTerrain) {
+      std::string name =
+          "terrain_" + std::to_string(pc.cx) + "_" + std::to_string(pc.cz);
+
+    // GPU upload — terrain mesh
+      if (pc.terrainVerts.empty())
+        pc.terrainVerts = generateChunkMeshLod(pc.cx, pc.cz, pc.terrainLod);
+      auto model = std::make_unique<OBJModel>();
+      model->loadFromVertices(pc.terrainVerts, name);
+      OBJHandle terrainHandle = {};
+      if (mAssets)
+        terrainHandle = mAssets->registerRuntimeOBJ(name, std::move(model));
+      OBJModel *terrainModel =
+          mAssets ? mAssets->getOBJ(terrainHandle) : nullptr;
+      if (!terrainHandle.valid() || !terrainModel)
+        continue;
+
+      EntityId eid = mScene->createEmptyEntity(name);
+      reg.emplace<TransientComponent>(eid);
+      auto &t = reg.get<TransformComponent>(eid);
+      t.position = glm::vec3(0.0f);
+      t.scale = glm::vec3(1.0f);
+      auto &bounds = reg.emplace<BoundsComponent>(eid);
+      bounds.centerOffset =
+          glm::vec3(pc.cx * ws + ws * 0.5f, 0.0f, pc.cz * ws + ws * 0.5f);
+      const float verticalRadius =
+          std::max(24.0f, mSettings.heightScale * 4.0f);
+      bounds.radius =
+          std::sqrt(ws * ws * 0.5f + verticalRadius * verticalRadius);
+      reg.emplace<MeshComponent>(eid);
+      auto &mesh = reg.get<MeshComponent>(eid);
+      mesh.objModel = terrainModel;
+      mesh.objHandle = terrainHandle;
+      mesh.type = MeshComponent::AssetType::OBJ;
+      mesh.visible = true;
+      mesh.castsShadow = true;
+      mesh.isTerrain = true;
+      mesh.assetId = name;
+
+      cd.entity = eid;
+      cd.terrainAssetId = name;
+    }
 
     // GPU upload — water plane
     if (pc.hasWater && !pc.waterVerts.empty()) {
@@ -2415,6 +3186,11 @@ void TerrainSystem::flushPendingChunks() {
         auto &wt = reg.get<TransformComponent>(weid);
         wt.position = glm::vec3(0.0f);
         wt.scale = glm::vec3(1.0f);
+        auto &wbounds = reg.emplace<BoundsComponent>(weid);
+        wbounds.centerOffset =
+            glm::vec3(pc.cx * ws + ws * 0.5f, mSettings.seaLevel,
+                      pc.cz * ws + ws * 0.5f);
+        wbounds.radius = ws * 0.72f;
         reg.emplace<MeshComponent>(weid);
         auto &wmesh = reg.get<MeshComponent>(weid);
         wmesh.objModel = waterModel;
@@ -2441,6 +3217,7 @@ void TerrainSystem::flushPendingChunks() {
       auto &inst =
           mScene->registry().get<InstancedMeshComponent>(itP->second.entity);
       const PrefabData &pd = itP->second;
+      int interactiveTreeCount = 0;
 
       for (auto &rawMat : matrices) {
         // Apply autoScale and baseRot from PrefabData
@@ -2452,17 +3229,30 @@ void TerrainSystem::flushPendingChunks() {
         // Scale by autoScale component
         m = glm::scale(m, glm::vec3(pd.autoScale));
         inst.instanceTransforms.push_back(m);
+        const size_t idx = inst.instanceTransforms.size() - 1;
         cd.prefabInstanceCounts[prefabName]++;
         cd.prefabInstanceMatrices[prefabName].push_back(m);
+        cd.prefabInstanceGlobalIndices[prefabName].push_back(
+            static_cast<uint32_t>(idx));
+        cd.prefabInstanceEntities[prefabName].push_back(0);
         if (prefabName == "prefab_pine") {
-          size_t idx = inst.instanceTransforms.size() - 1;
           glm::vec3 pos = glm::vec3(m[3]);
-          glm::vec3 scale(glm::length(glm::vec3(m[0])),
-                          glm::length(glm::vec3(m[1])),
-                          glm::length(glm::vec3(m[2])));
-          registerTreeInstance(prefabName, idx, pos, scale, pc.cx, pc.cz, &cd);
-          cd.treeCount++;
-          mStats.totalTreeEntities++;
+          if (shouldSpawnInteractiveTree(mSettings, cameraChunkX, cameraChunkZ,
+                                         pc.cx, pc.cz, pos, mTreeNoise,
+                                         interactiveTreeCount)) {
+            const size_t chunkSlot =
+                cd.prefabInstanceMatrices[prefabName].empty()
+                    ? 0
+                    : cd.prefabInstanceMatrices[prefabName].size() - 1;
+            glm::vec3 scale(glm::length(glm::vec3(m[0])),
+                            glm::length(glm::vec3(m[1])),
+                            glm::length(glm::vec3(m[2])));
+            registerTreeInstance(prefabName, idx, chunkSlot, pos, scale, pc.cx,
+                                 pc.cz, &cd);
+            cd.treeCount++;
+            mStats.totalTreeEntities++;
+            interactiveTreeCount++;
+          }
         }
       }
       inst.isDirty = true;
@@ -2480,6 +3270,7 @@ void TerrainSystem::flushPendingChunks() {
     // Apply painted instances for this chunk (persist across regeneration).
     auto itPaint = mPaintedInstances.find({pc.cx, pc.cz});
     if (itPaint != mPaintedInstances.end()) {
+      int paintedInteractiveTreeCount = 0;
       for (auto &[prefabName, matrices] : itPaint->second.prefabMatrices) {
         auto itP = mPrefabs.find(prefabName);
         if (itP == mPrefabs.end())
@@ -2491,18 +3282,30 @@ void TerrainSystem::flushPendingChunks() {
 
         for (const auto &m : matrices) {
           inst.instanceTransforms.push_back(m);
+          const size_t idx = inst.instanceTransforms.size() - 1;
           cd.prefabInstanceCounts[prefabName]++;
           cd.prefabInstanceMatrices[prefabName].push_back(m);
+          cd.prefabInstanceGlobalIndices[prefabName].push_back(
+              static_cast<uint32_t>(idx));
+          cd.prefabInstanceEntities[prefabName].push_back(0);
           if (prefabName == "prefab_pine") {
-            size_t idx = inst.instanceTransforms.size() - 1;
             glm::vec3 pos = glm::vec3(m[3]);
-            glm::vec3 scale(glm::length(glm::vec3(m[0])),
-                            glm::length(glm::vec3(m[1])),
-                            glm::length(glm::vec3(m[2])));
-            registerTreeInstance(prefabName, idx, pos, scale, pc.cx, pc.cz,
-                                 &cd);
-            cd.treeCount++;
-            mStats.totalTreeEntities++;
+            if (shouldSpawnInteractiveTree(
+                    mSettings, cameraChunkX, cameraChunkZ, pc.cx, pc.cz, pos,
+                    mTreeNoise, paintedInteractiveTreeCount)) {
+              const size_t chunkSlot =
+                  cd.prefabInstanceMatrices[prefabName].empty()
+                      ? 0
+                      : cd.prefabInstanceMatrices[prefabName].size() - 1;
+              glm::vec3 scale(glm::length(glm::vec3(m[0])),
+                              glm::length(glm::vec3(m[1])),
+                              glm::length(glm::vec3(m[2])));
+              registerTreeInstance(prefabName, idx, chunkSlot, pos, scale,
+                                   pc.cx, pc.cz, &cd);
+              cd.treeCount++;
+              mStats.totalTreeEntities++;
+              paintedInteractiveTreeCount++;
+            }
           } else if (prefabName == "prefab_rock") {
             cd.rockCount++;
             mStats.totalRockEntities++;
@@ -2524,15 +3327,29 @@ void TerrainSystem::flushPendingChunks() {
     mStats.loadedChunks++;
     mStats.biomeCounts[(int)cd.dominantBiome]++;
     mChunks[{pc.cx, pc.cz}] = std::move(cd);
+    uploadedThisFrame++;
   }
+
+  if (!deferred.empty()) {
+    std::lock_guard<std::mutex> lk(mPendingMutex);
+    deferred.insert(deferred.end(),
+                    std::make_move_iterator(mPendingReady.begin()),
+                    std::make_move_iterator(mPendingReady.end()));
+    mPendingReady = std::move(deferred);
+  }
+  syncGpuStats();
 }
 
-void TerrainSystem::unloadChunk(int cx, int cz) {
+void TerrainSystem::unloadChunk(
+    int cx, int cz,
+    std::unordered_set<std::string> *deferredPrefabRebuilds) {
   auto it = mChunks.find({cx, cz});
   if (it == mChunks.end())
     return;
 
   ChunkData cd = std::move(it->second);
+  if (mGpuRenderer)
+    mGpuRenderer->removeChunk(cx, cz);
 
   // Remove tree entities belonging to this chunk
   for (auto &[prefabName, entities] : cd.prefabInstanceEntities) {
@@ -2562,52 +3379,11 @@ void TerrainSystem::unloadChunk(int cx, int cz) {
   // Remove the chunk entry before rebuild so it won't be included.
   mChunks.erase(it);
 
-  for (const auto &prefabName : affectedPrefabs) {
-    auto itPrefab = mPrefabs.find(prefabName);
-    if (itPrefab == mPrefabs.end() || !mScene)
-      continue;
-    if (!mScene->registry().has<InstancedMeshComponent>(
-            itPrefab->second.entity))
-      continue;
-    auto &inst = mScene->registry().get<InstancedMeshComponent>(
-        itPrefab->second.entity);
-    inst.instanceTransforms.clear();
-
-    std::vector<uint32_t> newEntityMap;
-    size_t newIndex = 0;
-    for (auto &[coord, cdata] : mChunks) {
-      auto itM = cdata.prefabInstanceMatrices.find(prefabName);
-      if (itM == cdata.prefabInstanceMatrices.end())
-        continue;
-      const auto &mats = itM->second;
-      inst.instanceTransforms.insert(inst.instanceTransforms.end(), mats.begin(),
-                                     mats.end());
-
-      auto itE = cdata.prefabInstanceEntities.find(prefabName);
-      if (itE != cdata.prefabInstanceEntities.end()) {
-        const auto &ents = itE->second;
-        const size_t count = mats.size();
-        const size_t assignCount = std::min(count, ents.size());
-        for (size_t i = 0; i < assignCount; ++i) {
-          const auto eid = ents[i];
-          if (eid != 0 && mScene->registry().has<TreeComponent>(eid)) {
-            mScene->registry().get<TreeComponent>(eid).instanceIndex =
-                static_cast<uint32_t>(newIndex);
-          }
-          newEntityMap.push_back(eid);
-          newIndex++;
-        }
-        for (size_t i = assignCount; i < count; ++i) {
-          newEntityMap.push_back(0);
-          newIndex++;
-        }
-      } else {
-        newIndex += mats.size();
-      }
-    }
-    inst.isDirty = true;
-    if (!newEntityMap.empty())
-      mPrefabInstanceEntities[prefabName] = std::move(newEntityMap);
+  if (deferredPrefabRebuilds) {
+    deferredPrefabRebuilds->insert(affectedPrefabs.begin(), affectedPrefabs.end());
+  } else {
+    for (const auto &prefabName : affectedPrefabs)
+      rebuildPrefabInstances(prefabName);
   }
 
   // Remove water entity
@@ -2629,6 +3405,7 @@ void TerrainSystem::unloadChunk(int cx, int cz) {
   mStats.biomeCounts[(int)cd.dominantBiome]--;
   mStats.totalTreeEntities -= cd.treeCount;
   mStats.totalRockEntities -= cd.rockCount;
+  syncGpuStats();
 }
 
 void TerrainSystem::rebuildPrefabInstances(const std::string &prefabName) {
@@ -2656,28 +3433,73 @@ void TerrainSystem::rebuildPrefabInstances(const std::string &prefabName) {
       continue;
     auto &mats = itM->second;
     auto &ents = cdata.prefabInstanceEntities[prefabName];
+    auto &globals = cdata.prefabInstanceGlobalIndices[prefabName];
 
     const size_t count = mats.size();
+    if (ents.size() < count)
+      ents.resize(count, 0);
+    else if (ents.size() > count)
+      ents.resize(count);
+
+    globals.clear();
+    globals.reserve(count);
     inst.instanceTransforms.insert(inst.instanceTransforms.end(), mats.begin(),
                                    mats.end());
 
-    const size_t assignCount = std::min(count, ents.size());
-    for (size_t i = 0; i < assignCount; ++i) {
+    for (size_t i = 0; i < count; ++i) {
+      const uint32_t globalIndex = static_cast<uint32_t>(newIndex++);
+      globals.push_back(globalIndex);
+
       const auto eid = ents[i];
       if (eid != 0 && reg.has<TreeComponent>(eid)) {
-        reg.get<TreeComponent>(eid).instanceIndex =
-            static_cast<uint32_t>(newIndex);
+        auto &tree = reg.get<TreeComponent>(eid);
+        tree.instanceIndex = globalIndex;
+        tree.chunkInstanceSlot = static_cast<uint32_t>(i);
+        tree.chunkX = coord.x;
+        tree.chunkZ = coord.z;
+        entityMap.push_back(eid);
+      } else {
+        ents[i] = 0;
+        entityMap.push_back(0);
       }
-      entityMap.push_back(eid);
-      newIndex++;
-    }
-    for (size_t i = assignCount; i < count; ++i) {
-      entityMap.push_back(0);
-      newIndex++;
     }
   }
 
   inst.isDirty = true;
+}
+
+void TerrainSystem::updateCollisionForChunk(int cx, int cz, ChunkData &cd) {
+  if (!mPhysicsSystem)
+    return;
+
+  if (cd.physicsBodyId != 0xFFFFFFFF) {
+    mPhysicsSystem->removeTerrainChunk(cd.physicsBodyId);
+    cd.physicsBodyId = 0xFFFFFFFF;
+  }
+
+  const int cameraChunkX =
+      (mLastCameraChunk.x == INT_MAX) ? cx : mLastCameraChunk.x;
+  const int cameraChunkZ =
+      (mLastCameraChunk.z == INT_MAX) ? cz : mLastCameraChunk.z;
+  if (!chunkNeedsCollision(mSettings, cameraChunkX, cameraChunkZ, cx, cz))
+    return;
+
+  const int size = std::max(4, mSettings.chunkSize);
+  const float ws = mSettings.chunkWorldSize;
+  const float step = ws / (float)size;
+  const float ox = cx * ws;
+  const float oz = cz * ws;
+  const uint32_t sc = (uint32_t)(size + 1);
+  std::vector<float> heightSamples((size_t)sc * sc);
+  for (int z = 0; z <= size; ++z) {
+    for (int x = 0; x <= size; ++x) {
+      const float wx = ox + x * step;
+      const float wz = oz + z * step;
+      heightSamples[(size_t)z * sc + x] = sampleHeight(wx, wz);
+    }
+  }
+  cd.physicsBodyId =
+      mPhysicsSystem->addTerrainChunk(heightSamples, sc, glm::vec2(ox, oz), ws);
 }
 
 void TerrainSystem::rebuildChunkTerrain(int cx, int cz, bool rebuildPhysics) {
@@ -2688,6 +3510,51 @@ void TerrainSystem::rebuildChunkTerrain(int cx, int cz, bool rebuildPhysics) {
   ChunkData &cd = it->second;
   const std::string name =
       "terrain_" + std::to_string(cx) + "_" + std::to_string(cz);
+
+  if (gpuTerrainActive()) {
+    if (mGpuRenderer)
+      mGpuRenderer->updateChunkLod(cx, cz, cd.terrainLod);
+
+    if (rebuildPhysics && mGpuRenderer) {
+      const int size = std::max(4, mSettings.chunkSize);
+      const uint32_t sc = (uint32_t)(size + 1);
+      const float ws = mSettings.chunkWorldSize;
+      const float step = ws / (float)size;
+      const float ox = cx * ws;
+      const float oz = cz * ws;
+      TerrainGpuChunkUpload upload;
+      upload.cx = cx;
+      upload.cz = cz;
+      upload.lod = cd.terrainLod;
+      upload.worldSize = ws;
+      upload.sampleCount = sc;
+      upload.heights.resize((size_t)sc * sc);
+      upload.biomes.resize((size_t)sc * sc);
+      upload.minHeight = std::numeric_limits<float>::infinity();
+      upload.maxHeight = -std::numeric_limits<float>::infinity();
+      for (int z = 0; z <= size; ++z) {
+        for (int x = 0; x <= size; ++x) {
+          const float wx = ox + x * step;
+          const float wz = oz + z * step;
+          const size_t idx = (size_t)z * sc + x;
+          const float h = sampleHeight(wx, wz);
+          upload.heights[idx] = h;
+          upload.biomes[idx] = (float)(int)getBiome(wx, wz) / 5.0f;
+          upload.minHeight = std::min(upload.minHeight, h);
+          upload.maxHeight = std::max(upload.maxHeight, h);
+        }
+      }
+      if (!mGpuRenderer->uploadChunk(upload)) {
+        mGpuTerrainFallbackActive = true;
+        mStats.gpuTerrainFallback = true;
+      }
+    }
+
+    if (rebuildPhysics)
+      updateCollisionForChunk(cx, cz, cd);
+    syncGpuStats();
+    return;
+  }
 
   auto model = std::make_unique<OBJModel>();
   model->loadFromVertices(generateChunkMeshLod(cx, cz, cd.terrainLod), name);
@@ -2705,29 +3572,18 @@ void TerrainSystem::rebuildChunkTerrain(int cx, int cz, bool rebuildPhysics) {
     mesh.visible = true;
     mesh.castsShadow = true;
     mesh.isTerrain = true;
+    if (!reg.has<BoundsComponent>(cd.entity))
+      reg.emplace<BoundsComponent>(cd.entity);
+    auto &bounds = reg.get<BoundsComponent>(cd.entity);
+    const float ws = mSettings.chunkWorldSize;
+    bounds.centerOffset =
+        glm::vec3(cx * ws + ws * 0.5f, 0.0f, cz * ws + ws * 0.5f);
+    const float verticalRadius = std::max(24.0f, mSettings.heightScale * 4.0f);
+    bounds.radius =
+        std::sqrt(ws * ws * 0.5f + verticalRadius * verticalRadius);
   }
   cd.terrainAssetId = name;
 
-  if (mPhysicsSystem && rebuildPhysics) {
-    if (cd.physicsBodyId != 0xFFFFFFFF) {
-      mPhysicsSystem->removeTerrainChunk(cd.physicsBodyId);
-      cd.physicsBodyId = 0xFFFFFFFF;
-    }
-    const int size = mSettings.chunkSize;
-    const float ws = mSettings.chunkWorldSize;
-    const float step = ws / (float)size;
-    const float ox = cx * ws;
-    const float oz = cz * ws;
-    const uint32_t sc = (uint32_t)(size + 1);
-    std::vector<float> heightSamples((size_t)sc * sc);
-    for (int z = 0; z <= size; ++z) {
-      for (int x = 0; x <= size; ++x) {
-        float wx = ox + x * step;
-        float wz = oz + z * step;
-        heightSamples[(size_t)z * sc + x] = sampleHeight(wx, wz);
-      }
-    }
-    cd.physicsBodyId = mPhysicsSystem->addTerrainChunk(
-        heightSamples, sc, glm::vec2(ox, oz), ws);
-  }
+  if (rebuildPhysics)
+    updateCollisionForChunk(cx, cz, cd);
 }

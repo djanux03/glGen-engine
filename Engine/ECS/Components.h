@@ -68,15 +68,31 @@ struct MaterialOverrideComponent {
 };
 
 struct InstancedMeshComponent {
+  struct InstanceCluster {
+    glm::vec3 center = {0.0f, 0.0f, 0.0f};
+    float radius = 0.0f;
+    uint32_t indexOffset = 0;
+    uint32_t indexCount = 0;
+  };
+
   MeshComponent::AssetType type = MeshComponent::AssetType::None;
   class OBJModel *objModel = nullptr;
   class UFBXModel *ufbxModel = nullptr;
   OBJHandle objHandle{};
   UFBXHandle ufbxHandle{};
   std::vector<glm::mat4> instanceTransforms;
+  std::vector<InstanceCluster> instanceClusters;
+  std::vector<uint32_t> clusterInstanceIndices;
   std::vector<glm::mat4> culledTransforms;
+  std::vector<glm::mat4> shadowCulledTransforms;
   uint64_t lastCullKey = 0;
+  uint64_t shadowLastCullKey = 0;
   int lastVisibleCount = 0;
+  int shadowLastVisibleCount = 0;
+  int lastTestedClusterCount = 0;
+  int shadowLastTestedClusterCount = 0;
+  int lastVisibleClusterCount = 0;
+  int shadowLastVisibleClusterCount = 0;
   unsigned int instanceVBO = 0;
   size_t instanceVBOCapacity = 0; // bytes currently allocated on GPU
   unsigned int shadowInstanceVBO = 0;
@@ -87,6 +103,9 @@ struct InstancedMeshComponent {
   // When true, instance fragments use terrain procedural shading path.
   bool useTerrainShading = false;
   bool isDirty = true;
+  bool clusterDataDirty = true;
+  bool mainCacheDirty = true;
+  bool shadowCacheDirty = true;
   bool visible = true;
   bool castsShadow = true;
 };
@@ -130,6 +149,10 @@ struct RigidbodyComponent {
   // Gizmos)
   glm::vec3 lastPosition = {0.0f, 0.0f, 0.0f};
   glm::vec3 lastRotation = {0.0f, 0.0f, 0.0f};
+  glm::vec3 lastScale = {1.0f, 1.0f, 1.0f};
+  glm::vec3 lastColliderDimensions = {1.0f, 1.0f, 1.0f};
+  glm::vec3 lastColliderOffset = {0.0f, 0.0f, 0.0f};
+  int lastColliderShape = -1;
 
   // Internal Jolt Body ID wrapper
   uint32_t bodyID = 0xFFFFFFFF; // JPH::BodyID::cInvalidBodyID
@@ -139,17 +162,51 @@ struct ColliderComponent {
   enum class Shape { Box, Sphere, Capsule };
   Shape shape = Shape::Box;
 
-  // Dimensions depend on the shape (e.g., extents for Box, radius for Sphere)
+  // Local-space center offset from the entity origin. This keeps fitted
+  // colliders aligned when a mesh pivot is not at its visual center.
+  glm::vec3 offset = {0.0f, 0.0f, 0.0f};
+
+  // Dimensions depend on the shape (full size for Box, radius for Sphere).
   glm::vec3 dimensions = {1.0f, 1.0f, 1.0f};
 };
 
+struct DestructibleComponent {
+  bool enabled = true;
+  float health = 100.0f;
+  int shardCount = 10;
+  float shardScale = 0.75f;
+  float explosionForce = 18.0f;
+  float upwardImpulse = 5.0f;
+  bool hideOriginal = true;
+  bool fractured = false;
+};
+
+struct DestructionShardComponent {
+  glm::vec3 velocity = {0.0f, 0.0f, 0.0f};
+  glm::vec3 angularVelocity = {0.0f, 0.0f, 0.0f}; // Degrees per second
+  float age = 0.0f;
+  float lifetime = 8.0f;
+  float settledTime = 0.0f;
+  float shadowLifetime = 0.75f;
+  float cleanupDelay = 1.0f;
+  bool editorPreview = true;
+  bool settled = false;
+};
+
 struct BoundsComponent {
+  BoundsComponent() = default;
+  explicit BoundsComponent(float r) : radius(r) {}
+  BoundsComponent(const glm::vec3 &offset, float r)
+      : centerOffset(offset), radius(r) {}
+
+  glm::vec3 centerOffset = {0.0f, 0.0f, 0.0f};
   float radius = 1.0f;
 };
 
 struct TreeComponent {
   float health = 3.0f;
   uint32_t instanceIndex = 0;
+  uint32_t chunkInstanceSlot = 0;
   std::string prefabName;
   int chunkX = 0;
   int chunkZ = 0;

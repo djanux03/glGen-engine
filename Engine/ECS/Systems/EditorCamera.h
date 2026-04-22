@@ -3,6 +3,7 @@
 #include "Mouse.h"
 #include <GLFW/glfw3.h>
 #include <algorithm>
+#include <cmath>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -22,14 +23,21 @@ public:
   // Tuning
   float orbitSensitivity = 0.25f;
   float panSensitivity = 0.01f;
-  float zoomSensitivity = 0.8f;
+  float zoomStepRatio = 0.78f;
+  float zoomSmoothing = 14.0f;
   float minDistance = 0.5f;
   float maxDistance = 200.0f;
 
   // Call once per frame. Pass whether ImGui wants the mouse.
-  void update(GLFWwindow *window, bool imguiWantsMouse) {
+  void update(GLFWwindow *window, bool imguiWantsMouse, float dt) {
+    if (!zoomInitialized) {
+      targetDistance = std::clamp(distance, minDistance, maxDistance);
+      distance = targetDistance;
+      zoomInitialized = true;
+    }
+
     if (imguiWantsMouse)
-      return;
+      return applyZoomSmoothing(dt);
 
     float dx = (float)Mouse::getDX();
     float dy = (float)Mouse::getDY();
@@ -67,16 +75,24 @@ public:
     // For now we use a simple approach via Mouse scroll
     scrollY = Mouse::getSCrollDY();
     if (scrollY != 0.0) {
-      distance -= (float)scrollY * zoomSensitivity;
-      distance = std::clamp(distance, minDistance, maxDistance);
+      targetDistance *= std::pow(zoomStepRatio, (float)scrollY);
+      targetDistance = std::clamp(targetDistance, minDistance, maxDistance);
     }
+
+    applyZoomSmoothing(dt);
   }
 
   // Focus camera on a world-space point (e.g. selected entity)
   void focusOn(const glm::vec3 &target) {
     focusPoint = target;
     // Optionally adjust distance based on object size
-    distance = std::clamp(distance, 3.0f, maxDistance);
+    setDistanceInstant(std::clamp(distance, 3.0f, maxDistance));
+  }
+
+  void setDistanceInstant(float newDistance) {
+    distance = std::clamp(newDistance, minDistance, maxDistance);
+    targetDistance = distance;
+    zoomInitialized = true;
   }
 
   glm::vec3 getPosition() const {
@@ -106,4 +122,16 @@ public:
     glm::vec3 pos = getPosition();
     return glm::lookAt(pos, focusPoint, glm::vec3(0.0f, 1.0f, 0.0f));
   }
+
+private:
+  void applyZoomSmoothing(float dt) {
+    dt = std::max(dt, 0.0f);
+    float blend = 1.0f - std::exp(-zoomSmoothing * dt);
+    distance += (targetDistance - distance) * blend;
+    if (std::abs(targetDistance - distance) < 0.001f)
+      distance = targetDistance;
+  }
+
+  float targetDistance = 8.0f;
+  bool zoomInitialized = false;
 };

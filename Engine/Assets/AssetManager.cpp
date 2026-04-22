@@ -249,10 +249,11 @@ bool AssetManager::releaseOBJ(const std::string &assetId) {
     return false;
 
   auto &rec = mOBJ[idx];
+  const bool wasRuntimeAsset = rec.runtimeAsset;
   rec.asset.reset();
   rec.dependencies.clear();
   rec.watchedTime = {};
-  rec.runtimeAsset = false;
+  rec.runtimeAsset = wasRuntimeAsset;
   ++rec.generation;
   return true;
 }

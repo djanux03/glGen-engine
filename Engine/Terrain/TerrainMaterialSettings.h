@@ -38,14 +38,52 @@ struct TerrainMaterialSettings {
   float roughSand = 0.88f;
   float roughSnow = 0.42f;
 
+  // Optional per-layer color textures for procedural terrain layers.
+  bool useLayerTextures = false;
+  std::string grassAlbedoPath;
+  std::string grassNormalPath;
+  std::string grassRoughnessPath;
+  std::string dirtAlbedoPath;
+  std::string dirtNormalPath;
+  std::string dirtRoughnessPath;
+  float layerTextureTiling = 0.18f;
+  float layerTextureStrength = 0.85f;
+  float layerNormalStrength = 0.75f;
+  float layerRoughnessStrength = 1.0f;
+
   // Optional realistic ground layer.
   bool useGroundTextures = false;
   std::string groundAlbedoPath;
   std::string groundNormalPath;
   std::string groundRoughnessPath;
+  std::string groundHeightPath;
   float groundTiling = 0.18f;
   float groundBlendStrength = 1.0f;
   float groundRoughness = 0.82f;
+  float groundHeightStrength = 0.25f;
+  bool groundPseudoHeightEnabled = false;
+  int groundPseudoHeightSource = 0; // 0=Luma, 1=Normal
+  float groundPseudoHeightContrast = 1.0f;
+  float groundPseudoHeightBias = 0.0f;
+  bool groundGradeEnabled = false;
+  float groundGradeSaturation = 1.0f;
+  float groundGradeContrast = 1.0f;
+  float groundGradeGamma = 1.0f;
+  glm::vec3 groundGradeTint = glm::vec3(1.0f);
+  float groundBrightness = 1.0f;
+  float groundVariationStrength = 0.35f;
+  float groundVariationScale = 0.03f;
+  bool groundFullOverride = false;
+  bool sunGlintEnabled = true;
+  float sunGlintIntensity = 1.15f;
+  float sunGlintSharpness = 72.0f;
+  float sunGlintMaskScale = 0.014f;
+  float sunGlintMaskStrength = 0.55f;
+  float sunGlintBaseSpecular = 0.08f;
+  bool sunGlintUseSceneSun = true;
+  float sunGlintDirectionAzimuth = 145.0f;
+  float sunGlintDirectionElevation = 28.0f;
+  float sunGlintBandWidth = 0.16f;
 
   // Stylized option: flatten green-biome terrain into a single green tint.
   bool flatGreenEnabled = true;

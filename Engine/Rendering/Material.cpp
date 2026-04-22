@@ -80,3 +80,9 @@ void MaterialAsset::apply(Shader &shader) const {
   shader.setBool("uHasNormalMap", texNormal != 0);
   state.bindTexture2D(2, texNormal);
 }
+
+bool MaterialAsset::usesAnyTextureMaps() const {
+  return texDiffuse != 0 || texNormal != 0 || texRoughness != 0 ||
+         texMetallic != 0 || texAO != 0 || texEmissive != 0 ||
+         texOpacity != 0;
+}

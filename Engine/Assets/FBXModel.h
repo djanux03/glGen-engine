@@ -39,6 +39,7 @@ public:
 
 private:
   std::vector<FBXSubmesh> mSubmeshes;
+  std::string mSourcePath;
   std::string mDirectory;
   tinygltf::Model mModel;
 
@@ -48,8 +49,11 @@ private:
 
   void processNode(int nodeIndex);
   void processMesh(const tinygltf::Mesh &mesh);
-  GLuint LoadTextureFromGLTF(int textureIndex);
-  GLuint CreateTextureFromImage(const tinygltf::Image &image);
+  GLuint LoadTextureFromGLTF(int textureIndex,
+                             TextureUsage usage = TextureUsage::Color,
+                             std::string *outSourcePath = nullptr);
+  GLuint CreateTextureFromImage(const tinygltf::Image &image,
+                                TextureUsage usage);
 
   // Per-instance texture cache (replaces leaked static global)
   std::map<std::string, GLuint> mTextureCache;

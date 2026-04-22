@@ -8,7 +8,9 @@
 #include "ECS/Components.h"
 #include "ECS/Registry.h"
 #include "Scene/Scene.h"
+#include "TerrainGpuRenderer.h"
 
+#include <cstddef>
 #include <functional>
 #include <future>
 #include <glm/glm.hpp>
@@ -16,10 +18,19 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Forward declarations
 class PhysicsSystem;
+class Shader;
+
+enum class TerrainMaterialQuality : int {
+  Ultra = 0,
+  High = 1,
+  Balanced = 2,
+  Performance = 3
+};
 
 // ─── Biome Types ───
 enum class BiomeType : int {
@@ -38,11 +49,24 @@ enum class TreeType { Pine, Oak, Birch, DeadTree, Cactus };
 // ─── Terrain Statistics ───
 struct TerrainStats {
   int loadedChunks = 0;
+  int visibleChunks = 0;
+  int horizonCulledChunks = 0;
+    int frustumCulledChunks = 0;
+    int terrainDrawCalls = 0;
+    int terrainGpuPagesUsed = 0;
+    int terrainGpuInstanceUploads = 0;
+    int terrainGpuInstanceUploadSkips = 0;
+    int terrainGpuInstanceUploadBytes = 0;
+    int pendingJobs = 0;
+  int pendingUploads = 0;
+  int collisionBodies = 0;
   int totalTreeEntities = 0;
   int totalRockEntities = 0;
   int totalWaterPlanes = 0;
   int verticesGenerated = 0;
   int trianglesGenerated = 0;
+  bool gpuTerrainActive = false;
+  bool gpuTerrainFallback = false;
   int biomeCounts[6] = {}; // Count of chunks per biome (dominant biome)
 };
 
@@ -52,19 +76,49 @@ struct TerrainSettings {
   int chunkSize = 32;        // vertices per chunk edge
   float heightScale = 10.0f; // max height amplitude
   float noiseFrequency = 0.02f;
-  int viewDistance = 3;         // chunk radius around camera
+  float landscapeScale = 2.2f; // larger values create broader macro landforms
+  float macroStrength = 1.35f; // how strongly macro landforms dominate height
+  float mountainSpan = 1.4f;   // broader/tighter dominant mountain masses
+  float valleySpan = 1.25f;    // broader/tighter valley basins
+  int viewDistance = 6;         // chunk radius around camera
   float chunkWorldSize = 64.0f; // world-space size of one chunk
+  int maxConcurrentChunkJobs =
+      10; // cap async terrain generation so huge worlds don't flood CPU/memory
+  int maxChunkLoadsPerUpdate =
+      24; // limit how many missing chunks we enqueue each update tick
+  int maxChunkUploadsPerFrame =
+      2; // cap main-thread mesh/entity uploads to prevent terrain frame spikes
+  int collisionChunkRadius =
+      1; // only nearby chunks keep full terrain collision/physics
+  bool useGpuTerrain = true;
+  bool enableHorizonCulling = true;
+  int horizonCullingSectors = 256;
+  int terrainGpuPageCapacity = 1024;
+  int terrainWorkerThreads = 4;
+  int maxCompletedChunksPerFrame = 4;
+  int maxGpuUploadBytesPerFrame = 8 * 1024 * 1024;
+  int collisionUpdatesPerFrame = 2;
+  int meshVegetationDistance = 220;
+  int impostorVegetationDistance = 1200;
+  int vegetationShadowDistance = 260;
+  TerrainMaterialQuality materialQuality = TerrainMaterialQuality::Balanced;
   bool useRidgeNoise = false;
   bool singleBiomeOnly = true;  // force plains-only biome for now
   int octaves = 5;
   float lacunarity = 2.0f;
   float gain = 0.5f;
   float treeDensity = 0.15f; // forest tree density
+  int interactiveTreeChunkRadius =
+      1; // only nearby chunks get full tree ECS/physics interaction
+  float interactiveTreeRatio =
+      0.22f; // fraction of visual forest trees promoted to interactive trees
+  int maxInteractiveTreesPerChunk =
+      28; // hard cap to keep dense forests responsive
   float biomeScale = 0.004f; // biome region frequency
   float seaLevel = -2.0f;
-  float rockDensity = 0.2f;                 // mountain/tundra rock density
+  float rockDensity = 0.34f;                // mountain/tundra rock density
   float grassDensity = 0.25f;               // plains grass cluster density
-  float rockScale = 0.7f;                   // uniform rock size multiplier
+  float rockScale = 1.2f;                   // uniform rock size multiplier
   float grassScale = 1.0f;                  // uniform grass size multiplier
   bool spawnWater = true;                   // generate water planes in ocean
   bool spawnRocks = true;                   // generate rocks in mountains
@@ -80,6 +134,7 @@ struct TerrainSettings {
 
 class TerrainSystem {
 public:
+  ~TerrainSystem();
   void init(const TerrainSettings &settings, Scene &scene,
             AssetManager *assets);
   void applySettings(const TerrainSettings &settings);
@@ -92,9 +147,26 @@ public:
 
   // Plug in physics system to enable automatic terrain collision
   void setPhysicsSystem(PhysicsSystem *ps) { mPhysicsSystem = ps; }
+  void setSubmissionBackend(RenderSubmissionBackend backend) {
+    mSubmissionBackend = backend;
+    if (mGpuRenderer)
+      mGpuRenderer->setSubmissionBackend(backend);
+  }
+  void beginFrameUploadBudget(size_t bytes) {
+    mFrameGpuUploadBudgetBytes = bytes;
+    mFrameGpuUploadBytesUsed = 0;
+  }
+  size_t remainingFrameUploadBudgetBytes() const {
+    return (mFrameGpuUploadBudgetBytes > mFrameGpuUploadBytesUsed)
+               ? (mFrameGpuUploadBudgetBytes - mFrameGpuUploadBytesUsed)
+               : 0;
+  }
 
   bool isEnabled() const { return mSettings.enabled; }
   const TerrainStats &stats() const { return mStats; }
+  bool gpuTerrainActive() const;
+  void renderGpuTerrain(Shader &shader, const glm::mat4 &viewProjection,
+                        const glm::vec3 &cameraPos, bool shadowPass);
   // Move a prefab instance by delta (updates instanced mesh transform).
   bool movePrefabInstance(const std::string &prefabName, size_t instanceIndex,
                           const glm::vec3 &delta);
@@ -142,7 +214,10 @@ private:
     // Exact instance matrices for this chunk (for rebuilds)
     std::unordered_map<std::string, std::vector<glm::mat4>>
         prefabInstanceMatrices;
-    // Tree entities per prefab (if any)
+    // Global instanced mesh indices aligned with prefabInstanceMatrices.
+    std::unordered_map<std::string, std::vector<uint32_t>>
+        prefabInstanceGlobalIndices;
+    // Interactive tree entities aligned with prefabInstanceMatrices (0 = none).
     std::unordered_map<std::string, std::vector<uint32_t>>
         prefabInstanceEntities;
 
@@ -199,7 +274,9 @@ private:
 
   // Chunk management
   void loadChunk(int cx, int cz);
-  void unloadChunk(int cx, int cz);
+  void unloadChunk(int cx, int cz,
+                   std::unordered_set<std::string> *deferredPrefabRebuilds =
+                       nullptr);
   std::vector<ChunkCoord> getChunksByDistance(int cx, int cz, int radius) const;
 
   // Entity helpers
@@ -211,14 +288,22 @@ private:
                            const glm::vec3 &scale, const glm::vec3 &rot,
                            ChunkData &chunk);
   void registerTreeInstance(const std::string &prefabName, size_t instanceIndex,
-                            const glm::vec3 &pos, const glm::vec3 &scale,
-                            int cx, int cz, ChunkData *chunk = nullptr);
+                            size_t chunkInstanceSlot, const glm::vec3 &pos,
+                            const glm::vec3 &scale, int cx, int cz,
+                            ChunkData *chunk = nullptr);
   void removeLastPrefabInstances(const std::string &prefabName, size_t count);
   void rebuildChunkTerrain(int cx, int cz, bool rebuildPhysics = true);
   void rebuildPrefabInstances(const std::string &prefabName);
+  void updateInteractiveTreeResidency(int cameraChunkX, int cameraChunkZ);
+  void demoteInteractiveTreeEntity(EntityId treeEntity);
   int computeChunkLod(int cameraChunkX, int cameraChunkZ, int chunkX,
                       int chunkZ) const;
   int lodResolution(int lod) const;
+  bool ensureGpuRenderer();
+  void syncGpuStats();
+  void applyGpuRenderStats(const TerrainGpuRendererStats &stats);
+  void syncStreamingStats();
+  void updateCollisionForChunk(int cx, int cz, ChunkData &cd);
 
   TerrainSettings mSettings;
   TerrainStats mStats;
@@ -232,11 +317,23 @@ private:
   class AssetManager *mAssets = nullptr;
   PhysicsSystem *mPhysicsSystem =
       nullptr; // optional; enables terrain collision
+  std::unique_ptr<TerrainGpuRenderer> mGpuRenderer;
+  TerrainGpuRendererStats mGpuMainPassStats{};
+  TerrainGpuRendererStats mGpuShadowPassStats{};
+  bool mHasGpuMainPassStats = false;
+  bool mHasGpuShadowPassStats = false;
+  bool mGpuTerrainFallbackActive = false;
+  RenderSubmissionBackend mSubmissionBackend =
+      RenderSubmissionBackend::Direct;
+  size_t mFrameGpuUploadBudgetBytes = 0;
+  size_t mFrameGpuUploadBytesUsed = 0;
   std::unordered_map<ChunkCoord, ChunkData, ChunkCoordHash> mChunks;
   std::unordered_map<ChunkCoord, HeightOffsetData, ChunkCoordHash>
       mHeightOffsets;
   std::unordered_map<ChunkCoord, PaintedInstanceData, ChunkCoordHash>
       mPaintedInstances;
+  std::vector<ChunkCoord> mPendingCollisionUpdates;
+  uint64_t mGenerationId = 1;
   ChunkCoord mLastCameraChunk = {INT_MAX, INT_MAX};
   std::unordered_map<std::string, std::vector<uint32_t>>
       mPrefabInstanceEntities;
@@ -245,6 +342,7 @@ private:
   // Result produced off the main thread (pure CPU work)
   struct PendingChunk {
     int cx, cz;
+    uint64_t generationId = 0;
     int terrainLod = 0;
     std::vector<OBJModel::VertexData> terrainVerts;
     std::vector<OBJModel::VertexData> waterVerts;
@@ -255,6 +353,12 @@ private:
     // Flat height array for HeightFieldShape (row-major, (sampleCount+1)^2)
     std::vector<float> heightSamples;
     uint32_t heightSampleCount{0}; // grid edge length (sampleCount+1)
+    bool useGpuTerrain{false};
+    uint32_t gpuSampleCount{0};
+    std::vector<float> gpuHeightSamples;
+    std::vector<float> gpuBiomeSamples;
+    float minHeight{0.0f};
+    float maxHeight{0.0f};
   };
   // Results ready for GPU upload (written by worker, flushed on main thread)
   std::vector<PendingChunk> mPendingReady;
@@ -264,5 +368,6 @@ private:
   // Track which chunks are already being generated so we don't double-queue
   std::unordered_map<ChunkCoord, bool, ChunkCoordHash> mInFlight;
 
-  void loadChunkAsync(int cx, int cz, int lod);
+  void loadChunkAsync(int cx, int cz, int lod, bool withCollision,
+                      bool useGpuTerrain);
 };

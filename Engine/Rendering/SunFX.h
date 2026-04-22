@@ -17,7 +17,7 @@ class SunFX {
 public:
   glm::vec3 sunPos = glm::vec3(5.0f, 16.0f, 5.0f);
   // Sun FX defaults (from your UI ranges)
-  float sunSize = 5.017f;
+  float sunSize = 0.58f;
   float haloSizeMult = 1.570f;
   float glowStrength = 0.542f;
 

@@ -21,8 +21,63 @@ static glm::mat4 buildTRS(const glm::vec3 &pos, const glm::vec3 &rotDeg,
   return m;
 }
 
+static void bindInstanceMatrixAttributes(GLuint instanceVBO) {
+  glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+  const std::size_t vec4Size = sizeof(glm::vec4);
+  glEnableVertexAttribArray(3);
+  glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size, (void *)0);
+  glEnableVertexAttribArray(4);
+  glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
+                        (void *)(1 * vec4Size));
+  glEnableVertexAttribArray(5);
+  glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
+                        (void *)(2 * vec4Size));
+  glEnableVertexAttribArray(6);
+  glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
+                        (void *)(3 * vec4Size));
+
+  glVertexAttribDivisor(3, 1);
+  glVertexAttribDivisor(4, 1);
+  glVertexAttribDivisor(5, 1);
+  glVertexAttribDivisor(6, 1);
+}
+
+static void uploadShadowOnlyMesh(GLuint &vao, GLuint &vbo, GLuint &ebo,
+                                 GLsizei &indexCount,
+                                 const std::vector<glm::vec3> &positions,
+                                 const std::vector<unsigned int> &indices) {
+  if (positions.empty() || indices.empty())
+    return;
+
+  if (ebo != 0)
+    glDeleteBuffers(1, &ebo);
+  if (vbo != 0)
+    glDeleteBuffers(1, &vbo);
+  if (vao != 0)
+    glDeleteVertexArrays(1, &vao);
+
+  glGenVertexArrays(1, &vao);
+  glGenBuffers(1, &vbo);
+  glGenBuffers(1, &ebo);
+
+  glBindVertexArray(vao);
+  glBindBuffer(GL_ARRAY_BUFFER, vbo);
+  glBufferData(GL_ARRAY_BUFFER, positions.size() * sizeof(glm::vec3),
+               positions.data(), GL_STATIC_DRAW);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int),
+               indices.data(), GL_STATIC_DRAW);
+  glEnableVertexAttribArray(0);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3),
+                        (void *)0);
+  glBindVertexArray(0);
+
+  indexCount = static_cast<GLsizei>(indices.size());
+}
+
 bool UFBXModel::loadFromFile(const std::string &path) {
   shutdown();
+  mSourcePath = path;
 
   size_t slash = path.find_last_of("/\\");
   mDirectory = (slash == std::string::npos) ? "." : path.substr(0, slash);
@@ -45,8 +100,18 @@ bool UFBXModel::loadFromFile(const std::string &path) {
   mHasBounds = false;
   mAabbMin = glm::vec3(1e30f);
   mAabbMax = glm::vec3(-1e30f);
+  mShadowBuildPositions.clear();
+  mShadowBuildIndices.clear();
 
   processNode(mScene->root_node);
+
+  uploadShadowOnlyMesh(mShadowMesh.vao, mShadowMesh.vbo, mShadowMesh.ebo,
+                       mShadowMesh.indexCount, mShadowBuildPositions,
+                       mShadowBuildIndices);
+  mShadowMesh.instancedVBO = 0;
+  mShadowMesh.instancingReady = false;
+  mShadowBuildPositions.clear();
+  mShadowBuildIndices.clear();
 
   LOG_INFO("Asset", "Loaded true FBX: " + path + " with " +
                         std::to_string(mSubmeshes.size()) + " submeshes.");
@@ -78,6 +143,7 @@ void UFBXModel::processMesh(ufbx_mesh *mesh, ufbx_node *node) {
     // Material Loading
     UFBXSubmesh submesh;
     submesh.material.baseColor = glm::vec4(0.8f, 0.8f, 0.8f, 1.0f);
+    submesh.material.sourceAssetPath = mSourcePath;
 
     ufbx_material *fb_mat = nullptr;
     if (node && p < node->materials.count) {
@@ -88,41 +154,47 @@ void UFBXModel::processMesh(ufbx_mesh *mesh, ufbx_node *node) {
 
     if (fb_mat) {
       submesh.materialName = fb_mat->name.data;
+      submesh.material.sourceMaterialName = submesh.materialName;
       if (fb_mat->pbr.base_color.has_value) {
         ufbx_vec3 c = fb_mat->pbr.base_color.value_vec3;
         submesh.material.baseColor = glm::vec4(c.x, c.y, c.z, 1.0f);
       }
       if (fb_mat->pbr.base_color.texture) {
-        submesh.material.texDiffuse =
-            loadTextureFromUFBX(fb_mat->pbr.base_color.texture);
+        submesh.material.texDiffuse = loadTextureFromUFBX(
+            fb_mat->pbr.base_color.texture, TextureUsage::Color,
+            &submesh.material.texDiffusePath);
       }
       if (fb_mat->pbr.normal_map.texture) {
-        submesh.material.texNormal =
-            loadTextureFromUFBX(fb_mat->pbr.normal_map.texture);
+        submesh.material.texNormal = loadTextureFromUFBX(
+            fb_mat->pbr.normal_map.texture, TextureUsage::Data,
+            &submesh.material.texNormalPath);
       }
       if (fb_mat->pbr.roughness.has_value) {
         submesh.material.roughness =
             std::clamp((float)fb_mat->pbr.roughness.value_real, 0.0f, 1.0f);
       }
       if (fb_mat->pbr.roughness.texture) {
-        submesh.material.texRoughness =
-            loadTextureFromUFBX(fb_mat->pbr.roughness.texture);
+        submesh.material.texRoughness = loadTextureFromUFBX(
+            fb_mat->pbr.roughness.texture, TextureUsage::Data,
+            &submesh.material.texRoughnessPath);
       }
       if (fb_mat->pbr.metalness.has_value) {
         submesh.material.metallic =
             std::clamp((float)fb_mat->pbr.metalness.value_real, 0.0f, 1.0f);
       }
       if (fb_mat->pbr.metalness.texture) {
-        submesh.material.texMetallic =
-            loadTextureFromUFBX(fb_mat->pbr.metalness.texture);
+        submesh.material.texMetallic = loadTextureFromUFBX(
+            fb_mat->pbr.metalness.texture, TextureUsage::Data,
+            &submesh.material.texMetallicPath);
       }
       if (fb_mat->pbr.ambient_occlusion.has_value) {
         submesh.material.ao = std::clamp(
             (float)fb_mat->pbr.ambient_occlusion.value_real, 0.0f, 1.0f);
       }
       if (fb_mat->pbr.ambient_occlusion.texture) {
-        submesh.material.texAO =
-            loadTextureFromUFBX(fb_mat->pbr.ambient_occlusion.texture);
+        submesh.material.texAO = loadTextureFromUFBX(
+            fb_mat->pbr.ambient_occlusion.texture, TextureUsage::Data,
+            &submesh.material.texAOPath);
       }
 
       if (fb_mat->pbr.emission_color.has_value) {
@@ -134,11 +206,13 @@ void UFBXModel::processMesh(ufbx_mesh *mesh, ufbx_node *node) {
             std::max(0.0f, (float)fb_mat->pbr.emission_factor.value_real);
       }
       if (fb_mat->pbr.emission_color.texture) {
-        submesh.material.texEmissive =
-            loadTextureFromUFBX(fb_mat->pbr.emission_color.texture);
+        submesh.material.texEmissive = loadTextureFromUFBX(
+            fb_mat->pbr.emission_color.texture, TextureUsage::Color,
+            &submesh.material.texEmissivePath);
       } else if (fb_mat->pbr.emission_factor.texture) {
-        submesh.material.texEmissive =
-            loadTextureFromUFBX(fb_mat->pbr.emission_factor.texture);
+        submesh.material.texEmissive = loadTextureFromUFBX(
+            fb_mat->pbr.emission_factor.texture, TextureUsage::Color,
+            &submesh.material.texEmissivePath);
       }
 
       if (fb_mat->pbr.opacity.has_value) {
@@ -146,14 +220,17 @@ void UFBXModel::processMesh(ufbx_mesh *mesh, ufbx_node *node) {
             std::clamp((float)fb_mat->pbr.opacity.value_real, 0.0f, 1.0f);
       }
       if (fb_mat->pbr.opacity.texture) {
-        submesh.material.texOpacity = loadTextureFromUFBX(fb_mat->pbr.opacity.texture);
+        submesh.material.texOpacity = loadTextureFromUFBX(
+            fb_mat->pbr.opacity.texture, TextureUsage::Data,
+            &submesh.material.texOpacityPath);
         submesh.material.opacityChannel = 0; // FBX opacity maps are typically grayscale.
         submesh.material.alphaCutoff = 0.333f;
       }
 
       if (fb_mat->pbr.glossiness.texture && submesh.material.texRoughness == 0) {
-        submesh.material.texRoughness =
-            loadTextureFromUFBX(fb_mat->pbr.glossiness.texture);
+        submesh.material.texRoughness = loadTextureFromUFBX(
+            fb_mat->pbr.glossiness.texture, TextureUsage::Data,
+            &submesh.material.texRoughnessPath);
         submesh.material.roughnessMapIsGloss = (submesh.material.texRoughness != 0);
       }
       if (fb_mat->pbr.glossiness.has_value && fb_mat->pbr.roughness.has_value == false) {
@@ -163,6 +240,8 @@ void UFBXModel::processMesh(ufbx_mesh *mesh, ufbx_node *node) {
     } else {
       submesh.materialName = "DefaultFBX";
     }
+    if (submesh.material.sourceMaterialName.empty())
+      submesh.material.sourceMaterialName = submesh.materialName;
     submesh.material.id = submesh.materialName;
 
     // Triangulate
@@ -210,6 +289,18 @@ void UFBXModel::processMesh(ufbx_mesh *mesh, ufbx_node *node) {
       indices.push_back((unsigned int)i); // directly indexed since we unpacked
     }
 
+    const unsigned int shadowBaseIndex =
+        static_cast<unsigned int>(mShadowBuildPositions.size());
+    mShadowBuildPositions.reserve(mShadowBuildPositions.size() +
+                                  vertices.size());
+    for (const auto &vertex : vertices) {
+      mShadowBuildPositions.push_back(vertex.pos);
+    }
+    mShadowBuildIndices.reserve(mShadowBuildIndices.size() + indices.size());
+    for (unsigned int index : indices) {
+      mShadowBuildIndices.push_back(shadowBaseIndex + index);
+    }
+
     submesh.indexCount = (GLsizei)indices.size();
 
     glGenVertexArrays(1, &submesh.vao);
@@ -239,7 +330,8 @@ void UFBXModel::processMesh(ufbx_mesh *mesh, ufbx_node *node) {
   }
 }
 
-GLuint UFBXModel::loadTextureFromUFBX(ufbx_texture *tex) {
+GLuint UFBXModel::loadTextureFromUFBX(ufbx_texture *tex, TextureUsage usage,
+                                      std::string *outSourcePath) {
   if (!tex)
     return 0;
 
@@ -252,15 +344,22 @@ GLuint UFBXModel::loadTextureFromUFBX(ufbx_texture *tex) {
       filePath = mDirectory + "/" + filePath;
     }
 
-    auto cached = mTextureCache.find(filePath);
-    if (cached != mTextureCache.end())
-      return cached->second;
+    const std::string cacheKey =
+        filePath + (usage == TextureUsage::Color ? "|color" : "|data");
+    auto cached = mTextureCache.find(cacheKey);
+      if (cached != mTextureCache.end()) {
+        if (outSourcePath)
+          *outSourcePath = filePath;
+        return cached->second;
+      }
 
-    GLuint glid = LoadTexture2D(filePath.c_str());
-    if (glid != 0) {
-      mTextureCache[filePath] = glid;
-      LOG_TRACE("Asset", "ufbx loaded texture file: " + filePath);
-    }
+      GLuint glid = LoadTexture2D(filePath.c_str(), true, usage);
+      if (glid != 0) {
+        mTextureCache[cacheKey] = glid;
+        if (outSourcePath)
+          *outSourcePath = filePath;
+        LOG_TRACE("Asset", "ufbx loaded texture file: " + filePath);
+      }
     return glid;
   };
 
@@ -284,8 +383,11 @@ GLuint UFBXModel::loadTextureFromUFBX(ufbx_texture *tex) {
   if (tex->content.data && tex->content.size > 0) {
     const std::string key = "embedded_" + std::to_string((uintptr_t)tex);
     auto cached = mTextureCache.find(key);
-    if (cached != mTextureCache.end())
+    if (cached != mTextureCache.end()) {
+      if (outSourcePath)
+        *outSourcePath = "embedded://" + std::to_string((uintptr_t)tex);
       return cached->second;
+    }
 
     int w = 0, h = 0, channels = 0;
     stbi_uc *pixels =
@@ -307,6 +409,8 @@ GLuint UFBXModel::loadTextureFromUFBX(ufbx_texture *tex) {
     stbi_image_free(pixels);
 
     mTextureCache[key] = texID;
+    if (outSourcePath)
+      *outSourcePath = "embedded://" + std::to_string((uintptr_t)tex);
     LOG_TRACE("Asset", "ufbx loaded embedded texture bytes");
     return texID;
   }
@@ -331,7 +435,6 @@ void UFBXModel::draw(Shader &shader, const glm::vec3 &pos, const glm::vec3 &rot,
     GLStateCache::instance().bindVertexArray(sm.vao);
     glDrawElements(GL_TRIANGLES, sm.indexCount, GL_UNSIGNED_INT, 0);
   }
-  GLStateCache::instance().bindVertexArray(0);
 }
 
 void UFBXModel::drawDepth(Shader &shadowShader, const glm::vec3 &pos,
@@ -339,17 +442,25 @@ void UFBXModel::drawDepth(Shader &shadowShader, const glm::vec3 &pos,
   glm::mat4 modelMatrix = buildTRS(pos, rot, scale);
   shadowShader.setMat4("model", modelMatrix);
 
+  if (mShadowMesh.vao != 0 && mShadowMesh.indexCount > 0) {
+    GLStateCache::instance().bindVertexArray(mShadowMesh.vao);
+    glDrawElements(GL_TRIANGLES, mShadowMesh.indexCount, GL_UNSIGNED_INT, 0);
+    return;
+  }
+
   for (auto &sm : mSubmeshes) {
     if (sm.vao == 0 || sm.indexCount <= 0)
       continue;
     GLStateCache::instance().bindVertexArray(sm.vao);
     glDrawElements(GL_TRIANGLES, sm.indexCount, GL_UNSIGNED_INT, 0);
   }
-  GLStateCache::instance().bindVertexArray(0);
 }
 
 void UFBXModel::drawInstanced(Shader &shader, unsigned int instanceVBO,
                               int instanceCount) {
+  if (instanceCount == 0)
+    return;
+
   for (auto &sm : mSubmeshes) {
     if (sm.vao == 0)
       continue;
@@ -358,25 +469,7 @@ void UFBXModel::drawInstanced(Shader &shader, unsigned int instanceVBO,
     GLStateCache::instance().bindVertexArray(sm.vao);
 
     if (!sm.instancingReady || sm.instancedVBO != instanceVBO) {
-      glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-      std::size_t vec4Size = sizeof(glm::vec4);
-      glEnableVertexAttribArray(3);
-      glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                            (void *)0);
-      glEnableVertexAttribArray(4);
-      glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                            (void *)(1 * vec4Size));
-      glEnableVertexAttribArray(5);
-      glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                            (void *)(2 * vec4Size));
-      glEnableVertexAttribArray(6);
-      glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                            (void *)(3 * vec4Size));
-
-      glVertexAttribDivisor(3, 1);
-      glVertexAttribDivisor(4, 1);
-      glVertexAttribDivisor(5, 1);
-      glVertexAttribDivisor(6, 1);
+      bindInstanceMatrixAttributes(instanceVBO);
       sm.instancedVBO = instanceVBO;
       sm.instancingReady = true;
     }
@@ -384,12 +477,28 @@ void UFBXModel::drawInstanced(Shader &shader, unsigned int instanceVBO,
     glDrawElementsInstanced(GL_TRIANGLES, sm.indexCount, GL_UNSIGNED_INT, 0,
                             instanceCount);
   }
-  GLStateCache::instance().bindVertexArray(0);
 }
 
 void UFBXModel::drawDepthInstanced(Shader &shadowShader,
                                    unsigned int instanceVBO,
                                    int instanceCount) {
+  if (instanceCount == 0)
+    return;
+
+  if (mShadowMesh.vao != 0 && mShadowMesh.indexCount > 0) {
+    GLStateCache::instance().bindVertexArray(mShadowMesh.vao);
+
+    if (!mShadowMesh.instancingReady || mShadowMesh.instancedVBO != instanceVBO) {
+      bindInstanceMatrixAttributes(instanceVBO);
+      mShadowMesh.instancedVBO = instanceVBO;
+      mShadowMesh.instancingReady = true;
+    }
+
+    glDrawElementsInstanced(GL_TRIANGLES, mShadowMesh.indexCount,
+                            GL_UNSIGNED_INT, 0, instanceCount);
+    return;
+  }
+
   for (auto &sm : mSubmeshes) {
     if (sm.vao == 0 || sm.indexCount <= 0)
       continue;
@@ -397,25 +506,7 @@ void UFBXModel::drawDepthInstanced(Shader &shadowShader,
     GLStateCache::instance().bindVertexArray(sm.vao);
 
     if (!sm.instancingReady || sm.instancedVBO != instanceVBO) {
-      glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-      std::size_t vec4Size = sizeof(glm::vec4);
-      glEnableVertexAttribArray(3);
-      glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                            (void *)0);
-      glEnableVertexAttribArray(4);
-      glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                            (void *)(1 * vec4Size));
-      glEnableVertexAttribArray(5);
-      glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                            (void *)(2 * vec4Size));
-      glEnableVertexAttribArray(6);
-      glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, 4 * vec4Size,
-                            (void *)(3 * vec4Size));
-
-      glVertexAttribDivisor(3, 1);
-      glVertexAttribDivisor(4, 1);
-      glVertexAttribDivisor(5, 1);
-      glVertexAttribDivisor(6, 1);
+      bindInstanceMatrixAttributes(instanceVBO);
       sm.instancedVBO = instanceVBO;
       sm.instancingReady = true;
     }
@@ -423,7 +514,6 @@ void UFBXModel::drawDepthInstanced(Shader &shadowShader,
     glDrawElementsInstanced(GL_TRIANGLES, sm.indexCount, GL_UNSIGNED_INT, 0,
                             instanceCount);
   }
-  GLStateCache::instance().bindVertexArray(0);
 }
 
 bool UFBXModel::getGlobalBounds(glm::vec3 &outMin, glm::vec3 &outMax) const {
@@ -435,6 +525,16 @@ bool UFBXModel::getGlobalBounds(glm::vec3 &outMin, glm::vec3 &outMax) const {
 }
 
 void UFBXModel::shutdown() {
+  if (mShadowMesh.vao)
+    glDeleteVertexArrays(1, &mShadowMesh.vao);
+  if (mShadowMesh.vbo)
+    glDeleteBuffers(1, &mShadowMesh.vbo);
+  if (mShadowMesh.ebo)
+    glDeleteBuffers(1, &mShadowMesh.ebo);
+  mShadowMesh = {};
+  mShadowBuildPositions.clear();
+  mShadowBuildIndices.clear();
+
   for (auto &sm : mSubmeshes) {
     if (sm.vao)
       glDeleteVertexArrays(1, &sm.vao);
@@ -456,4 +556,5 @@ void UFBXModel::shutdown() {
     ufbx_free_scene(mScene);
     mScene = nullptr;
   }
+  mSourcePath.clear();
 }

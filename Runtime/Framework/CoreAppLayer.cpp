@@ -10,6 +10,7 @@
 
 #include "ECS/Components.h"
 #include "ECS/Systems/CameraSystem.h"
+#include "ECS/Systems/DestructionSystem.h"
 #include "ECS/Systems/RenderSystem.h"
 
 #include "EngineEvents.h"
@@ -34,6 +35,7 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <iomanip>
 #include <string>
 #include <vector>
 
@@ -115,6 +117,131 @@ bool parseBool(const std::string &s, bool &out) {
   return false;
 }
 
+std::string formatRenderPassOrderForLog(const std::vector<std::string> &passes) {
+  if (passes.empty())
+    return "none";
+  std::ostringstream ss;
+  for (size_t i = 0; i < passes.size(); ++i) {
+    if (i > 0)
+      ss << " -> ";
+    ss << passes[i];
+  }
+  return ss.str();
+}
+
+std::string formatTopCpuSamplesForLog(const std::vector<FrameProfiler::Sample> &samples,
+                                      int limit) {
+  if (samples.empty() || limit <= 0)
+    return "none";
+
+  std::vector<FrameProfiler::Sample> sorted = samples;
+  std::sort(sorted.begin(), sorted.end(),
+            [](const FrameProfiler::Sample &a, const FrameProfiler::Sample &b) {
+              return a.ms > b.ms;
+            });
+
+  const size_t sampleCount =
+      std::min(sorted.size(), (size_t)std::max(1, limit));
+  std::ostringstream ss;
+  ss << std::fixed << std::setprecision(2);
+  for (size_t i = 0; i < sampleCount; ++i) {
+    if (i > 0)
+      ss << " | ";
+    ss << sorted[i].name << "=" << sorted[i].ms << "ms";
+  }
+  return ss.str();
+}
+
+void logPerformanceSnapshotIfNeeded(AppState &s, float dt) {
+  auto &cfg = s.performanceLog;
+  if (!cfg.enabled)
+    return;
+
+  s.performanceLogFrameIndex++;
+  s.performanceLogSummaryTimer += std::max(dt, 0.0f);
+  s.performanceLogSpikeCooldown =
+      std::max(0.0f, s.performanceLogSpikeCooldown - std::max(dt, 0.0f));
+
+  const FramePerformanceSnapshot &perf = s.performance;
+  const bool spikeFrame =
+      cfg.logSpikeFrames && perf.frameMs >= std::max(1.0f, cfg.spikeThresholdMs);
+  const bool periodicSummary =
+      cfg.logPeriodicSummary &&
+      s.performanceLogSummaryTimer >= std::max(0.25f, cfg.summaryIntervalSec);
+  const bool logFrame = cfg.logEveryFrame;
+
+  if (!logFrame && !spikeFrame && !periodicSummary)
+    return;
+  if (spikeFrame && s.performanceLogSpikeCooldown > 0.0f && !logFrame)
+    return;
+
+  std::ostringstream header;
+  header << std::fixed << std::setprecision(2);
+  header << "frame#" << s.performanceLogFrameIndex << " fps=" << perf.fps
+         << " frame=" << perf.frameMs << "ms gpu=" << perf.gpuFrameMs
+         << "ms main=" << perf.gpuMainMs << "ms shadow=" << perf.gpuShadowMs
+         << "ms gap=" << perf.cpuGpuGapMs
+         << "ms bottleneck=" << performanceBottleneckLabel(perf.bottleneck)
+         << " backend=" << perf.submissionBackendLabel;
+
+  std::ostringstream details;
+  details << std::fixed << std::setprecision(1);
+  details << "\nGPU main split sky=" << perf.gpuMainSkyMs
+          << " terrain=" << perf.gpuMainTerrainMs
+          << " scene=" << perf.gpuMainSceneMs
+          << " post=" << perf.gpuMainPostMs;
+  details << "\nDraws main=" << perf.drawCallsMain
+          << " shadow=" << perf.drawCallsShadow
+          << " instMain=" << perf.instancedDrawCallsMain
+          << " instShadow=" << perf.instancedDrawCallsShadow
+          << " terrain=" << perf.terrainDrawCalls
+          << " entities=" << perf.entityCount
+          << " particles=" << perf.particleCount;
+  details << "\nTerrain vis=" << perf.terrainVisibleChunks
+          << " pages=" << perf.terrainGpuPagesUsed
+          << " frustumCull=" << perf.terrainFrustumCulledChunks
+          << " horizonCull=" << perf.terrainHorizonCulledChunks
+          << " jobs=" << perf.terrainPendingJobs
+          << " uploadsPending=" << perf.terrainPendingUploads
+          << " collision=" << perf.terrainCollisionBodies
+          << " uploadKB=" << (perf.terrainUploadBytes / 1024.0f)
+          << " uploads=" << perf.terrainUploads
+          << " skips=" << perf.terrainUploadSkips;
+  details << "\nInst uploads main=" << perf.instancedUploadsMain
+          << " shadow=" << perf.instancedUploadsShadow
+          << " skipMain=" << perf.instancedUploadSkipsMain
+          << " skipShadow=" << perf.instancedUploadSkipsShadow
+          << " clustersMain=" << perf.instancedClustersVisibleMain << "/"
+          << perf.instancedClustersTestedMain
+          << " clustersShadow=" << perf.instancedClustersVisibleShadow << "/"
+          << perf.instancedClustersTestedShadow;
+  details << "\nShadow cascades=" << perf.shadowCascadesUpdated << "/"
+          << std::max(perf.shadowCascadeCount, 1)
+          << " staggered=" << (perf.shadowCascadeStaggered ? "yes" : "no")
+          << " distCull=" << perf.shadowDistanceCulled
+          << " smallCull=" << perf.shadowSmallCasterCulled;
+  details << "\nGL binds program=" << perf.glProgramBinds
+          << " texture=" << perf.glTextureBinds
+          << " vao=" << perf.glVaoBinds
+          << " state=" << perf.glStateChanges;
+  details << "\nPasses: " << formatRenderPassOrderForLog(perf.renderPassOrder);
+  details << "\nCPU top: "
+          << formatTopCpuSamplesForLog(s.profiler.samples(), cfg.cpuSampleLimit);
+
+  const std::string message = header.str() + details.str();
+  if (spikeFrame) {
+    LOG_WARN("Perf", "Spike detected: " + message);
+    s.performanceLogSpikeCooldown = std::max(0.0f, cfg.spikeCooldownSec);
+  } else if (logFrame) {
+    LOG_INFO("Perf", "Frame: " + message);
+  } else {
+    LOG_INFO("Perf", "Summary: " + message);
+  }
+
+  if (periodicSummary)
+    s.performanceLogSummaryTimer = 0.0f;
+}
+
 bool executeConsoleCommand(AppState &s, const std::string &line) {
   auto args = splitCommand(line);
   if (args.empty())
@@ -130,7 +257,7 @@ bool executeConsoleCommand(AppState &s, const std::string &line) {
     LOG_INFO("Console",
              "Commands: help, echo <text>, get <key>, set <key> <value>, "
              "spawn <path>, teleport <x> <y> <z>, regen_terrain, play, pause, "
-             "stop");
+             "stop, perf_log <off|spikes|summary|all|threshold <ms>>");
     LOG_INFO("Console",
              "Keys: time, daynight, fog, exposure, gamma, tree_density, "
              "rock_density, grass_density");
@@ -235,6 +362,79 @@ bool executeConsoleCommand(AppState &s, const std::string &line) {
     return true;
   }
 
+  if (cmd == "perf_log") {
+    if (args.size() < 2) {
+      LOG_INFO(
+          "Console",
+          std::string("perf_log = ") +
+              (s.performanceLog.enabled ? "on" : "off") +
+              " mode=" +
+              (s.performanceLog.logEveryFrame
+                   ? "all"
+                   : (s.performanceLog.logSpikeFrames
+                          ? (s.performanceLog.logPeriodicSummary ? "spikes"
+                                                                 : "spikes_only")
+                          : "summary")) +
+              " threshold_ms=" +
+              std::to_string(s.performanceLog.spikeThresholdMs));
+      return false;
+    }
+
+    std::string mode = args[1];
+    std::transform(mode.begin(), mode.end(), mode.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+
+    if (mode == "off") {
+      s.performanceLog.enabled = false;
+      LOG_INFO("Console", "Performance logging disabled");
+      return false;
+    }
+    if (mode == "spikes") {
+      s.performanceLog.enabled = true;
+      s.performanceLog.logEveryFrame = false;
+      s.performanceLog.logSpikeFrames = true;
+      s.performanceLog.logPeriodicSummary = true;
+      s.performanceLogSummaryTimer = 0.0f;
+      s.performanceLogSpikeCooldown = 0.0f;
+      LOG_INFO("Console", "Performance logging set to spikes + summaries");
+      return false;
+    }
+    if (mode == "summary") {
+      s.performanceLog.enabled = true;
+      s.performanceLog.logEveryFrame = false;
+      s.performanceLog.logSpikeFrames = false;
+      s.performanceLog.logPeriodicSummary = true;
+      s.performanceLogSummaryTimer = 0.0f;
+      LOG_INFO("Console", "Performance logging set to summaries only");
+      return false;
+    }
+    if (mode == "all") {
+      s.performanceLog.enabled = true;
+      s.performanceLog.logEveryFrame = true;
+      s.performanceLog.logSpikeFrames = true;
+      s.performanceLog.logPeriodicSummary = false;
+      s.performanceLogSpikeCooldown = 0.0f;
+      LOG_WARN("Console",
+               "Performance logging set to every frame; this may reduce FPS");
+      return false;
+    }
+    if (mode == "threshold") {
+      if (args.size() < 3) {
+        LOG_WARN("Console", "Usage: perf_log threshold <ms>");
+        return false;
+      }
+      s.performanceLog.spikeThresholdMs =
+          std::clamp(std::stof(args[2]), 5.0f, 1000.0f);
+      LOG_INFO("Console", "Performance spike threshold set to " +
+                              std::to_string(s.performanceLog.spikeThresholdMs) +
+                              " ms");
+      return false;
+    }
+
+    LOG_WARN("Console", "Usage: perf_log <off|spikes|summary|all|threshold <ms>>");
+    return false;
+  }
+
   if (cmd == "teleport") {
     if (args.size() < 4) {
       LOG_WARN("Console", "Usage: teleport <x> <y> <z>");
@@ -325,6 +525,7 @@ void applySunSettings(const json &j, SunFX &s) {
 json serializeSkySettings(const SkySettings &s) {
   json j;
   j["solidSky"] = s.solidSky;
+  j["skyHDRPath"] = s.skyHDRPath;
   j["skyHorizon"] = {s.skyHorizon[0], s.skyHorizon[1], s.skyHorizon[2]};
   j["skyTop"] = {s.skyTop[0], s.skyTop[1], s.skyTop[2]};
   j["dayNightEnabled"] = s.dayNightEnabled;
@@ -337,6 +538,19 @@ json serializeSkySettings(const SkySettings &s) {
   j["sunDayColor"] = vec3ToJson(s.sunDayColor);
   j["sunDuskColor"] = vec3ToJson(s.sunDuskColor);
   j["sunNightColor"] = vec3ToJson(s.sunNightColor);
+  j["visualSunColor"] = vec3ToJson(s.visualSunColor);
+  j["visualSunDayColor"] = vec3ToJson(s.visualSunDayColor);
+  j["visualSunDuskColor"] = vec3ToJson(s.visualSunDuskColor);
+  j["visualSunNightColor"] = vec3ToJson(s.visualSunNightColor);
+  j["skyAtmosphereStrength"] = s.skyAtmosphereStrength;
+  j["skyGradientPower"] = s.skyGradientPower;
+  j["skyHorizonGlow"] = s.skyHorizonGlow;
+  j["skySunDiscIntensity"] = s.skySunDiscIntensity;
+  j["skySunHaloIntensity"] = s.skySunHaloIntensity;
+  j["skySunRaysIntensity"] = s.skySunRaysIntensity;
+  j["skySunDiscSoftness"] = s.skySunDiscSoftness;
+  j["skySunHaloSize"] = s.skySunHaloSize;
+  j["skySunRaySharpness"] = s.skySunRaySharpness;
   j["minimalSky"] = s.minimalSky;
   j["skyBackdropBlend"] = s.skyBackdropBlend;
   j["skyFeatureVisibility"] = s.skyFeatureVisibility;
@@ -354,6 +568,8 @@ json serializeSkySettings(const SkySettings &s) {
 void applySkySettings(const json &j, SkySettings &s) {
   if (j.contains("solidSky"))
     s.solidSky = j["solidSky"].get<bool>();
+  if (j.contains("skyHDRPath"))
+    s.skyHDRPath = j["skyHDRPath"].get<std::string>();
   if (j.contains("skyHorizon") && j["skyHorizon"].is_array() &&
       j["skyHorizon"].size() == 3) {
     s.skyHorizon[0] = j["skyHorizon"][0].get<float>();
@@ -399,6 +615,37 @@ void applySkySettings(const json &j, SkySettings &s) {
   loadVec3(j, "sunDayColor", s.sunDayColor);
   loadVec3(j, "sunDuskColor", s.sunDuskColor);
   loadVec3(j, "sunNightColor", s.sunNightColor);
+  loadVec3(j, "visualSunColor", s.visualSunColor);
+  loadVec3(j, "visualSunDayColor", s.visualSunDayColor);
+  loadVec3(j, "visualSunDuskColor", s.visualSunDuskColor);
+  loadVec3(j, "visualSunNightColor", s.visualSunNightColor);
+  if (j.contains("skyAtmosphereStrength"))
+    s.skyAtmosphereStrength =
+        std::clamp(j["skyAtmosphereStrength"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("skyGradientPower"))
+    s.skyGradientPower =
+        std::clamp(j["skyGradientPower"].get<float>(), 0.25f, 4.0f);
+  if (j.contains("skyHorizonGlow"))
+    s.skyHorizonGlow =
+        std::clamp(j["skyHorizonGlow"].get<float>(), 0.0f, 2.0f);
+  if (j.contains("skySunDiscIntensity"))
+    s.skySunDiscIntensity =
+        std::clamp(j["skySunDiscIntensity"].get<float>(), 0.0f, 80.0f);
+  if (j.contains("skySunHaloIntensity"))
+    s.skySunHaloIntensity =
+        std::clamp(j["skySunHaloIntensity"].get<float>(), 0.0f, 8.0f);
+  if (j.contains("skySunRaysIntensity"))
+    s.skySunRaysIntensity =
+        std::clamp(j["skySunRaysIntensity"].get<float>(), 0.0f, 4.0f);
+  if (j.contains("skySunDiscSoftness"))
+    s.skySunDiscSoftness =
+        std::clamp(j["skySunDiscSoftness"].get<float>(), 0.0001f, 0.05f);
+  if (j.contains("skySunHaloSize"))
+    s.skySunHaloSize =
+        std::clamp(j["skySunHaloSize"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("skySunRaySharpness"))
+    s.skySunRaySharpness =
+        std::clamp(j["skySunRaySharpness"].get<float>(), 1.0f, 40.0f);
   if (j.contains("minimalSky"))
     s.minimalSky = j["minimalSky"].get<bool>();
   if (j.contains("skyBackdropBlend"))
@@ -429,14 +676,37 @@ json serializeTerrainSettings(const TerrainSettings &s) {
   j["chunkSize"] = s.chunkSize;
   j["heightScale"] = s.heightScale;
   j["noiseFrequency"] = s.noiseFrequency;
+  j["landscapeScale"] = s.landscapeScale;
+  j["macroStrength"] = s.macroStrength;
+  j["mountainSpan"] = s.mountainSpan;
+  j["valleySpan"] = s.valleySpan;
   j["viewDistance"] = s.viewDistance;
   j["chunkWorldSize"] = s.chunkWorldSize;
+  j["maxConcurrentChunkJobs"] = s.maxConcurrentChunkJobs;
+  j["maxChunkLoadsPerUpdate"] = s.maxChunkLoadsPerUpdate;
+  j["maxChunkUploadsPerFrame"] = s.maxChunkUploadsPerFrame;
+  j["collisionChunkRadius"] = s.collisionChunkRadius;
+  j["useGpuTerrain"] = s.useGpuTerrain;
+  j["enableHorizonCulling"] = s.enableHorizonCulling;
+  j["horizonCullingSectors"] = s.horizonCullingSectors;
+  j["terrainGpuPageCapacity"] = s.terrainGpuPageCapacity;
+  j["terrainWorkerThreads"] = s.terrainWorkerThreads;
+  j["maxCompletedChunksPerFrame"] = s.maxCompletedChunksPerFrame;
+  j["maxGpuUploadBytesPerFrame"] = s.maxGpuUploadBytesPerFrame;
+  j["collisionUpdatesPerFrame"] = s.collisionUpdatesPerFrame;
+  j["meshVegetationDistance"] = s.meshVegetationDistance;
+  j["impostorVegetationDistance"] = s.impostorVegetationDistance;
+  j["vegetationShadowDistance"] = s.vegetationShadowDistance;
+  j["materialQuality"] = (int)s.materialQuality;
   j["useRidgeNoise"] = s.useRidgeNoise;
   j["singleBiomeOnly"] = s.singleBiomeOnly;
   j["octaves"] = s.octaves;
   j["lacunarity"] = s.lacunarity;
   j["gain"] = s.gain;
   j["treeDensity"] = s.treeDensity;
+  j["interactiveTreeChunkRadius"] = s.interactiveTreeChunkRadius;
+  j["interactiveTreeRatio"] = s.interactiveTreeRatio;
+  j["maxInteractiveTreesPerChunk"] = s.maxInteractiveTreesPerChunk;
   j["biomeScale"] = s.biomeScale;
   j["seaLevel"] = s.seaLevel;
   j["rockDensity"] = s.rockDensity;
@@ -467,10 +737,52 @@ void applyTerrainSettings(const json &j, TerrainSettings &s) {
     s.heightScale = j["heightScale"].get<float>();
   if (j.contains("noiseFrequency"))
     s.noiseFrequency = j["noiseFrequency"].get<float>();
+  if (j.contains("landscapeScale"))
+    s.landscapeScale = j["landscapeScale"].get<float>();
+  if (j.contains("macroStrength"))
+    s.macroStrength = j["macroStrength"].get<float>();
+  if (j.contains("mountainSpan"))
+    s.mountainSpan = j["mountainSpan"].get<float>();
+  if (j.contains("valleySpan"))
+    s.valleySpan = j["valleySpan"].get<float>();
   if (j.contains("viewDistance"))
     s.viewDistance = j["viewDistance"].get<int>();
   if (j.contains("chunkWorldSize"))
     s.chunkWorldSize = j["chunkWorldSize"].get<float>();
+  if (j.contains("maxConcurrentChunkJobs"))
+    s.maxConcurrentChunkJobs = j["maxConcurrentChunkJobs"].get<int>();
+  if (j.contains("maxChunkLoadsPerUpdate"))
+    s.maxChunkLoadsPerUpdate = j["maxChunkLoadsPerUpdate"].get<int>();
+  if (j.contains("maxChunkUploadsPerFrame"))
+    s.maxChunkUploadsPerFrame = j["maxChunkUploadsPerFrame"].get<int>();
+  if (j.contains("collisionChunkRadius"))
+    s.collisionChunkRadius = j["collisionChunkRadius"].get<int>();
+  if (j.contains("useGpuTerrain"))
+    s.useGpuTerrain = j["useGpuTerrain"].get<bool>();
+  if (j.contains("enableHorizonCulling"))
+    s.enableHorizonCulling = j["enableHorizonCulling"].get<bool>();
+  if (j.contains("horizonCullingSectors"))
+    s.horizonCullingSectors = j["horizonCullingSectors"].get<int>();
+  if (j.contains("terrainGpuPageCapacity"))
+    s.terrainGpuPageCapacity = j["terrainGpuPageCapacity"].get<int>();
+  if (j.contains("terrainWorkerThreads"))
+    s.terrainWorkerThreads = j["terrainWorkerThreads"].get<int>();
+  if (j.contains("maxCompletedChunksPerFrame"))
+    s.maxCompletedChunksPerFrame = j["maxCompletedChunksPerFrame"].get<int>();
+  if (j.contains("maxGpuUploadBytesPerFrame"))
+    s.maxGpuUploadBytesPerFrame = j["maxGpuUploadBytesPerFrame"].get<int>();
+  if (j.contains("collisionUpdatesPerFrame"))
+    s.collisionUpdatesPerFrame = j["collisionUpdatesPerFrame"].get<int>();
+  if (j.contains("meshVegetationDistance"))
+    s.meshVegetationDistance = j["meshVegetationDistance"].get<int>();
+  if (j.contains("impostorVegetationDistance"))
+    s.impostorVegetationDistance = j["impostorVegetationDistance"].get<int>();
+  if (j.contains("vegetationShadowDistance"))
+    s.vegetationShadowDistance = j["vegetationShadowDistance"].get<int>();
+  if (j.contains("materialQuality")) {
+    const int quality = std::clamp(j["materialQuality"].get<int>(), 0, 3);
+    s.materialQuality = (TerrainMaterialQuality)quality;
+  }
   if (j.contains("useRidgeNoise"))
     s.useRidgeNoise = j["useRidgeNoise"].get<bool>();
   if (j.contains("singleBiomeOnly"))
@@ -483,6 +795,13 @@ void applyTerrainSettings(const json &j, TerrainSettings &s) {
     s.gain = j["gain"].get<float>();
   if (j.contains("treeDensity"))
     s.treeDensity = j["treeDensity"].get<float>();
+  if (j.contains("interactiveTreeChunkRadius"))
+    s.interactiveTreeChunkRadius = j["interactiveTreeChunkRadius"].get<int>();
+  if (j.contains("interactiveTreeRatio"))
+    s.interactiveTreeRatio = j["interactiveTreeRatio"].get<float>();
+  if (j.contains("maxInteractiveTreesPerChunk"))
+    s.maxInteractiveTreesPerChunk =
+        j["maxInteractiveTreesPerChunk"].get<int>();
   if (j.contains("biomeScale"))
     s.biomeScale = j["biomeScale"].get<float>();
   if (j.contains("seaLevel"))
@@ -547,13 +866,49 @@ json serializeTerrainMaterial(const TerrainMaterialSettings &s) {
   j["roughRock"] = s.roughRock;
   j["roughSand"] = s.roughSand;
   j["roughSnow"] = s.roughSnow;
+  j["useLayerTextures"] = s.useLayerTextures;
+  j["grassAlbedoPath"] = s.grassAlbedoPath;
+  j["grassNormalPath"] = s.grassNormalPath;
+  j["grassRoughnessPath"] = s.grassRoughnessPath;
+  j["dirtAlbedoPath"] = s.dirtAlbedoPath;
+  j["dirtNormalPath"] = s.dirtNormalPath;
+  j["dirtRoughnessPath"] = s.dirtRoughnessPath;
+  j["layerTextureTiling"] = s.layerTextureTiling;
+  j["layerTextureStrength"] = s.layerTextureStrength;
+  j["layerNormalStrength"] = s.layerNormalStrength;
+  j["layerRoughnessStrength"] = s.layerRoughnessStrength;
   j["useGroundTextures"] = s.useGroundTextures;
   j["groundAlbedoPath"] = s.groundAlbedoPath;
   j["groundNormalPath"] = s.groundNormalPath;
   j["groundRoughnessPath"] = s.groundRoughnessPath;
+  j["groundHeightPath"] = s.groundHeightPath;
   j["groundTiling"] = s.groundTiling;
   j["groundBlendStrength"] = s.groundBlendStrength;
   j["groundRoughness"] = s.groundRoughness;
+  j["groundHeightStrength"] = s.groundHeightStrength;
+  j["groundPseudoHeightEnabled"] = s.groundPseudoHeightEnabled;
+  j["groundPseudoHeightSource"] = s.groundPseudoHeightSource;
+  j["groundPseudoHeightContrast"] = s.groundPseudoHeightContrast;
+  j["groundPseudoHeightBias"] = s.groundPseudoHeightBias;
+  j["groundGradeEnabled"] = s.groundGradeEnabled;
+  j["groundGradeSaturation"] = s.groundGradeSaturation;
+  j["groundGradeContrast"] = s.groundGradeContrast;
+  j["groundGradeGamma"] = s.groundGradeGamma;
+  j["groundGradeTint"] = vec3ToJson(s.groundGradeTint);
+  j["groundBrightness"] = s.groundBrightness;
+  j["groundVariationStrength"] = s.groundVariationStrength;
+  j["groundVariationScale"] = s.groundVariationScale;
+  j["groundFullOverride"] = s.groundFullOverride;
+  j["sunGlintEnabled"] = s.sunGlintEnabled;
+  j["sunGlintIntensity"] = s.sunGlintIntensity;
+  j["sunGlintSharpness"] = s.sunGlintSharpness;
+  j["sunGlintMaskScale"] = s.sunGlintMaskScale;
+  j["sunGlintMaskStrength"] = s.sunGlintMaskStrength;
+  j["sunGlintBaseSpecular"] = s.sunGlintBaseSpecular;
+  j["sunGlintUseSceneSun"] = s.sunGlintUseSceneSun;
+  j["sunGlintDirectionAzimuth"] = s.sunGlintDirectionAzimuth;
+  j["sunGlintDirectionElevation"] = s.sunGlintDirectionElevation;
+  j["sunGlintBandWidth"] = s.sunGlintBandWidth;
   j["flatGreenEnabled"] = s.flatGreenEnabled;
   j["flatGreenColor"] = vec3ToJson(s.flatGreenColor);
   return j;
@@ -606,6 +961,28 @@ void applyTerrainMaterial(const json &j, TerrainMaterialSettings &s) {
     s.roughSand = j["roughSand"].get<float>();
   if (j.contains("roughSnow"))
     s.roughSnow = j["roughSnow"].get<float>();
+  if (j.contains("useLayerTextures"))
+    s.useLayerTextures = j["useLayerTextures"].get<bool>();
+  if (j.contains("grassAlbedoPath"))
+    s.grassAlbedoPath = j["grassAlbedoPath"].get<std::string>();
+  if (j.contains("grassNormalPath"))
+    s.grassNormalPath = j["grassNormalPath"].get<std::string>();
+  if (j.contains("grassRoughnessPath"))
+    s.grassRoughnessPath = j["grassRoughnessPath"].get<std::string>();
+  if (j.contains("dirtAlbedoPath"))
+    s.dirtAlbedoPath = j["dirtAlbedoPath"].get<std::string>();
+  if (j.contains("dirtNormalPath"))
+    s.dirtNormalPath = j["dirtNormalPath"].get<std::string>();
+  if (j.contains("dirtRoughnessPath"))
+    s.dirtRoughnessPath = j["dirtRoughnessPath"].get<std::string>();
+  if (j.contains("layerTextureTiling"))
+    s.layerTextureTiling = j["layerTextureTiling"].get<float>();
+  if (j.contains("layerTextureStrength"))
+    s.layerTextureStrength = j["layerTextureStrength"].get<float>();
+  if (j.contains("layerNormalStrength"))
+    s.layerNormalStrength = j["layerNormalStrength"].get<float>();
+  if (j.contains("layerRoughnessStrength"))
+    s.layerRoughnessStrength = j["layerRoughnessStrength"].get<float>();
   if (j.contains("useGroundTextures"))
     s.useGroundTextures = j["useGroundTextures"].get<bool>();
   if (j.contains("groundAlbedoPath"))
@@ -614,12 +991,62 @@ void applyTerrainMaterial(const json &j, TerrainMaterialSettings &s) {
     s.groundNormalPath = j["groundNormalPath"].get<std::string>();
   if (j.contains("groundRoughnessPath"))
     s.groundRoughnessPath = j["groundRoughnessPath"].get<std::string>();
+  if (j.contains("groundHeightPath"))
+    s.groundHeightPath = j["groundHeightPath"].get<std::string>();
   if (j.contains("groundTiling"))
     s.groundTiling = j["groundTiling"].get<float>();
   if (j.contains("groundBlendStrength"))
     s.groundBlendStrength = j["groundBlendStrength"].get<float>();
   if (j.contains("groundRoughness"))
     s.groundRoughness = j["groundRoughness"].get<float>();
+  if (j.contains("groundHeightStrength"))
+    s.groundHeightStrength = j["groundHeightStrength"].get<float>();
+  if (j.contains("groundPseudoHeightEnabled"))
+    s.groundPseudoHeightEnabled = j["groundPseudoHeightEnabled"].get<bool>();
+  if (j.contains("groundPseudoHeightSource"))
+    s.groundPseudoHeightSource = j["groundPseudoHeightSource"].get<int>();
+  if (j.contains("groundPseudoHeightContrast"))
+    s.groundPseudoHeightContrast = j["groundPseudoHeightContrast"].get<float>();
+  if (j.contains("groundPseudoHeightBias"))
+    s.groundPseudoHeightBias = j["groundPseudoHeightBias"].get<float>();
+  if (j.contains("groundGradeEnabled"))
+    s.groundGradeEnabled = j["groundGradeEnabled"].get<bool>();
+  if (j.contains("groundGradeSaturation"))
+    s.groundGradeSaturation = j["groundGradeSaturation"].get<float>();
+  if (j.contains("groundGradeContrast"))
+    s.groundGradeContrast = j["groundGradeContrast"].get<float>();
+  if (j.contains("groundGradeGamma"))
+    s.groundGradeGamma = j["groundGradeGamma"].get<float>();
+  loadVec3(j, "groundGradeTint", s.groundGradeTint);
+  if (j.contains("groundBrightness"))
+    s.groundBrightness = j["groundBrightness"].get<float>();
+  if (j.contains("groundVariationStrength"))
+    s.groundVariationStrength = j["groundVariationStrength"].get<float>();
+  if (j.contains("groundVariationScale"))
+    s.groundVariationScale = j["groundVariationScale"].get<float>();
+  if (j.contains("groundFullOverride"))
+    s.groundFullOverride = j["groundFullOverride"].get<bool>();
+  if (j.contains("sunGlintEnabled"))
+    s.sunGlintEnabled = j["sunGlintEnabled"].get<bool>();
+  if (j.contains("sunGlintIntensity"))
+    s.sunGlintIntensity = j["sunGlintIntensity"].get<float>();
+  if (j.contains("sunGlintSharpness"))
+    s.sunGlintSharpness = j["sunGlintSharpness"].get<float>();
+  if (j.contains("sunGlintMaskScale"))
+    s.sunGlintMaskScale = j["sunGlintMaskScale"].get<float>();
+  if (j.contains("sunGlintMaskStrength"))
+    s.sunGlintMaskStrength = j["sunGlintMaskStrength"].get<float>();
+  if (j.contains("sunGlintBaseSpecular"))
+    s.sunGlintBaseSpecular = j["sunGlintBaseSpecular"].get<float>();
+  if (j.contains("sunGlintUseSceneSun"))
+    s.sunGlintUseSceneSun = j["sunGlintUseSceneSun"].get<bool>();
+  if (j.contains("sunGlintDirectionAzimuth"))
+    s.sunGlintDirectionAzimuth = j["sunGlintDirectionAzimuth"].get<float>();
+  if (j.contains("sunGlintDirectionElevation"))
+    s.sunGlintDirectionElevation =
+        j["sunGlintDirectionElevation"].get<float>();
+  if (j.contains("sunGlintBandWidth"))
+    s.sunGlintBandWidth = j["sunGlintBandWidth"].get<float>();
   if (j.contains("flatGreenEnabled"))
     s.flatGreenEnabled = j["flatGreenEnabled"].get<bool>();
   loadVec3(j, "flatGreenColor", s.flatGreenColor);
@@ -630,13 +1057,42 @@ json serializeRenderSettings(const RenderSettings &s) {
   j["mixVal"] = s.mixVal;
   j["shadowStrength"] = s.shadowStrength;
   j["shadowFarPlane"] = s.shadowFarPlane;
+  j["enableCascadedShadows"] = s.enableCascadedShadows;
+  j["shadowCascadeCount"] = s.shadowCascadeCount;
+  j["shadowMapResolution"] = s.shadowMapResolution;
+  j["shadowCascadeDistance"] = s.shadowCascadeDistance;
+  j["shadowCascadeLambda"] = s.shadowCascadeLambda;
+  j["shadowNormalBias"] = s.shadowNormalBias;
+  j["shadowDepthBias"] = s.shadowDepthBias;
+  j["shadowSoftness"] = s.shadowSoftness;
+  j["showShadowCascades"] = s.showShadowCascades;
   j["shadowUpdateInterval"] = s.shadowUpdateInterval;
   j["shadowUpdateDistance"] = s.shadowUpdateDistance;
   j["shadowUpdateAngle"] = s.shadowUpdateAngle;
+  j["shadowStaggeredUpdates"] = s.shadowStaggeredUpdates;
+  j["shadowCascadeCadence"] = s.shadowCascadeCadence;
+  j["shadowCascadeDistanceScale"] = s.shadowCascadeDistanceScale;
+  j["shadowCascadeAngleScale"] = s.shadowCascadeAngleScale;
   j["exposure"] = s.exposure;
   j["gamma"] = s.gamma;
   j["fogDensity"] = s.fogDensity;
+  j["fogHeightFalloff"] = s.fogHeightFalloff;
   j["fogColor"] = vec3ToJson(s.fogColor);
+  j["aerialPerspectiveEnabled"] = s.aerialPerspectiveEnabled;
+  j["aerialPerspectiveDensity"] = s.aerialPerspectiveDensity;
+  j["aerialPerspectiveStart"] = s.aerialPerspectiveStart;
+  j["aerialPerspectiveHeightFalloff"] = s.aerialPerspectiveHeightFalloff;
+  j["aerialPerspectiveSkyBlend"] = s.aerialPerspectiveSkyBlend;
+  j["aerialPerspectiveSunGlow"] = s.aerialPerspectiveSunGlow;
+  j["aerialPerspectiveDesaturation"] = s.aerialPerspectiveDesaturation;
+  j["ambientHemisphereEnabled"] = s.ambientHemisphereEnabled;
+  j["ambientHemisphereIntensity"] = s.ambientHemisphereIntensity;
+  j["ambientSkyInfluence"] = s.ambientSkyInfluence;
+  j["ambientHorizonStrength"] = s.ambientHorizonStrength;
+  j["ambientTerrainBoost"] = s.ambientTerrainBoost;
+  j["ambientSkyColor"] = vec3ToJson(s.ambientSkyColor);
+  j["ambientHorizonColor"] = vec3ToJson(s.ambientHorizonColor);
+  j["ambientGroundColor"] = vec3ToJson(s.ambientGroundColor);
   j["toonEnabled"] = s.toonEnabled;
   j["toonSteps"] = s.toonSteps;
   j["toonMin"] = s.toonMin;
@@ -669,19 +1125,93 @@ void applyRenderSettings(const json &j, RenderSettings &s) {
     s.shadowStrength = j["shadowStrength"].get<float>();
   if (j.contains("shadowFarPlane"))
     s.shadowFarPlane = j["shadowFarPlane"].get<float>();
+  if (j.contains("enableCascadedShadows"))
+    s.enableCascadedShadows = j["enableCascadedShadows"].get<bool>();
+  if (j.contains("shadowCascadeCount"))
+    s.shadowCascadeCount = std::clamp(j["shadowCascadeCount"].get<int>(), 1, 4);
+  if (j.contains("shadowMapResolution"))
+    s.shadowMapResolution =
+        std::clamp(j["shadowMapResolution"].get<int>(), 512, 8192);
+  if (j.contains("shadowCascadeDistance"))
+    s.shadowCascadeDistance =
+        std::max(20.0f, j["shadowCascadeDistance"].get<float>());
+  if (j.contains("shadowCascadeLambda"))
+    s.shadowCascadeLambda =
+        std::clamp(j["shadowCascadeLambda"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("shadowNormalBias"))
+    s.shadowNormalBias =
+        std::clamp(j["shadowNormalBias"].get<float>(), 0.0f, 0.20f);
+  if (j.contains("shadowDepthBias"))
+    s.shadowDepthBias =
+        std::clamp(j["shadowDepthBias"].get<float>(), 0.0f, 0.02f);
+  if (j.contains("shadowSoftness"))
+    s.shadowSoftness =
+        std::clamp(j["shadowSoftness"].get<float>(), 0.2f, 4.0f);
+  if (j.contains("showShadowCascades"))
+    s.showShadowCascades = j["showShadowCascades"].get<bool>();
   if (j.contains("shadowUpdateInterval"))
     s.shadowUpdateInterval = j["shadowUpdateInterval"].get<int>();
   if (j.contains("shadowUpdateDistance"))
     s.shadowUpdateDistance = j["shadowUpdateDistance"].get<float>();
   if (j.contains("shadowUpdateAngle"))
     s.shadowUpdateAngle = j["shadowUpdateAngle"].get<float>();
+  if (j.contains("shadowStaggeredUpdates"))
+    s.shadowStaggeredUpdates = j["shadowStaggeredUpdates"].get<bool>();
+  if (j.contains("shadowCascadeCadence"))
+    s.shadowCascadeCadence =
+        std::clamp(j["shadowCascadeCadence"].get<int>(), 1, 4);
+  if (j.contains("shadowCascadeDistanceScale"))
+    s.shadowCascadeDistanceScale =
+        std::clamp(j["shadowCascadeDistanceScale"].get<float>(), 1.0f, 6.0f);
+  if (j.contains("shadowCascadeAngleScale"))
+    s.shadowCascadeAngleScale =
+        std::clamp(j["shadowCascadeAngleScale"].get<float>(), 1.0f, 6.0f);
   if (j.contains("exposure"))
     s.exposure = j["exposure"].get<float>();
   if (j.contains("gamma"))
     s.gamma = j["gamma"].get<float>();
   if (j.contains("fogDensity"))
     s.fogDensity = j["fogDensity"].get<float>();
+  if (j.contains("fogHeightFalloff"))
+    s.fogHeightFalloff = j["fogHeightFalloff"].get<float>();
   loadVec3(j, "fogColor", s.fogColor);
+  if (j.contains("aerialPerspectiveEnabled"))
+    s.aerialPerspectiveEnabled = j["aerialPerspectiveEnabled"].get<bool>();
+  if (j.contains("aerialPerspectiveDensity"))
+    s.aerialPerspectiveDensity =
+        std::clamp(j["aerialPerspectiveDensity"].get<float>(), 0.0f, 0.02f);
+  if (j.contains("aerialPerspectiveStart"))
+    s.aerialPerspectiveStart =
+        std::clamp(j["aerialPerspectiveStart"].get<float>(), 0.0f, 1000.0f);
+  if (j.contains("aerialPerspectiveHeightFalloff"))
+    s.aerialPerspectiveHeightFalloff = std::clamp(
+        j["aerialPerspectiveHeightFalloff"].get<float>(), 0.0f, 0.08f);
+  if (j.contains("aerialPerspectiveSkyBlend"))
+    s.aerialPerspectiveSkyBlend =
+        std::clamp(j["aerialPerspectiveSkyBlend"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("aerialPerspectiveSunGlow"))
+    s.aerialPerspectiveSunGlow =
+        std::clamp(j["aerialPerspectiveSunGlow"].get<float>(), 0.0f, 2.0f);
+  if (j.contains("aerialPerspectiveDesaturation"))
+    s.aerialPerspectiveDesaturation = std::clamp(
+        j["aerialPerspectiveDesaturation"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("ambientHemisphereEnabled"))
+    s.ambientHemisphereEnabled = j["ambientHemisphereEnabled"].get<bool>();
+  if (j.contains("ambientHemisphereIntensity"))
+    s.ambientHemisphereIntensity =
+        std::clamp(j["ambientHemisphereIntensity"].get<float>(), 0.0f, 3.0f);
+  if (j.contains("ambientSkyInfluence"))
+    s.ambientSkyInfluence =
+        std::clamp(j["ambientSkyInfluence"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("ambientHorizonStrength"))
+    s.ambientHorizonStrength =
+        std::clamp(j["ambientHorizonStrength"].get<float>(), 0.0f, 1.5f);
+  if (j.contains("ambientTerrainBoost"))
+    s.ambientTerrainBoost =
+        std::clamp(j["ambientTerrainBoost"].get<float>(), 0.5f, 2.5f);
+  loadVec3(j, "ambientSkyColor", s.ambientSkyColor);
+  loadVec3(j, "ambientHorizonColor", s.ambientHorizonColor);
+  loadVec3(j, "ambientGroundColor", s.ambientGroundColor);
   if (j.contains("toonEnabled"))
     s.toonEnabled = j["toonEnabled"].get<bool>();
   if (j.contains("toonSteps"))
@@ -766,6 +1296,198 @@ void applyAudioSettings(const json &j, AudioSettings &s) {
     s.footstepRunCadence = j["footstepRunCadence"].get<float>();
 }
 
+json serializePlayPerfHudSettings(const PlayPerfHudSettings &s) {
+  json j;
+  j["enabled"] = s.enabled;
+  j["expanded"] = s.expanded;
+  j["opacity"] = s.opacity;
+  return j;
+}
+
+void applyPlayPerfHudSettings(const json &j, PlayPerfHudSettings &s) {
+  if (j.contains("enabled"))
+    s.enabled = j["enabled"].get<bool>();
+  if (j.contains("expanded"))
+    s.expanded = j["expanded"].get<bool>();
+  if (j.contains("opacity"))
+    s.opacity = std::clamp(j["opacity"].get<float>(), 0.10f, 0.95f);
+}
+
+ImVec4 perfBottleneckColor(PerformanceBottleneck bottleneck) {
+  switch (bottleneck) {
+  case PerformanceBottleneck::CpuDriver:
+    return ImVec4(1.0f, 0.68f, 0.25f, 1.0f);
+  case PerformanceBottleneck::Gpu:
+    return ImVec4(0.35f, 0.85f, 0.45f, 1.0f);
+  case PerformanceBottleneck::Mixed:
+    return ImVec4(0.9f, 0.78f, 0.35f, 1.0f);
+  case PerformanceBottleneck::WithinBudget:
+    return ImVec4(0.45f, 0.75f, 1.0f, 1.0f);
+  case PerformanceBottleneck::Collecting:
+  default:
+    return ImVec4(0.65f, 0.65f, 0.65f, 1.0f);
+  }
+}
+
+FramePerformanceSnapshot buildFramePerformanceSnapshot(AppState &s,
+                                                       float dt) {
+  FramePerformanceSnapshot perf;
+  perf.frameMs = dt * 1000.0f;
+  perf.fps = dt > 0.0f ? (1.0f / dt) : 0.0f;
+  perf.gpuFrameMs = s.gpuFrameMs;
+  perf.gpuShadowMs = s.gpuShadowMs;
+  perf.gpuMainMs = s.gpuMainMs;
+  perf.gpuMainSkyMs = s.gpuMainSkyMs;
+  perf.gpuMainTerrainMs = s.gpuMainTerrainMs;
+  perf.gpuMainSceneMs = s.gpuMainSceneMs;
+  perf.gpuMainPostMs = s.gpuMainPostMs;
+  perf.gpuTimerReady = perf.gpuFrameMs > 0.05f;
+  perf.cpuGpuGapMs =
+      perf.gpuTimerReady ? std::max(0.0f, perf.frameMs - perf.gpuFrameMs) : 0.0f;
+  if (!perf.gpuTimerReady) {
+    perf.bottleneck = PerformanceBottleneck::Collecting;
+  } else if (perf.frameMs > 16.7f && perf.gpuFrameMs < perf.frameMs * 0.65f) {
+    perf.bottleneck = PerformanceBottleneck::CpuDriver;
+  } else if (perf.gpuFrameMs > perf.frameMs * 0.82f) {
+    perf.bottleneck = PerformanceBottleneck::Gpu;
+  } else if (perf.frameMs > 16.7f) {
+    perf.bottleneck = PerformanceBottleneck::Mixed;
+  } else {
+    perf.bottleneck = PerformanceBottleneck::WithinBudget;
+  }
+
+  perf.entityCount = (int)s.scene.registry().view<TransformComponent>().size();
+  perf.particleCount = (int)s.projectiles.count();
+
+  const auto &renderStats = s.renderSystem.stats();
+  perf.visibleDrawn = renderStats.drawn;
+  perf.visibleCulled = renderStats.culled;
+  perf.drawCallsMain = renderStats.drawCallsMain;
+  perf.drawCallsShadow = renderStats.drawCallsShadow;
+  perf.instancedDrawCallsMain = renderStats.instancedDrawCallsMain;
+  perf.instancedDrawCallsShadow = renderStats.instancedDrawCallsShadow;
+  perf.instancedUploadsMain = renderStats.instancedUploadsMain;
+  perf.instancedUploadsShadow = renderStats.instancedUploadsShadow;
+  perf.instancedUploadSkipsMain = renderStats.instancedUploadSkipsMain;
+  perf.instancedUploadSkipsShadow = renderStats.instancedUploadSkipsShadow;
+  perf.instancedUploadBytesMain = renderStats.instancedUploadBytesMain;
+  perf.instancedUploadBytesShadow = renderStats.instancedUploadBytesShadow;
+  perf.instancedClustersTestedMain = renderStats.instancedClustersTestedMain;
+  perf.instancedClustersTestedShadow = renderStats.instancedClustersTestedShadow;
+  perf.instancedClustersVisibleMain = renderStats.instancedClustersVisibleMain;
+  perf.instancedClustersVisibleShadow = renderStats.instancedClustersVisibleShadow;
+  perf.shadowDistanceCulled = renderStats.shadowDistanceCulled;
+  perf.shadowSmallCasterCulled = renderStats.shadowSmallCasterCulled;
+  perf.shadowCascadeCount = s.render.activeShadowCascadeCount;
+  perf.shadowCascadesUpdated = s.shadowCascadesUpdated;
+  perf.shadowCascadeStaggered = s.shadowCascadeStaggered;
+
+  const auto &terrainStats = s.terrainSystem.stats();
+  perf.terrainDrawCalls = terrainStats.terrainDrawCalls;
+  perf.terrainVisibleChunks = terrainStats.visibleChunks;
+  perf.terrainFrustumCulledChunks = terrainStats.frustumCulledChunks;
+  perf.terrainHorizonCulledChunks = terrainStats.horizonCulledChunks;
+  perf.terrainGpuPagesUsed = terrainStats.terrainGpuPagesUsed;
+  perf.terrainUploads = terrainStats.terrainGpuInstanceUploads;
+  perf.terrainUploadSkips = terrainStats.terrainGpuInstanceUploadSkips;
+  perf.terrainUploadBytes = terrainStats.terrainGpuInstanceUploadBytes;
+  perf.terrainPendingJobs = terrainStats.pendingJobs;
+  perf.terrainPendingUploads = terrainStats.pendingUploads;
+  perf.terrainCollisionBodies = terrainStats.collisionBodies;
+  perf.gpuTerrainActive = terrainStats.gpuTerrainActive;
+  perf.gpuTerrainFallback = terrainStats.gpuTerrainFallback;
+
+  perf.glProgramBinds = s.glProgramBinds;
+  perf.glTextureBinds = s.glTextureBinds;
+  perf.glVaoBinds = s.glVaoBinds;
+  perf.glStateChanges = s.glStateChanges;
+
+  perf.submissionBackendLabel =
+      renderSubmissionBackendLabel(s.renderer.capabilities().preferredSubmissionBackend);
+  perf.modernSubmissionBackend =
+      s.renderer.capabilities().preferredSubmissionBackend ==
+      RenderSubmissionBackend::Modern;
+  perf.renderPassOrder = s.lastRenderPassOrder;
+  return perf;
+}
+
+void drawPlayPerformanceHud(const AppState &s) {
+  if (s.playState != AppState::PlayState::Playing || !s.playPerfHud.enabled)
+    return;
+
+  const FramePerformanceSnapshot &perf = s.performance;
+  ImGuiViewport *viewport = ImGui::GetMainViewport();
+  ImGui::SetNextWindowBgAlpha(s.playPerfHud.opacity);
+  ImGui::SetNextWindowPos(
+      ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - 12.0f,
+             viewport->WorkPos.y + 12.0f),
+      ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+  ImGui::Begin("PlayPerfHUD", nullptr,
+               ImGuiWindowFlags_NoDecoration |
+                   ImGuiWindowFlags_AlwaysAutoResize |
+                   ImGuiWindowFlags_NoSavedSettings |
+                   ImGuiWindowFlags_NoFocusOnAppearing |
+                   ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs);
+
+  ImGui::Text("FPS %.1f | Frame %.2f ms", perf.fps, perf.frameMs);
+  ImGui::Text("GPU %.2f | Main %.2f | Shadow %.2f", perf.gpuFrameMs,
+              perf.gpuMainMs, perf.gpuShadowMs);
+  ImGui::TextColored(perfBottleneckColor(perf.bottleneck), "%s",
+                     performanceBottleneckLabel(perf.bottleneck));
+  ImGui::Text("Draws M:%d I:%d T:%d", perf.drawCallsMain,
+              perf.instancedDrawCallsMain, perf.terrainDrawCalls);
+  ImGui::Text("Terrain uploads %d/%d | %.1f KB", perf.terrainUploads,
+              perf.terrainUploadSkips, perf.terrainUploadBytes / 1024.0f);
+
+  if (s.playPerfHud.expanded) {
+    ImGui::Separator();
+    ImGui::Text("Backend: %s", perf.submissionBackendLabel.c_str());
+    ImGui::Text("GPU split Sky %.2f | Terrain %.2f", perf.gpuMainSkyMs,
+                perf.gpuMainTerrainMs);
+    ImGui::Text("GPU split Scene %.2f | Post %.2f", perf.gpuMainSceneMs,
+                perf.gpuMainPostMs);
+    ImGui::Text("Chunks vis %d | pages %d | frustum %d | horizon %d",
+                perf.terrainVisibleChunks, perf.terrainGpuPagesUsed,
+                perf.terrainFrustumCulledChunks,
+                perf.terrainHorizonCulledChunks);
+    ImGui::Text("Pending jobs %d | uploads %d | collision %d",
+                perf.terrainPendingJobs, perf.terrainPendingUploads,
+                perf.terrainCollisionBodies);
+    ImGui::Text("Inst uploads M:%d S:%d | skip M:%d S:%d",
+                perf.instancedUploadsMain, perf.instancedUploadsShadow,
+                perf.instancedUploadSkipsMain, perf.instancedUploadSkipsShadow);
+    ImGui::Text("Inst clusters M:%d/%d | S:%d/%d",
+                perf.instancedClustersVisibleMain,
+                perf.instancedClustersTestedMain,
+                perf.instancedClustersVisibleShadow,
+                perf.instancedClustersTestedShadow);
+    const char *shadowRefreshMode =
+        perf.shadowCascadesUpdated <= 0
+            ? "reused"
+            : (perf.shadowCascadeStaggered ? "staggered" : "full");
+    ImGui::Text("Shadow cascades %d/%d | %s", perf.shadowCascadesUpdated,
+                std::max(perf.shadowCascadeCount, 1), shadowRefreshMode);
+    ImGui::Text("Shadow culls dist:%d small:%d", perf.shadowDistanceCulled,
+                perf.shadowSmallCasterCulled);
+    ImGui::Text("Inst KB M:%.1f | S:%.1f",
+                perf.instancedUploadBytesMain / 1024.0f,
+                perf.instancedUploadBytesShadow / 1024.0f);
+    ImGui::Text("GL binds P:%d T:%d V:%d S:%d", perf.glProgramBinds,
+                perf.glTextureBinds, perf.glVaoBinds, perf.glStateChanges);
+    if (!perf.renderPassOrder.empty()) {
+      std::string order;
+      for (size_t i = 0; i < perf.renderPassOrder.size(); ++i) {
+        if (i > 0)
+          order += " -> ";
+        order += perf.renderPassOrder[i];
+      }
+      ImGui::TextWrapped("Passes: %s", order.c_str());
+    }
+  }
+
+  ImGui::End();
+}
+
 json serializePostProcess(const PostProcessor &s) {
   json j;
   j["bloomThreshold"] = s.bloomThreshold;
@@ -778,6 +1500,7 @@ json serializePostProcess(const PostProcessor &s) {
   j["ssaoRadius"] = s.ssaoRadius;
   j["ssaoBias"] = s.ssaoBias;
   j["ssaoPower"] = s.ssaoPower;
+  j["ssaoIntensity"] = s.ssaoIntensity;
   j["ssaoSamples"] = s.ssaoSamples;
   j["ssaoScale"] = s.ssaoScale;
   j["ssaoScaleRadius"] = s.ssaoScaleRadius;
@@ -816,6 +1539,11 @@ json serializePostProcess(const PostProcessor &s) {
   j["gradeTint"] = vec3ToJson(s.gradeTint);
   j["enablePaletteQuantize"] = s.enablePaletteQuantize;
   j["paletteSteps"] = s.paletteSteps;
+  j["enableAutoExposure"] = s.enableAutoExposure;
+  j["autoExposureMin"] = s.autoExposureMin;
+  j["autoExposureMax"] = s.autoExposureMax;
+  j["autoExposureSpeed"] = s.autoExposureSpeed;
+  j["autoExposureTarget"] = s.autoExposureTarget;
   return j;
 }
 
@@ -840,6 +1568,8 @@ void applyPostProcess(const json &j, PostProcessor &s) {
     s.ssaoBias = j["ssaoBias"].get<float>();
   if (j.contains("ssaoPower"))
     s.ssaoPower = j["ssaoPower"].get<float>();
+  if (j.contains("ssaoIntensity"))
+    s.ssaoIntensity = j["ssaoIntensity"].get<float>();
   if (j.contains("ssaoSamples"))
     s.ssaoSamples = j["ssaoSamples"].get<int>();
   if (j.contains("ssaoScale"))
@@ -913,6 +1643,16 @@ void applyPostProcess(const json &j, PostProcessor &s) {
     s.enablePaletteQuantize = j["enablePaletteQuantize"].get<bool>();
   if (j.contains("paletteSteps"))
     s.paletteSteps = j["paletteSteps"].get<int>();
+  if (j.contains("enableAutoExposure"))
+    s.enableAutoExposure = j["enableAutoExposure"].get<bool>();
+  if (j.contains("autoExposureMin"))
+    s.autoExposureMin = j["autoExposureMin"].get<float>();
+  if (j.contains("autoExposureMax"))
+    s.autoExposureMax = j["autoExposureMax"].get<float>();
+  if (j.contains("autoExposureSpeed"))
+    s.autoExposureSpeed = j["autoExposureSpeed"].get<float>();
+  if (j.contains("autoExposureTarget"))
+    s.autoExposureTarget = j["autoExposureTarget"].get<float>();
 }
 
 bool isEntityAlive(Registry &reg, EntityId e) {
@@ -992,6 +1732,36 @@ void clampEntityToTerrain(AppState &state, Registry &reg, EntityId e) {
   const float minY = terrainY + terrainClearanceForEntity(reg, e);
   if (tr.position.y < minY)
     tr.position.y = minY;
+}
+
+glm::vec3 playCameraForward(const glm::vec3 &rotationDeg) {
+  glm::vec3 front;
+  front.x = -std::sin(glm::radians(rotationDeg.y)) *
+            std::cos(glm::radians(rotationDeg.x));
+  front.y = std::sin(glm::radians(rotationDeg.x));
+  front.z = -std::cos(glm::radians(rotationDeg.y)) *
+            std::cos(glm::radians(rotationDeg.x));
+  return glm::normalize(front);
+}
+
+bool damageDestructibleHit(AppState &state, Registry &reg,
+                           const PhysicsRaycastResult &hit,
+                           const glm::vec3 &impulseDirection, float damage) {
+  if (!hit.hit || hit.entityId == 0 ||
+      !reg.has<DestructibleComponent>(hit.entityId))
+    return false;
+
+  auto &destructible = reg.get<DestructibleComponent>(hit.entityId);
+  if (!destructible.enabled || destructible.fractured)
+    return false;
+
+  destructible.health = std::max(0.0f, destructible.health - damage);
+  if (destructible.health <= 0.0f) {
+    DestructionSystem::fractureEntity(state.scene, state.assets, hit.entityId,
+                                      hit.position, impulseDirection,
+                                      &state.physicsSystem);
+  }
+  return true;
 }
 } // namespace
 
@@ -1177,6 +1947,7 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.terrainBrush.strength,
       mState.terrainBrush.scatterCount,
       mState.skyUI.solidSky,
+      mState.skyUI.skyHDRPath,
       mState.skyUI.skyHorizon,
       mState.skyUI.skyTop,
       mState.skyUI.dayNightEnabled,
@@ -1189,6 +1960,19 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.skyUI.sunDayColor,
       mState.skyUI.sunDuskColor,
       mState.skyUI.sunNightColor,
+      mState.skyUI.visualSunColor,
+      mState.skyUI.visualSunDayColor,
+      mState.skyUI.visualSunDuskColor,
+      mState.skyUI.visualSunNightColor,
+      mState.skyUI.skyAtmosphereStrength,
+      mState.skyUI.skyGradientPower,
+      mState.skyUI.skyHorizonGlow,
+      mState.skyUI.skySunDiscIntensity,
+      mState.skyUI.skySunHaloIntensity,
+      mState.skyUI.skySunRaysIntensity,
+      mState.skyUI.skySunDiscSoftness,
+      mState.skyUI.skySunHaloSize,
+      mState.skyUI.skySunRaySharpness,
       mState.skyUI.minimalSky,
       mState.skyUI.skyBackdropBlend,
       mState.skyUI.skyFeatureVisibility,
@@ -1202,14 +1986,43 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.skyUI.fireflyColor,
       mState.render.shadowStrength,
       mState.render.shadowFarPlane,
+      mState.render.enableCascadedShadows,
+      mState.render.shadowCascadeCount,
+      mState.render.shadowMapResolution,
+      mState.render.shadowCascadeDistance,
+      mState.render.shadowCascadeLambda,
+      mState.render.shadowNormalBias,
+      mState.render.shadowDepthBias,
+      mState.render.shadowSoftness,
+      mState.render.showShadowCascades,
       mState.render.shadowUpdateInterval,
       mState.render.shadowUpdateDistance,
       mState.render.shadowUpdateAngle,
+      mState.render.shadowStaggeredUpdates,
+      mState.render.shadowCascadeCadence,
+      mState.render.shadowCascadeDistanceScale,
+      mState.render.shadowCascadeAngleScale,
       mState.render.shadowCameraCulling,
       mState.render.exposure,
       mState.render.gamma,
       mState.render.fogDensity,
+      mState.render.fogHeightFalloff,
       mState.render.fogColor,
+      mState.render.aerialPerspectiveEnabled,
+      mState.render.aerialPerspectiveDensity,
+      mState.render.aerialPerspectiveStart,
+      mState.render.aerialPerspectiveHeightFalloff,
+      mState.render.aerialPerspectiveSkyBlend,
+      mState.render.aerialPerspectiveSunGlow,
+      mState.render.aerialPerspectiveDesaturation,
+      mState.render.ambientHemisphereEnabled,
+      mState.render.ambientHemisphereIntensity,
+      mState.render.ambientSkyInfluence,
+      mState.render.ambientHorizonStrength,
+      mState.render.ambientTerrainBoost,
+      mState.render.ambientSkyColor,
+      mState.render.ambientHorizonColor,
+      mState.render.ambientGroundColor,
       mState.render.toonEnabled,
       mState.render.toonSteps,
       mState.render.toonMin,
@@ -1278,6 +2091,7 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.glTextureBinds,
       mState.glVaoBinds,
       mState.glStateChanges,
+      mState.performance,
       selState,
       (int &)mState.playState};
 
@@ -1293,6 +2107,17 @@ void CoreAppLayer::update(float dt, float nowT) {
   }
   if (Keyboard::keyWentDown(GLFW_KEY_GRAVE_ACCENT)) {
     mState.editor.toggleConsole();
+  }
+  if (Keyboard::keyWentDown(GLFW_KEY_F3)) {
+    const bool shiftHeld =
+        Keyboard::key(GLFW_KEY_LEFT_SHIFT) || Keyboard::key(GLFW_KEY_RIGHT_SHIFT);
+    if (shiftHeld) {
+      if (!mState.playPerfHud.enabled)
+        mState.playPerfHud.enabled = true;
+      mState.playPerfHud.expanded = !mState.playPerfHud.expanded;
+    } else {
+      mState.playPerfHud.enabled = !mState.playPerfHud.enabled;
+    }
   }
   if (!uiOut.wantCaptureKeyboard) {
     if (Keyboard::keyWentDown(GLFW_KEY_1))
@@ -1322,10 +2147,15 @@ void CoreAppLayer::update(float dt, float nowT) {
                 mState.debugCamFront.y, mState.debugCamFront.z);
     ImGui::Text("up: %.2f %.2f %.2f", mState.debugCamUp.x, mState.debugCamUp.y,
                 mState.debugCamUp.z);
-    ImGui::Text("grabHit: %u  dist: %.2f", mState.debugGrabHitId,
-                mState.debugGrabHitDist);
-    if (!mState.debugGrabHitName.empty())
-      ImGui::Text("hitName: %s", mState.debugGrabHitName.c_str());
+    ImGui::Text("gameplay: %s  id: %u  dist: %.2f",
+                mState.debugGameplayHitKind.empty()
+                    ? "Idle"
+                    : mState.debugGameplayHitKind.c_str(),
+                mState.debugGameplayHitId, mState.debugGameplayHitDist);
+    if (!mState.debugGameplayHitName.empty())
+      ImGui::Text("hitName: %s", mState.debugGameplayHitName.c_str());
+    if (!mState.debugGameplayMissReason.empty())
+      ImGui::Text("miss: %s", mState.debugGameplayMissReason.c_str());
     ImGui::Text("grabbed: %u", mState.grabbedEntityId);
     if (!mState.debugGrabPrefab.empty())
       ImGui::Text("prefab: %s  idx: %d  moved: %s",
@@ -1333,6 +2163,7 @@ void CoreAppLayer::update(float dt, float nowT) {
                   mState.debugGrabMoved ? "yes" : "no");
     ImGui::End();
   }
+  drawPlayPerformanceHud(mState);
 
   // Handle Play mode cursor locking and ESC to pause
   if (mState.playState == AppState::PlayState::Playing &&
@@ -1344,6 +2175,27 @@ void CoreAppLayer::update(float dt, float nowT) {
   static bool usingRawMouse = false;
   if (mState.playState == AppState::PlayState::Playing &&
       lastPlayState != AppState::PlayState::Playing) {
+    auto &reg = mState.scene.registry();
+    if (mState.playerId == 0 || !reg.has<CameraComponent>(mState.playerId)) {
+      mState.playerId = 0;
+      for (auto e : reg.view<CameraComponent>()) {
+        if (!reg.has<LifecycleComponent>(e) ||
+            reg.get<LifecycleComponent>(e).state ==
+                EntityLifecycleState::Alive) {
+          mState.playerId = e;
+          break;
+        }
+      }
+    }
+    if (mState.playerId != 0 && reg.has<TransformComponent>(mState.playerId)) {
+      auto &tr = reg.get<TransformComponent>(mState.playerId);
+      tr.position = mState.editorCamera.getPosition();
+      tr.rotation =
+          glm::vec3(mState.editorCamera.pitch, mState.editorCamera.yaw, 0.0f);
+      if (mState.terrainSystem.isEnabled())
+        clampEntityToTerrain(mState, reg, mState.playerId);
+    }
+
     usingRawMouse = glfwRawMouseMotionSupported();
     if (usingRawMouse) {
       glfwSetInputMode(mState.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -1359,10 +2211,11 @@ void CoreAppLayer::update(float dt, float nowT) {
     Mouse::resetPosition(mx, my);
     mState.woodCount = 0;
     // Lock player rotation only during play to avoid physics overwrites.
-    auto &reg = mState.scene.registry();
     if (mState.playerId != 0 && reg.has<RigidbodyComponent>(mState.playerId)) {
       reg.get<RigidbodyComponent>(mState.playerId).lockRotation = true;
     }
+    mState.playerController.reset();
+    mState.playerInteraction.reset();
   } else if (mState.playState != AppState::PlayState::Playing &&
              lastPlayState == AppState::PlayState::Playing) {
     glfwSetInputMode(mState.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
@@ -1374,6 +2227,8 @@ void CoreAppLayer::update(float dt, float nowT) {
     if (mState.playerId != 0 && reg.has<RigidbodyComponent>(mState.playerId)) {
       reg.get<RigidbodyComponent>(mState.playerId).lockRotation = false;
     }
+    mState.playerController.reset();
+    mState.playerInteraction.reset();
   }
 
   lastPlayState = mState.playState;
@@ -1412,6 +2267,7 @@ void CoreAppLayer::update(float dt, float nowT) {
       root["terrainMaterial"] = serializeTerrainMaterial(mState.terrainMaterial);
       root["renderSettings"] = serializeRenderSettings(mState.render);
       root["audioSettings"] = serializeAudioSettings(mState.audio);
+      root["playPerfHud"] = serializePlayPerfHudSettings(mState.playPerfHud);
       root["sunSettings"] = serializeSunSettings(mState.sun);
       root["skySettings"] = serializeSkySettings(mState.skyUI);
       root["postProcess"] = serializePostProcess(mState.postProcessor);
@@ -1452,6 +2308,8 @@ void CoreAppLayer::update(float dt, float nowT) {
           applyRenderSettings(root["renderSettings"], mState.render);
         if (root.contains("audioSettings"))
           applyAudioSettings(root["audioSettings"], mState.audio);
+        if (root.contains("playPerfHud"))
+          applyPlayPerfHudSettings(root["playPerfHud"], mState.playPerfHud);
         if (root.contains("sunSettings"))
           applySunSettings(root["sunSettings"], mState.sun);
         if (root.contains("skySettings"))
@@ -1558,6 +2416,12 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.pending.pendingDropPaths.clear();
     }
 
+    {
+      ScopedCpuTimer timer(mState.profiler, "Destruction Release");
+      DestructionSystem::preparePendingDestroy(mState.scene, mState.assets,
+                                              &mState.physicsSystem);
+    }
+
     const size_t entityCountBeforeFlush =
         mState.scene.registry().view<TransformComponent>().size();
     mState.scene.flushPendingDestroy();
@@ -1578,8 +2442,60 @@ void CoreAppLayer::update(float dt, float nowT) {
   else
     GLStateCache::instance().setPolygonMode(GL_FILL);
 
-  // Run Lua scripts only when Playing
+  // Run rewritten gameplay systems only when Playing. Player control,
+  // gameplay interactions, physics and scripts now have one clear order.
   if (mState.playState == AppState::PlayState::Playing) {
+    if (!usingRawMouse) {
+      // Manual relative mouse fallback (warp-to-center).
+      int winW, winH;
+      glfwGetWindowSize(mState.window, &winW, &winH);
+      const double cx = winW * 0.5;
+      const double cy = winH * 0.5;
+      double mx, my;
+      glfwGetCursorPos(mState.window, &mx, &my);
+      const double dx = mx - cx;
+      const double dy = cy - my;
+      glfwSetCursorPos(mState.window, cx, cy);
+      Mouse::resetPosition(cx, cy);
+      Mouse::setDeltas(dx, dy);
+    }
+
+    {
+      ScopedCpuTimer timer(mState.profiler, "Player Controller");
+      mState.playerController.update(mState, dt);
+    }
+    {
+      ScopedCpuTimer timer(mState.profiler, "Scripts");
+      mState.scriptSystem.update(mState.scene.registry(), dt);
+    }
+    {
+      ScopedCpuTimer timer(mState.profiler, "Destruction Runtime");
+      DestructionSystem::updateRuntime(
+          mState.scene, dt, &mState.physicsSystem,
+          mState.terrainSystem.isEnabled() ? &mState.terrainSystem : nullptr);
+    }
+    {
+      ScopedCpuTimer timer(mState.profiler, "Physics");
+      mState.physicsSystem.update(mState.scene.registry(), dt);
+    }
+    {
+      ScopedCpuTimer timer(mState.profiler, "Player Interactions");
+      mState.playerInteraction.update(mState, dt);
+    }
+
+    if (mState.terrainSystem.isEnabled()) {
+      ScopedCpuTimer timer(mState.profiler, "Terrain Clamp");
+      auto &reg = mState.scene.registry();
+      for (auto e : reg.viewAll<TransformComponent, ScriptComponent>()) {
+        if (e != mState.playerId)
+          clampEntityToTerrain(mState, reg, e);
+      }
+    }
+  }
+
+  // Legacy play-mode interaction block kept unreachable during the rewrite
+  // rollout. The new systems above are now authoritative.
+  if (false && mState.playState == AppState::PlayState::Playing) {
     if (!usingRawMouse) {
       // Manual relative mouse fallback (warp-to-center).
       int winW, winH;
@@ -1612,21 +2528,21 @@ void CoreAppLayer::update(float dt, float nowT) {
       const float dy = (float)Mouse::getDY();
       mState.debugMouseDX = dx;
       mState.debugMouseDY = dy;
+      const bool primaryDown = Mouse::button(GLFW_MOUSE_BUTTON_LEFT);
+      const bool primaryPressed = Mouse::buttonWentDown(GLFW_MOUSE_BUTTON_LEFT);
+      const bool grabModifier =
+          glfwGetKey(mState.window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+          glfwGetKey(mState.window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
 
-      // Start grab on LMB down.
-      if (Mouse::buttonWentDown(GLFW_MOUSE_BUTTON_LEFT) &&
+      // Mouse1 is now the laser. Keep physics grab available with Shift+Mouse1.
+      if (primaryPressed &&
+          grabModifier &&
           mState.grabbedEntityId == 0 &&
           mState.playerId != 0 &&
           reg.has<TransformComponent>(mState.playerId)) {
         const auto &camTr = reg.get<TransformComponent>(mState.playerId);
         const glm::vec3 camPos = camTr.position;
-        glm::vec3 camFront;
-        camFront.x = -sin(glm::radians(camTr.rotation.y)) *
-                     cos(glm::radians(camTr.rotation.x));
-        camFront.y = sin(glm::radians(camTr.rotation.x));
-        camFront.z = -cos(glm::radians(camTr.rotation.y)) *
-                     cos(glm::radians(camTr.rotation.x));
-        camFront = glm::normalize(camFront);
+        const glm::vec3 camFront = playCameraForward(camTr.rotation);
         PhysicsRaycastResult hit = mState.physicsSystem.raycast(
             camPos, camFront, 20.0f, mState.playerId);
         mState.debugGrabHitId = hit.entityId;
@@ -1686,7 +2602,7 @@ void CoreAppLayer::update(float dt, float nowT) {
 
       const bool dragging =
           (mState.grabbedEntityId != 0 &&
-           Mouse::button(GLFW_MOUSE_BUTTON_LEFT));
+           primaryDown);
 
       // Normal mouselook always active.
       if (mState.playerId != 0 && reg.has<TransformComponent>(mState.playerId)) {
@@ -1706,6 +2622,45 @@ void CoreAppLayer::update(float dt, float nowT) {
         mState.debugPitch = tr.rotation.x;
       }
 
+      const bool wantsLaser =
+          primaryPressed && !grabModifier &&
+          mState.activeSlot == AppState::HotbarSlot::Axe &&
+          mState.axeEnabled && mState.grabbedEntityId == 0 &&
+          mState.playerId != 0 &&
+          reg.has<TransformComponent>(mState.playerId);
+      if (wantsLaser) {
+        const auto &camTr = reg.get<TransformComponent>(mState.playerId);
+        const glm::vec3 front = playCameraForward(camTr.rotation);
+        const float maxDistance = 240.0f;
+        const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+        glm::vec3 right = glm::cross(front, worldUp);
+        if (glm::length(right) < 0.0001f)
+          right = glm::vec3(1.0f, 0.0f, 0.0f);
+        right = glm::normalize(right);
+        const glm::vec3 up = glm::normalize(glm::cross(right, front));
+        const glm::vec3 start =
+            camTr.position + right * mState.axeOffset.x +
+            up * mState.axeOffset.y +
+            front * (std::abs(mState.axeOffset.z) + 0.10f);
+        PhysicsRaycastResult hit =
+            mState.physicsSystem.raycast(camTr.position, front, maxDistance,
+                                         mState.playerId);
+        const glm::vec3 end =
+            hit.hit ? hit.position : camTr.position + front * maxDistance;
+        mState.projectiles.setLaserBeam(start, end, hit.hit, hit.entityId,
+                                        hit.normal, 0.24f);
+        mState.debugGrabHitId = hit.entityId;
+        mState.debugGrabHitDist = hit.hit ? hit.distance : maxDistance;
+        mState.debugGrabHitName.clear();
+        if (hit.entityId != 0 && reg.has<NameComponent>(hit.entityId)) {
+          mState.debugGrabHitName = reg.get<NameComponent>(hit.entityId).name;
+        }
+        if (hit.hit) {
+          constexpr float kLaserDamage = 100.0f;
+          damageDestructibleHit(mState, reg, hit, front, kLaserDamage);
+        }
+      }
+
       if (dragging) {
         // Drag object in camera screen plane using mouse deltas.
         if (reg.has<TransformComponent>(mState.grabbedEntityId) &&
@@ -1713,13 +2668,7 @@ void CoreAppLayer::update(float dt, float nowT) {
             reg.has<TransformComponent>(mState.playerId)) {
           auto &grabTr = reg.get<TransformComponent>(mState.grabbedEntityId);
           auto &camTr = reg.get<TransformComponent>(mState.playerId);
-          glm::vec3 front;
-          front.x = -sin(glm::radians(camTr.rotation.y)) *
-                    cos(glm::radians(camTr.rotation.x));
-          front.y = sin(glm::radians(camTr.rotation.x));
-          front.z = -cos(glm::radians(camTr.rotation.y)) *
-                    cos(glm::radians(camTr.rotation.x));
-          front = glm::normalize(front);
+          const glm::vec3 front = playCameraForward(camTr.rotation);
           glm::vec3 right =
               glm::normalize(glm::cross(front, glm::vec3(0.0f, 1.0f, 0.0f)));
           glm::vec3 up = glm::normalize(glm::cross(right, front));
@@ -1822,12 +2771,20 @@ void CoreAppLayer::update(float dt, float nowT) {
           auto hit = mState.physicsSystem.raycast(camTr.position, front, 100.0f,
                                                   mState.playerId);
           if (hit.hit) {
-            // Apply a negative height offset to carve out a crater.
-            // Radius 2.5 meters, scooping out 0.8 meters per tick.
-            bool carved =
-                mState.terrainSystem.applyHeightBrush(hit.position, 2.5f, -0.8f);
-            if (carved) {
-              craterCooldown = 0.1f; // Limit to ~10 carves per second
+            constexpr float kMouse2Damage = 100.0f;
+            const bool consumedByDestruction =
+                damageDestructibleHit(mState, reg, hit, front, kMouse2Damage);
+            if (consumedByDestruction)
+              craterCooldown = 0.18f;
+
+            if (!consumedByDestruction) {
+              // Apply a negative height offset to carve out a crater.
+              // Radius 2.5 meters, scooping out 0.8 meters per tick.
+              bool carved = mState.terrainSystem.applyHeightBrush(
+                  hit.position, 2.5f, -0.8f);
+              if (carved) {
+                craterCooldown = 0.1f; // Limit to ~10 carves per second
+              }
             }
           }
         }
@@ -1851,10 +2808,18 @@ void CoreAppLayer::update(float dt, float nowT) {
   }
 
   // ── Editor Camera (orbit / pan / zoom via mouse) ──
+  if (mState.playState != AppState::PlayState::Playing) {
+    mState.projectiles.clearLaserBeam();
+    ScopedCpuTimer timer(mState.profiler, "Editor Destruction Preview");
+    DestructionSystem::updateEditorPreview(
+        mState.scene, dt,
+        mState.terrainSystem.isEnabled() ? &mState.terrainSystem : nullptr);
+  }
+
   {
     ScopedCpuTimer timer(mState.profiler, "Editor Camera");
     bool imguiWants = uiOut.wantCaptureMouse || ImGuizmo::IsUsing();
-    mState.editorCamera.update(mState.window, imguiWants);
+    mState.editorCamera.update(mState.window, imguiWants, dt);
   }
 
   // F key: focus on selected entity
@@ -2040,6 +3005,11 @@ void CoreAppLayer::update(float dt, float nowT) {
   }
 
   // Update Terrain chunk loading around the camera
+  const size_t frameUploadBudget =
+      (size_t)std::max(1024 * 1024, mState.terrainSettings.maxGpuUploadBytesPerFrame);
+  mState.terrainSystem.setSubmissionBackend(
+      mState.renderer.capabilities().preferredSubmissionBackend);
+  mState.terrainSystem.beginFrameUploadBudget(frameUploadBudget);
   {
     ScopedCpuTimer timer(mState.profiler, "Terrain Update");
     mState.terrainSystem.update(cameraPos);
@@ -2049,12 +3019,15 @@ void CoreAppLayer::update(float dt, float nowT) {
   glfwGetWindowSize(mState.window, &winW, &winH);
   glm::mat4 projection = glm::perspective(
       glm::radians(mState.input.fov), (float)winW / (float)winH, 0.1f, 500.0f);
-  const bool allowTemporalJitter =
-      (mState.playState == AppState::PlayState::Playing);
-  if (!allowTemporalJitter)
+  // Keep the world render stable in both editor and play modes.
+  // The previous path jittered the entire camera only in play mode, which made
+  // terrain, SSAO, shadows, and volumetrics look noticeably worse than the
+  // editor view. Keep a stable projection, but preserve history while TAA is
+  // enabled so the TAA controls actually affect the final image.
+  if (!mState.postProcessor.enableTAA) {
     mState.postProcessor.resetTemporalHistory();
-  glm::mat4 renderProjection =
-      mState.postProcessor.jitteredProjection(projection, allowTemporalJitter);
+  }
+  glm::mat4 renderProjection = projection;
 
   const bool brushActive =
       mState.terrainBrush.enabled && mState.terrainSystem.isEnabled() &&
@@ -2221,7 +3194,12 @@ void CoreAppLayer::update(float dt, float nowT) {
   mState.renderSystem.setCullingEnabled(mState.render.frustumCulling);
   mState.renderSystem.setShadowCameraCulling(
       mState.render.shadowCameraCulling);
+  mState.renderSystem.setSubmissionBackend(
+      mState.renderer.capabilities().preferredSubmissionBackend);
+  mState.renderSystem.setFrameUploadBudgetBytes(
+      mState.terrainSystem.remainingFrameUploadBudgetBytes());
   mState.renderSystem.beginFrame();
+  mState.renderSystem.prepareFrame(mState.scene.registry());
 
   if (mState.renderLoopSubsystem) {
     ScopedCpuTimer timer(mState.profiler, "Render CPU");
@@ -2239,6 +3217,7 @@ void CoreAppLayer::update(float dt, float nowT) {
   mState.glTextureBinds = glStats.textureBinds;
   mState.glVaoBinds = glStats.vaoBinds;
   mState.glStateChanges = glStats.stateChanges;
-
   mState.profiler.endFrame();
+  mState.performance = buildFramePerformanceSnapshot(mState, dt);
+  logPerformanceSnapshotIfNeeded(mState, dt);
 }

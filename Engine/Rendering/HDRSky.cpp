@@ -14,11 +14,30 @@ HDRSky::~HDRSky() = default;
 bool HDRSky::init(const std::string &hdrPath, const std::string &vertPath,
                   const std::string &fragPath) {
   mShader = std::make_unique<Shader>(vertPath.c_str(), fragPath.c_str());
+  if (!mShader || !mShader->isValid()) {
+    mShader.reset();
+    return false;
+  }
 
   createFullscreenQuad_();
 
-  mHDRTex = LoadHDRTexture2D(hdrPath, true);
-  return (mHDRTex != 0);
+  return reloadHDR(hdrPath);
+}
+
+bool HDRSky::reloadHDR(const std::string &hdrPath) {
+  if (hdrPath == mHDRPath && mHDRTex != 0)
+    return true;
+
+  GLuint newTex = LoadHDRTexture2D(hdrPath, true);
+  if (newTex == 0)
+    return false;
+
+  if (mHDRTex)
+    glDeleteTextures(1, &mHDRTex);
+
+  mHDRTex = newTex;
+  mHDRPath = hdrPath;
+  return true;
 }
 
 void HDRSky::shutdown() {
@@ -30,6 +49,7 @@ void HDRSky::shutdown() {
     glDeleteVertexArrays(1, &mVAO);
 
   mHDRTex = 0;
+  mHDRPath.clear();
   mVBO = 0;
   mVAO = 0;
   mShader.reset();
@@ -69,6 +89,12 @@ void HDRSky::setRotationDegrees(const glm::vec3 &eulerDeg) {
   mSkyRotDeg = eulerDeg;
 }
 
+glm::mat3 HDRSky::rotationMatrix() const {
+  glm::vec3 r = glm::radians(mSkyRotDeg);
+  glm::mat4 R4 = glm::yawPitchRoll(r.y, r.x, r.z);
+  return glm::mat3(R4);
+}
+
 void HDRSky::draw(const glm::mat4 &view, const glm::mat4 &projection,
                   float exposure, float gamma, const glm::vec3 &sunDir,
                   const glm::vec3 &sunColor, float sunSize, float timeSec) {
@@ -95,6 +121,12 @@ void HDRSky::draw(const glm::mat4 &view, const glm::mat4 &projection,
   mShader->setFloat("uSunDiscIntensity", sunDiscIntensity);
   mShader->setFloat("uSunHaloIntensity", sunHaloIntensity);
   mShader->setFloat("uSunRaysIntensity", sunRaysIntensity);
+  mShader->setFloat("uSunDiscSoftness", sunDiscSoftness);
+  mShader->setFloat("uSunHaloSize", sunHaloSize);
+  mShader->setFloat("uSunRaySharpness", sunRaySharpness);
+  mShader->setFloat("uSkyAtmosphereStrength", atmosphereStrength);
+  mShader->setFloat("uSkyGradientPower", gradientPower);
+  mShader->setFloat("uSkyHorizonGlow", horizonGlow);
   mShader->setFloat("uNightFactor", nightFactor);
   mShader->setFloat("uStarIntensity", starIntensity);
   mShader->setFloat("uMilkyWayIntensity", milkyWayIntensity);
@@ -110,18 +142,12 @@ void HDRSky::draw(const glm::mat4 &view, const glm::mat4 &projection,
 
   // Map sun size in degrees (0.2-1.0 recommended) to a dot threshold.
   // Threshold = cos(radiusRadians).
-  float safeSunSizeDeg = glm::clamp(sunSize, 0.05f, 2.0f);
+  float safeSunSizeDeg = glm::clamp(sunSize, 0.05f, 3.0f);
   float radiusRad = glm::radians(safeSunSizeDeg);
   float dotThreshold = std::cos(radiusRad);
   mShader->setFloat("uSunSize", dotThreshold);
 
-  glm::vec3 r = glm::radians(mSkyRotDeg);
-
-  // GLM provides yawPitchRoll(Y, X, Z) (Y * X * Z) [web:385]
-  glm::mat4 R4 = glm::yawPitchRoll(r.y, r.x, r.z);
-  glm::mat3 R = glm::mat3(R4);
-
-  mShader->setMat3("uSkyRot", R);
+  mShader->setMat3("uSkyRot", rotationMatrix());
 
   glm::mat4 invProj = glm::inverse(projection);
   glm::mat4 invView = glm::inverse(view);

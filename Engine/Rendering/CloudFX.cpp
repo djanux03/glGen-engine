@@ -43,9 +43,10 @@ void CloudFX::shutdown()
 
 void CloudFX::draw(const glm::mat4 &view, const glm::mat4 &projection,
                    const glm::vec3 &cameraPos, float timeSec,
-                   const glm::vec3 &sunColor, float sunIntensity)
+                   const glm::vec3 &sunColor, float sunIntensity,
+                   const glm::vec3 &sunDir)
 {
-    if (!mShader)
+    if (!enabled || !mShader || alpha <= 0.001f)
         return;
     glBindVertexArray(vao);
 
@@ -59,6 +60,7 @@ void CloudFX::draw(const glm::mat4 &view, const glm::mat4 &projection,
     mShader->setFloat("uTime", timeSec);
     mShader->setVec3("uSunColor", sunColor);
     mShader->setFloat("uSunIntensity", sunIntensity);
+    mShader->setVec3("uSunDir", sunDir);
 
     mShader->setVec3("uCloudColor", color);
     mShader->setFloat("uCloudScale", scale);

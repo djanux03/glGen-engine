@@ -41,6 +41,7 @@ public:
   float ssaoRadius = 0.65f;
   float ssaoBias = 0.02f;
   float ssaoPower = 1.2f;
+  float ssaoIntensity = 1.0f;
   int ssaoSamples = 16;
   float ssaoScale = 0.5f;
   bool ssaoScaleRadius = true;
@@ -79,12 +80,20 @@ public:
   glm::vec3 gradeTint = glm::vec3(1.0f);
   bool enablePaletteQuantize = false;
   int paletteSteps = 6;
+  bool enableAutoExposure = true;
+  float autoExposureMin = 0.65f;
+  float autoExposureMax = 1.75f;
+  float autoExposureSpeed = 0.065f;
+  float autoExposureTarget = 0.42f;
+  float autoExposureValue = 1.0f;
+  float displayGamma = 2.2f;
 
 private:
   void createBuffers_(int width, int height);
   void buildSSAOKernel_();
   void destroyBuffers_();
   void renderQuad_();
+  float sampleAverageLuminance_(GLuint tex, int width, int height);
 
   int mWidth = 0;
   int mHeight = 0;

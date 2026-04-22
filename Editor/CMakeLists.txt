@@ -9,6 +9,7 @@
 # So App.cpp depends on EditorUI.
 
 file(GLOB EDITOR_SOURCES "*.cpp")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX [[(^|[\\/])\._]])
 
 if(EDITOR_SOURCES)
     # Add tinyfiledialogs directly to Editor target

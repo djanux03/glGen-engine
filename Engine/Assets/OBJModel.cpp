@@ -36,6 +36,52 @@ static glm::mat4 buildTRS(const glm::vec3 &pos, const glm::vec3 &rotDeg,
   return m;
 }
 
+static void bindInstanceMatrixAttributes(GLuint instanceVBO) {
+  glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+  glEnableVertexAttribArray(3);
+  glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                        (void *)0);
+  glEnableVertexAttribArray(4);
+  glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                        (void *)(sizeof(glm::vec4)));
+  glEnableVertexAttribArray(5);
+  glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                        (void *)(2 * sizeof(glm::vec4)));
+  glEnableVertexAttribArray(6);
+  glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                        (void *)(3 * sizeof(glm::vec4)));
+
+  glVertexAttribDivisor(3, 1);
+  glVertexAttribDivisor(4, 1);
+  glVertexAttribDivisor(5, 1);
+  glVertexAttribDivisor(6, 1);
+}
+
+static void uploadShadowOnlyMesh(GLuint &vao, GLuint &vbo, GLsizei &vertexCount,
+                                 const std::vector<glm::vec3> &positions) {
+  if (positions.empty())
+    return;
+
+  if (vbo != 0)
+    glDeleteBuffers(1, &vbo);
+  if (vao != 0)
+    glDeleteVertexArrays(1, &vao);
+
+  glGenVertexArrays(1, &vao);
+  glGenBuffers(1, &vbo);
+
+  glBindVertexArray(vao);
+  glBindBuffer(GL_ARRAY_BUFFER, vbo);
+  glBufferData(GL_ARRAY_BUFFER, positions.size() * sizeof(glm::vec3),
+               positions.data(), GL_STATIC_DRAW);
+  glEnableVertexAttribArray(0);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3),
+                        (void *)0);
+  glBindVertexArray(0);
+
+  vertexCount = static_cast<GLsizei>(positions.size());
+}
+
 static std::string getDir(const std::string &path) {
   size_t slash = path.find_last_of("/\\");
   return (slash == std::string::npos) ? std::string("./")
@@ -228,18 +274,26 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
     float metallic = 0.0f;
     float ao = 1.0f;
     GLuint texDiffuse = 0;
+    std::string texDiffusePath;
     GLuint texNormal = 0;
+    std::string texNormalPath;
     GLuint texRoughness = 0;
+    std::string texRoughnessPath;
     GLuint texMetallic = 0;
+    std::string texMetallicPath;
     GLuint texAO = 0;
+    std::string texAOPath;
     GLuint texEmissive = 0;
+    std::string texEmissivePath;
     GLuint texOpacity = 0;
+    std::string texOpacityPath;
     float alphaCutoff = 0.0f;
     bool roughnessMapIsGloss = false;
   };
   std::vector<MatGPU> matGpu;
   std::unordered_map<std::string, GLuint> textureCache;
-  auto loadTextureByName = [&](const std::string &name) -> GLuint {
+  auto loadTextureByName = [&](const std::string &name, TextureUsage usage,
+                               std::string *outResolvedPath = nullptr) -> GLuint {
     if (name.empty())
       return 0;
 
@@ -265,30 +319,45 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
     }
 
     for (const auto &candidatePath : candidates) {
-      auto cached = textureCache.find(candidatePath);
-      if (cached != textureCache.end())
+      const std::string cacheKey =
+          candidatePath + (usage == TextureUsage::Color ? "|color" : "|data");
+      auto cached = textureCache.find(cacheKey);
+      if (cached != textureCache.end()) {
+        if (outResolvedPath)
+          *outResolvedPath = candidatePath;
         return cached->second;
+      }
 
       if (!fileExists(candidatePath))
         continue;
 
-      GLuint tex = LoadTexture2D(candidatePath.c_str());
-      textureCache[candidatePath] = tex;
-      if (tex != 0)
+      GLuint tex = LoadTexture2D(candidatePath.c_str(), true, usage);
+      textureCache[cacheKey] = tex;
+      if (tex != 0) {
+        if (outResolvedPath)
+          *outResolvedPath = candidatePath;
         return tex;
+      }
     }
 
     // Last-chance attempt with the primary candidate for error diagnostics.
     const std::string fallbackPath = candidates.empty() ? normalizedName
                                                         : candidates.front();
-    auto cached = textureCache.find(fallbackPath);
-    if (cached != textureCache.end())
+    const std::string fallbackKey =
+        fallbackPath + (usage == TextureUsage::Color ? "|color" : "|data");
+    auto cached = textureCache.find(fallbackKey);
+    if (cached != textureCache.end()) {
+      if (outResolvedPath)
+        *outResolvedPath = fallbackPath;
       return cached->second;
+    }
 
-    GLuint tex = LoadTexture2D(fallbackPath.c_str());
+    GLuint tex = LoadTexture2D(fallbackPath.c_str(), true, usage);
     if (tex == 0)
       LOG_WARN("Asset", "Failed to load texture: " + fallbackPath);
-    textureCache[fallbackPath] = tex;
+    textureCache[fallbackKey] = tex;
+    if (tex != 0 && outResolvedPath)
+      *outResolvedPath = fallbackPath;
     return tex;
   };
 
@@ -330,19 +399,33 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
         matGpu[i].roughness = std::clamp(std::sqrt(2.0f / (ns + 2.0f)), 0.04f, 1.0f);
       }
 
-      matGpu[i].texDiffuse = loadTextureByName(pickDiffuseTextureName(m));
-      matGpu[i].texNormal = loadTextureByName(pickNormalTextureName(m));
+      matGpu[i].texDiffuse = loadTextureByName(pickDiffuseTextureName(m),
+                                               TextureUsage::Color,
+                                               &matGpu[i].texDiffusePath);
+      matGpu[i].texNormal = loadTextureByName(pickNormalTextureName(m),
+                                              TextureUsage::Data,
+                                              &matGpu[i].texNormalPath);
       const std::string roughTex = pickRoughnessTextureName(m);
-      matGpu[i].texRoughness = loadTextureByName(roughTex);
+      matGpu[i].texRoughness = loadTextureByName(
+          roughTex, TextureUsage::Data, &matGpu[i].texRoughnessPath);
       if (matGpu[i].texRoughness == 0) {
         const std::string glossTex = pickGlossinessTextureName(m);
-        matGpu[i].texRoughness = loadTextureByName(glossTex);
+        matGpu[i].texRoughness = loadTextureByName(
+            glossTex, TextureUsage::Data, &matGpu[i].texRoughnessPath);
         matGpu[i].roughnessMapIsGloss = (matGpu[i].texRoughness != 0);
       }
-      matGpu[i].texMetallic = loadTextureByName(pickMetallicTextureName(m));
-      matGpu[i].texAO = loadTextureByName(pickAOTextureName(m));
-      matGpu[i].texEmissive = loadTextureByName(pickEmissiveTextureName(m));
-      matGpu[i].texOpacity = loadTextureByName(pickOpacityTextureName(m));
+      matGpu[i].texMetallic = loadTextureByName(pickMetallicTextureName(m),
+                                                TextureUsage::Data,
+                                                &matGpu[i].texMetallicPath);
+      matGpu[i].texAO = loadTextureByName(pickAOTextureName(m),
+                                          TextureUsage::Data,
+                                          &matGpu[i].texAOPath);
+      matGpu[i].texEmissive = loadTextureByName(pickEmissiveTextureName(m),
+                                                TextureUsage::Color,
+                                                &matGpu[i].texEmissivePath);
+      matGpu[i].texOpacity = loadTextureByName(pickOpacityTextureName(m),
+                                               TextureUsage::Data,
+                                               &matGpu[i].texOpacityPath);
       if (matGpu[i].texOpacity != 0)
         matGpu[i].alphaCutoff = 0.333f;
     }
@@ -350,6 +433,7 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
 
   std::unordered_map<std::string, size_t> submeshIndexByKey;
   std::vector<std::vector<Vertex>> vertsPerSubmesh;
+  std::vector<glm::vec3> shadowVertices;
 
   auto ensureSubmesh = [&](const std::string &objectName, int matId) -> size_t {
     std::string materialName = "Default";
@@ -372,23 +456,34 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
     sm.materialName = materialName;
     sm.debugName = objectName + " / " + materialName;
     sm.material.baseColor = glm::vec4(kd, 1.0f);
+    sm.material.sourceAssetPath = objPath;
+    sm.material.sourceMaterialName = materialName;
     if (gpuMat) {
       sm.material.baseColor.a = gpuMat->alpha;
       sm.material.roughness = gpuMat->roughness;
       sm.material.metallic = gpuMat->metallic;
       sm.material.ao = gpuMat->ao;
       sm.material.texDiffuse = gpuMat->texDiffuse;
+      sm.material.texDiffusePath = gpuMat->texDiffusePath;
       sm.material.texNormal = gpuMat->texNormal;
+      sm.material.texNormalPath = gpuMat->texNormalPath;
       sm.material.texRoughness = gpuMat->texRoughness;
+      sm.material.texRoughnessPath = gpuMat->texRoughnessPath;
       sm.material.texMetallic = gpuMat->texMetallic;
+      sm.material.texMetallicPath = gpuMat->texMetallicPath;
       sm.material.texAO = gpuMat->texAO;
+      sm.material.texAOPath = gpuMat->texAOPath;
       sm.material.texEmissive = gpuMat->texEmissive;
+      sm.material.texEmissivePath = gpuMat->texEmissivePath;
       sm.material.texOpacity = gpuMat->texOpacity;
+      sm.material.texOpacityPath = gpuMat->texOpacityPath;
       sm.material.opacityChannel = (gpuMat->texOpacity != 0) ? 0 : 3;
       sm.material.emissiveColor = gpuMat->emissive;
       sm.material.alphaCutoff = gpuMat->alphaCutoff;
       sm.material.roughnessMapIsGloss = gpuMat->roughnessMapIsGloss;
     }
+    if (sm.material.sourceMaterialName.empty())
+      sm.material.sourceMaterialName = sm.materialName;
     sm.material.id = sm.debugName;
 
     size_t idx = mSubmeshes.size();
@@ -476,6 +571,9 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
         vertsPerSubmesh[subIdx].push_back(face[0]);
         vertsPerSubmesh[subIdx].push_back(face[1]);
         vertsPerSubmesh[subIdx].push_back(face[2]);
+        shadowVertices.push_back(face[0].pos);
+        shadowVertices.push_back(face[1].pos);
+        shadowVertices.push_back(face[2].pos);
       }
 
       index_offset += fv;
@@ -519,6 +617,11 @@ bool OBJModel::loadFromFile(const std::string &objPath) {
                   std::to_string((unsigned long long)sm.material.texDiffuse));
   }
 
+  uploadShadowOnlyMesh(mShadowMesh.vao, mShadowMesh.vbo,
+                       mShadowMesh.vertexCount, shadowVertices);
+  mShadowMesh.instancingReady = false;
+  mShadowMesh.instancedVBO = 0;
+
   return true;
 }
 
@@ -529,11 +632,13 @@ bool OBJModel::loadFromVertices(const std::vector<VertexData> &vertices,
 
   // Convert VertexData → internal Vertex (same layout)
   std::vector<Vertex> verts(vertices.size());
+  std::vector<glm::vec3> shadowVertices;
   glm::vec3 bMin(1e30f), bMax(-1e30f);
   for (size_t i = 0; i < vertices.size(); ++i) {
     verts[i].pos = vertices[i].pos;
     verts[i].uv = vertices[i].uv;
     verts[i].normal = vertices[i].normal;
+    shadowVertices.push_back(vertices[i].pos);
     bMin = glm::min(bMin, vertices[i].pos);
     bMax = glm::max(bMax, vertices[i].pos);
   }
@@ -584,6 +689,11 @@ bool OBJModel::loadFromVertices(const std::vector<VertexData> &vertices,
   ob.aabbMax = bMax;
   ob.hasBounds = true;
   mObjectBounds[name] = ob;
+
+  uploadShadowOnlyMesh(mShadowMesh.vao, mShadowMesh.vbo,
+                       mShadowMesh.vertexCount, shadowVertices);
+  mShadowMesh.instancingReady = false;
+  mShadowMesh.instancedVBO = 0;
 
   return true;
 }
@@ -727,6 +837,21 @@ void OBJModel::centerAtOrigin(UpAxis upAxis) {
       ob.aabbMax += offset;
     }
   }
+
+  if (mShadowMesh.vbo != 0 && mShadowMesh.vertexCount > 0) {
+    glBindBuffer(GL_ARRAY_BUFFER, mShadowMesh.vbo);
+    GLsizeiptr size =
+        mShadowMesh.vertexCount * (GLsizeiptr)sizeof(glm::vec3);
+    glm::vec3 *positions = reinterpret_cast<glm::vec3 *>(glMapBufferRange(
+        GL_ARRAY_BUFFER, 0, size, GL_MAP_READ_BIT | GL_MAP_WRITE_BIT));
+    if (positions) {
+      for (GLsizei i = 0; i < mShadowMesh.vertexCount; ++i) {
+        positions[i] += offset;
+      }
+      glUnmapBuffer(GL_ARRAY_BUFFER);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+  }
 }
 
 bool OBJModel::getObjectLocalTRS(const std::string &objectName,
@@ -776,6 +901,12 @@ bool OBJModel::getSubmeshCenterLocal(const std::string &materialName,
 }
 
 void OBJModel::shutdown() {
+  if (mShadowMesh.vbo)
+    glDeleteBuffers(1, &mShadowMesh.vbo);
+  if (mShadowMesh.vao)
+    glDeleteVertexArrays(1, &mShadowMesh.vao);
+  mShadowMesh = {};
+
   for (auto &sm : mSubmeshes) {
     if (sm.vbo)
       glDeleteBuffers(1, &sm.vbo);
@@ -864,8 +995,6 @@ void OBJModel::drawDepth(Shader &shadowShader, const glm::vec3 &position,
     GLStateCache::instance().bindVertexArray(sm.vao);
     glDrawArrays(GL_TRIANGLES, 0, sm.vertexCount);
   }
-
-  GLStateCache::instance().bindVertexArray(0);
 }
 
 void OBJModel::draw(Shader &shader, const glm::vec3 &position,
@@ -893,8 +1022,6 @@ void OBJModel::draw(Shader &shader, const glm::vec3 &position,
     GLStateCache::instance().bindVertexArray(sm.vao);
     glDrawArrays(GL_TRIANGLES, 0, sm.vertexCount);
   }
-
-  GLStateCache::instance().bindVertexArray(0);
 }
 
 void OBJModel::drawInstanced(Shader &shader, unsigned int instanceVBO,
@@ -911,38 +1038,36 @@ void OBJModel::drawInstanced(Shader &shader, unsigned int instanceVBO,
 
     if (!sm.instancingReady || sm.instancedVBO != instanceVBO) {
       // Setup instanced attributes once per VAO/VBO pair
-      glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-      glEnableVertexAttribArray(3);
-      glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                            (void *)0);
-      glEnableVertexAttribArray(4);
-      glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                            (void *)(sizeof(glm::vec4)));
-      glEnableVertexAttribArray(5);
-      glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                            (void *)(2 * sizeof(glm::vec4)));
-      glEnableVertexAttribArray(6);
-      glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                            (void *)(3 * sizeof(glm::vec4)));
-
-      glVertexAttribDivisor(3, 1);
-      glVertexAttribDivisor(4, 1);
-      glVertexAttribDivisor(5, 1);
-      glVertexAttribDivisor(6, 1);
+      bindInstanceMatrixAttributes(instanceVBO);
       sm.instancedVBO = instanceVBO;
       sm.instancingReady = true;
     }
 
     glDrawArraysInstanced(GL_TRIANGLES, 0, sm.vertexCount, instanceCount);
   }
-
-  GLStateCache::instance().bindVertexArray(0);
 }
 
 void OBJModel::drawDepthInstanced(Shader &shadowShader,
                                   unsigned int instanceVBO, int instanceCount) {
   if (instanceCount == 0)
     return;
+
+  const bool canUseCombinedShadowMesh =
+      mShadowMesh.vao != 0 && mShadowMesh.vertexCount > 0 &&
+      mYawOverride.empty() && mObjectTRS.empty();
+  if (canUseCombinedShadowMesh) {
+    GLStateCache::instance().bindVertexArray(mShadowMesh.vao);
+
+    if (!mShadowMesh.instancingReady || mShadowMesh.instancedVBO != instanceVBO) {
+      bindInstanceMatrixAttributes(instanceVBO);
+      mShadowMesh.instancedVBO = instanceVBO;
+      mShadowMesh.instancingReady = true;
+    }
+
+    glDrawArraysInstanced(GL_TRIANGLES, 0, mShadowMesh.vertexCount,
+                          instanceCount);
+    return;
+  }
 
   for (auto &sm : mSubmeshes) {
     if (sm.vertexCount == 0 || sm.vao == 0)
@@ -952,30 +1077,11 @@ void OBJModel::drawDepthInstanced(Shader &shadowShader,
 
     if (!sm.instancingReady || sm.instancedVBO != instanceVBO) {
       // Setup instanced attributes once per VAO/VBO pair
-      glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-      glEnableVertexAttribArray(3);
-      glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                            (void *)0);
-      glEnableVertexAttribArray(4);
-      glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                            (void *)(sizeof(glm::vec4)));
-      glEnableVertexAttribArray(5);
-      glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                            (void *)(2 * sizeof(glm::vec4)));
-      glEnableVertexAttribArray(6);
-      glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
-                            (void *)(3 * sizeof(glm::vec4)));
-
-      glVertexAttribDivisor(3, 1);
-      glVertexAttribDivisor(4, 1);
-      glVertexAttribDivisor(5, 1);
-      glVertexAttribDivisor(6, 1);
+      bindInstanceMatrixAttributes(instanceVBO);
       sm.instancedVBO = instanceVBO;
       sm.instancingReady = true;
     }
 
     glDrawArraysInstanced(GL_TRIANGLES, 0, sm.vertexCount, instanceCount);
   }
-
-  GLStateCache::instance().bindVertexArray(0);
 }

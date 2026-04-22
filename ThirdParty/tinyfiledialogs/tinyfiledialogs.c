@@ -102,6 +102,7 @@ misrepresented as being the original software.
  #endif
  #ifndef TINYFD_NOLIB
   #include <windows.h>
+  #include <commdlg.h>
   /*#define TINYFD_NOSELECTFOLDERWIN*/
   #ifndef TINYFD_NOSELECTFOLDERWIN
 	#include <shlobj.h>

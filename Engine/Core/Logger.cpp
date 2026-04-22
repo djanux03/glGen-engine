@@ -78,7 +78,7 @@ void Logger::log(Level level, const std::string &category,
   e.timestamp = nowString_();
   e.message = message;
 
-  mEntries.push_back(std::move(e));
+  mEntries.push_back(e);
   if (mEntries.size() > mMaxEntries) {
     // Only one entry over the limit since we add one at a time.
     // swap-and-pop the oldest to avoid O(n) memmove.

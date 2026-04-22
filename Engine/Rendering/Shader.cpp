@@ -11,6 +11,14 @@ Shader::Shader(const char *vertexShaderPath, const char *fragmentShaderPath) {
 
   GLuint vertexShader = compileShader(mVertexPath.c_str(), GL_VERTEX_SHADER);
   GLuint fragShader = compileShader(mFragmentPath.c_str(), GL_FRAGMENT_SHADER);
+  if (vertexShader == 0 || fragShader == 0) {
+    if (vertexShader != 0)
+      glDeleteShader(vertexShader);
+    if (fragShader != 0)
+      glDeleteShader(fragShader);
+    LOG_ERROR("Render", "Shader program creation aborted due to shader compile failure");
+    return;
+  }
 
   mId = glCreateProgram();
   glAttachShader(mId, vertexShader);
@@ -21,6 +29,8 @@ Shader::Shader(const char *vertexShaderPath, const char *fragmentShaderPath) {
   if (!success) {
     glGetProgramInfoLog(mId, 512, NULL, infoLog);
     LOG_ERROR("Render", std::string("Shader link error: ") + infoLog);
+    glDeleteProgram(mId);
+    mId = 0;
   }
 
   glDeleteShader(vertexShader);

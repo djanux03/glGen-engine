@@ -18,6 +18,7 @@ public:
 
   bool init(const std::string &hdrPath, const std::string &vertPath,
             const std::string &fragPath);
+  bool reloadHDR(const std::string &hdrPath);
   void shutdown();
   void draw(const glm::mat4 &view, const glm::mat4 &projection, float exposure,
             float gamma, const glm::vec3 &sunDir, const glm::vec3 &sunColor,
@@ -28,6 +29,10 @@ public:
     mSkyHorizon = horizon;
     mSkyTop = top;
   }
+  GLuint hdrTexture() const { return mHDRTex; }
+  bool hasHDRTexture() const { return mHDRTex != 0 && !mUseSolidSky; }
+  float yaw01() const { return mYaw01; }
+  glm::mat3 rotationMatrix() const;
 
   // Lightweight procedural sky clouds
   bool skyCloudsEnabled = true;
@@ -42,6 +47,12 @@ public:
   float sunDiscIntensity = 8.0f;
   float sunHaloIntensity = 0.6f;
   float sunRaysIntensity = 0.2f;
+  float sunDiscSoftness = 0.0025f;
+  float sunHaloSize = 0.35f;
+  float sunRaySharpness = 8.0f;
+  float atmosphereStrength = 0.42f;
+  float gradientPower = 1.15f;
+  float horizonGlow = 0.22f;
 
   // Night visuals
   float nightFactor = 0.0f;           // 0=day, 1=night
@@ -55,6 +66,7 @@ private:
 
   std::unique_ptr<Shader> mShader;
   GLuint mHDRTex = 0;
+  std::string mHDRPath;
 
   float mYaw01 = 0.0f;
 

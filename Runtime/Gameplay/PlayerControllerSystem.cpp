@@ -1,0 +1,160 @@
+#include "PlayerControllerSystem.h"
+
+#include "AppState.h"
+#include "ECS/Components.h"
+#include "Keyboard.h"
+#include "Mouse.h"
+
+#include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/constants.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+#include <algorithm>
+#include <cmath>
+
+namespace {
+bool isAlive(Registry &reg, uint32_t entity) {
+  return !reg.has<LifecycleComponent>(entity) ||
+         reg.get<LifecycleComponent>(entity).state == EntityLifecycleState::Alive;
+}
+
+uint32_t findPlayerCamera(Registry &reg) {
+  for (auto entity : reg.view<CameraComponent>()) {
+    if (isAlive(reg, entity))
+      return entity;
+  }
+  return 0;
+}
+
+glm::vec3 cameraForwardFromRotation(const glm::vec3 &rotationDeg) {
+  glm::vec3 front;
+  front.x = -std::sin(glm::radians(rotationDeg.y)) *
+            std::cos(glm::radians(rotationDeg.x));
+  front.y = std::sin(glm::radians(rotationDeg.x));
+  front.z = -std::cos(glm::radians(rotationDeg.y)) *
+            std::cos(glm::radians(rotationDeg.x));
+  return glm::normalize(front);
+}
+
+float terrainGroundY(AppState &state, const glm::vec3 &position) {
+  if (!state.terrainSystem.isEnabled())
+    return -3.402823466e+38F;
+  if (!state.terrainSystem.isChunkLoadedAt(position.x, position.z))
+    return -3.402823466e+38F;
+  return state.terrainSystem.getHeightAt(position.x, position.z);
+}
+} // namespace
+
+void PlayerControllerSystem::reset() {
+  mVerticalVelocity = 0.0f;
+  mGrounded = false;
+  mLastPlayerId = 0;
+}
+
+void PlayerControllerSystem::update(AppState &state, float dt) {
+  if (dt <= 0.0f)
+    return;
+
+  Registry &reg = state.scene.registry();
+  if (state.playerId == 0 || !reg.has<CameraComponent>(state.playerId) ||
+      !reg.has<TransformComponent>(state.playerId) ||
+      !isAlive(reg, state.playerId)) {
+    state.playerId = findPlayerCamera(reg);
+  }
+
+  if (state.playerId == 0 || !reg.has<TransformComponent>(state.playerId))
+    return;
+
+  if (mLastPlayerId != state.playerId) {
+    mVerticalVelocity = 0.0f;
+    mGrounded = false;
+    mLastPlayerId = state.playerId;
+  }
+
+  auto &tr = reg.get<TransformComponent>(state.playerId);
+
+  const float dx = static_cast<float>(Mouse::getDX());
+  const float dy = static_cast<float>(Mouse::getDY());
+  state.debugMouseDX = dx;
+  state.debugMouseDY = dy;
+
+  const float sensitivity = state.input.mouseSensitivity;
+  tr.rotation.y -= dx * sensitivity;
+  tr.rotation.x += dy * sensitivity;
+  tr.rotation.x = std::clamp(tr.rotation.x, -89.0f, 89.0f);
+  if (tr.rotation.y > 180.0f)
+    tr.rotation.y -= 360.0f;
+  if (tr.rotation.y < -180.0f)
+    tr.rotation.y += 360.0f;
+
+  state.debugYaw = tr.rotation.y;
+  state.debugPitch = tr.rotation.x;
+
+  const glm::vec3 forward = cameraForwardFromRotation(tr.rotation);
+  glm::vec3 flatForward(forward.x, 0.0f, forward.z);
+  if (glm::length(flatForward) < 0.0001f)
+    flatForward = glm::vec3(0.0f, 0.0f, -1.0f);
+  flatForward = glm::normalize(flatForward);
+
+  glm::vec3 right = glm::normalize(glm::cross(flatForward, glm::vec3(0.0f, 1.0f, 0.0f)));
+  glm::vec3 wishMove(0.0f);
+  if (Keyboard::key(GLFW_KEY_W))
+    wishMove += flatForward;
+  if (Keyboard::key(GLFW_KEY_S))
+    wishMove -= flatForward;
+  if (Keyboard::key(GLFW_KEY_D))
+    wishMove += right;
+  if (Keyboard::key(GLFW_KEY_A))
+    wishMove -= right;
+
+  if (glm::length(wishMove) > 0.0001f)
+    wishMove = glm::normalize(wishMove);
+
+  const bool sprint =
+      Keyboard::key(GLFW_KEY_LEFT_SHIFT) || Keyboard::key(GLFW_KEY_RIGHT_SHIFT);
+  const float baseSpeed = 50.0f;
+  const float speed = baseSpeed * (sprint ? state.input.runMult : 1.0f);
+  tr.position += wishMove * speed * dt;
+
+  constexpr float kGroundClearance = 0.55f;
+  constexpr float kGroundSnap = 1.2f;
+  constexpr float kGravity = -9.8f;
+  constexpr float kJumpSpeed = 4.5f;
+  constexpr float kMaxFallSpeed = -25.0f;
+
+  mGrounded = false;
+  float groundY = terrainGroundY(state, tr.position);
+
+  PhysicsRaycastResult groundHit = state.physicsSystem.raycast(
+      tr.position, glm::vec3(0.0f, -1.0f, 0.0f), 5.0f, state.playerId);
+  if (groundHit.hit)
+    groundY = std::max(groundY, groundHit.position.y);
+
+  const float desiredY = groundY + kGroundClearance;
+  if (groundY > -3.0e+38f && tr.position.y <= desiredY + kGroundSnap &&
+      mVerticalVelocity <= 0.0f) {
+    tr.position.y = desiredY;
+    mVerticalVelocity = 0.0f;
+    mGrounded = true;
+  }
+
+  if (mGrounded && Keyboard::key(GLFW_KEY_SPACE)) {
+    mVerticalVelocity = kJumpSpeed;
+    mGrounded = false;
+  }
+
+  if (!mGrounded) {
+    mVerticalVelocity = std::max(kMaxFallSpeed, mVerticalVelocity + kGravity * dt);
+    tr.position.y += mVerticalVelocity * dt;
+  }
+
+  if (reg.has<CameraComponent>(state.playerId)) {
+    auto &cam = reg.get<CameraComponent>(state.playerId);
+    cam.front = forward;
+    cam.right = right;
+    cam.up = glm::vec3(0.0f, 1.0f, 0.0f);
+    cam.yaw = tr.rotation.y;
+    cam.pitch = tr.rotation.x;
+  }
+}

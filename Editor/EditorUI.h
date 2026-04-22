@@ -1,6 +1,7 @@
 #pragma once
 #include "EditorToolbar.h"
 #include "Core/FrameProfiler.h"
+#include "Core/PerformanceSnapshot.h"
 #include "Terrain/TerrainMaterialSettings.h"
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -92,6 +93,7 @@ struct EditorContext {
 
   // Sky params stored in AppState
   bool &solidSky;
+  std::string &skyHDRPath;
   float *skyHorizon; // float[3]
   float *skyTop;     // float[3]
   bool &dayNightEnabled;
@@ -104,6 +106,19 @@ struct EditorContext {
   glm::vec3 &sunDayColor;
   glm::vec3 &sunDuskColor;
   glm::vec3 &sunNightColor;
+  glm::vec3 &visualSunColor;
+  glm::vec3 &visualSunDayColor;
+  glm::vec3 &visualSunDuskColor;
+  glm::vec3 &visualSunNightColor;
+  float &skyAtmosphereStrength;
+  float &skyGradientPower;
+  float &skyHorizonGlow;
+  float &skySunDiscIntensity;
+  float &skySunHaloIntensity;
+  float &skySunRaysIntensity;
+  float &skySunDiscSoftness;
+  float &skySunHaloSize;
+  float &skySunRaySharpness;
   bool &minimalSky;
   float &skyBackdropBlend;
   float &skyFeatureVisibility;
@@ -119,14 +134,43 @@ struct EditorContext {
   // Renderer controls
   float &shadowStrength;
   float &shadowFarPlane;
+  bool &enableCascadedShadows;
+  int &shadowCascadeCount;
+  int &shadowMapResolution;
+  float &shadowCascadeDistance;
+  float &shadowCascadeLambda;
+  float &shadowNormalBias;
+  float &shadowDepthBias;
+  float &shadowSoftness;
+  bool &showShadowCascades;
   int &shadowUpdateInterval;
   float &shadowUpdateDistance;
   float &shadowUpdateAngle;
+  bool &shadowStaggeredUpdates;
+  int &shadowCascadeCadence;
+  float &shadowCascadeDistanceScale;
+  float &shadowCascadeAngleScale;
   bool &shadowCameraCulling;
   float &exposure;
   float &gamma;
   float &fogDensity;
+  float &fogHeightFalloff;
   glm::vec3 &fogColor;
+  bool &aerialPerspectiveEnabled;
+  float &aerialPerspectiveDensity;
+  float &aerialPerspectiveStart;
+  float &aerialPerspectiveHeightFalloff;
+  float &aerialPerspectiveSkyBlend;
+  float &aerialPerspectiveSunGlow;
+  float &aerialPerspectiveDesaturation;
+  bool &ambientHemisphereEnabled;
+  float &ambientHemisphereIntensity;
+  float &ambientSkyInfluence;
+  float &ambientHorizonStrength;
+  float &ambientTerrainBoost;
+  glm::vec3 &ambientSkyColor;
+  glm::vec3 &ambientHorizonColor;
+  glm::vec3 &ambientGroundColor;
   bool &toonEnabled;
   int &toonSteps;
   float &toonMin;
@@ -201,6 +245,7 @@ struct EditorContext {
   int glTextureBinds = 0;
   int glVaoBinds = 0;
   int glStateChanges = 0;
+  const FramePerformanceSnapshot &performance;
 
   // Selection State
   EditorSelectionState &selection;

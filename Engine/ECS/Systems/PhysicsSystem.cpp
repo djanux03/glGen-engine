@@ -21,12 +21,14 @@
 #include <Jolt/RegisterTypes.h>
 
 #include <glad/glad.h>
+#include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "Assets/PrimitiveMeshGenerator.h"
 #include "Rendering/Shader.h"
 #include "Rendering/GLStateCache.h"
 
+#include <algorithm>
 #include <iostream>
 
 using namespace JPH;
@@ -42,6 +44,39 @@ static constexpr BroadPhaseLayer NON_MOVING(0);
 static constexpr BroadPhaseLayer MOVING(1);
 static constexpr uint NUM_LAYERS(2);
 }; // namespace BroadPhaseLayers
+
+namespace {
+glm::quat physicsRotation(const TransformComponent &transform) {
+  return glm::quat(glm::vec3(glm::radians(transform.rotation.x),
+                            glm::radians(transform.rotation.y),
+                            glm::radians(transform.rotation.z)));
+}
+
+glm::vec3 safeAbsScale(const glm::vec3 &scale) {
+  return glm::max(glm::abs(scale), glm::vec3(0.001f));
+}
+
+float maxComponent(const glm::vec3 &v) {
+  return std::max(v.x, std::max(v.y, v.z));
+}
+
+glm::vec3 colliderBodyPosition(const TransformComponent &transform,
+                               const ColliderComponent &collider) {
+  return transform.position + physicsRotation(transform) *
+                                  (collider.offset * transform.scale);
+}
+
+bool colliderShapeChanged(const RigidbodyComponent &rigidBody,
+                          const TransformComponent &transform,
+                          const ColliderComponent &collider) {
+  return glm::distance(rigidBody.lastScale, transform.scale) > 0.001f ||
+         glm::distance(rigidBody.lastColliderDimensions,
+                       collider.dimensions) > 0.001f ||
+         glm::distance(rigidBody.lastColliderOffset, collider.offset) >
+             0.001f ||
+         rigidBody.lastColliderShape != static_cast<int>(collider.shape);
+}
+} // namespace
 
 class ::PhysicsSystem::ObjectLayerPairFilterImpl
     : public ObjectLayerPairFilter {
@@ -181,19 +216,28 @@ void ::PhysicsSystem::update(Registry &registry, float dt) {
 
     if (rb.bodyID != 0xFFFFFFFF) {
       JPH::BodyID id(rb.bodyID);
+      const ColliderComponent *collider =
+          registry.has<ColliderComponent>(entity)
+              ? &registry.get<ColliderComponent>(entity)
+              : nullptr;
+      if (collider && colliderShapeChanged(rb, transform, *collider)) {
+        removeBody(rb.bodyID);
+        rb.bodyID = 0xFFFFFFFF;
+        continue;
+      }
 
       // Detect if transform was manually modified outside PhysicsSystem (e.g.
       // by Gizmos)
       if (glm::distance(rb.lastPosition, transform.position) > 0.001f ||
           glm::distance(rb.lastRotation, transform.rotation) > 0.001f) {
 
-        JPH::RVec3 jphPos((JPH::Real)transform.position.x,
-                          (JPH::Real)transform.position.y,
-                          (JPH::Real)transform.position.z);
+        const glm::vec3 bodyPos =
+            collider ? colliderBodyPosition(transform, *collider)
+                     : transform.position;
+        JPH::RVec3 jphPos((JPH::Real)bodyPos.x, (JPH::Real)bodyPos.y,
+                          (JPH::Real)bodyPos.z);
 
-        glm::quat q(glm::vec3(glm::radians(transform.rotation.x),
-                              glm::radians(transform.rotation.y),
-                              glm::radians(transform.rotation.z)));
+        glm::quat q = physicsRotation(transform);
         JPH::Quat jphRot(q.x, q.y, q.z, q.w);
 
         bodyInterface.SetPositionAndRotation(id, jphPos, jphRot,
@@ -243,18 +287,27 @@ void ::PhysicsSystem::createBodies(Registry &registry) {
 
     auto &transform = registry.get<TransformComponent>(entity);
     auto &collider = registry.get<ColliderComponent>(entity);
+    const glm::vec3 colliderScale = safeAbsScale(transform.scale);
 
     JPH::ShapeRefC shape;
     if (collider.shape == ColliderComponent::Shape::Box) {
+      const glm::vec3 dimensions =
+          glm::max(collider.dimensions * colliderScale, glm::vec3(0.02f));
       // Jolt boxes take half-extents
-      shape = new JPH::BoxShape(JPH::Vec3(collider.dimensions.x * 0.5f,
-                                          collider.dimensions.y * 0.5f,
-                                          collider.dimensions.z * 0.5f));
+      shape = new JPH::BoxShape(JPH::Vec3(dimensions.x * 0.5f,
+                                          dimensions.y * 0.5f,
+                                          dimensions.z * 0.5f));
     } else if (collider.shape == ColliderComponent::Shape::Sphere) {
-      shape = new JPH::SphereShape(collider.dimensions.x);
+      const float radius =
+          std::max(0.01f, collider.dimensions.x * maxComponent(colliderScale));
+      shape = new JPH::SphereShape(radius);
     } else if (collider.shape == ColliderComponent::Shape::Capsule) {
-      shape = new JPH::CapsuleShape(collider.dimensions.y * 0.5f,
-                                    collider.dimensions.x);
+      const float radius =
+          std::max(0.01f, collider.dimensions.x *
+                              std::max(colliderScale.x, colliderScale.z));
+      const float halfHeight =
+          std::max(0.02f, collider.dimensions.y * colliderScale.y * 0.5f);
+      shape = new JPH::CapsuleShape(halfHeight, radius);
     } else {
       shape = new JPH::BoxShape(JPH::Vec3(0.5f, 0.5f, 0.5f));
     }
@@ -273,19 +326,10 @@ void ::PhysicsSystem::createBodies(Registry &registry) {
       layer = Layers::MOVING;
     }
 
-    // Convert transform to Jolt Math
-    JPH::RVec3 position((JPH::Real)transform.position.x,
-                        (JPH::Real)transform.position.y,
-                        (JPH::Real)transform.position.z);
-
-    // Extract quaternion from glm rotation matrix
-    glm::mat4 tMat = transform.getMatrix();
-    // glm::mat4 scale is baked in; don't extract rotation from scaled mat,
-    // better to construct purely from pitch/yaw/roll or normalize the columns
-    glm::quat q(glm::vec3(glm::radians(transform.rotation.x),
-                          glm::radians(transform.rotation.y),
-                          glm::radians(transform.rotation.z)));
-
+    glm::quat q = physicsRotation(transform);
+    const glm::vec3 bodyPos = colliderBodyPosition(transform, collider);
+    JPH::RVec3 position((JPH::Real)bodyPos.x, (JPH::Real)bodyPos.y,
+                        (JPH::Real)bodyPos.z);
     JPH::Quat rotation(q.x, q.y, q.z, q.w);
 
     JPH::BodyCreationSettings settings(shape, position, rotation, motionType,
@@ -306,6 +350,10 @@ void ::PhysicsSystem::createBodies(Registry &registry) {
 
       rigidBody.lastPosition = transform.position;
       rigidBody.lastRotation = transform.rotation;
+      rigidBody.lastScale = transform.scale;
+      rigidBody.lastColliderDimensions = collider.dimensions;
+      rigidBody.lastColliderOffset = collider.offset;
+      rigidBody.lastColliderShape = static_cast<int>(collider.shape);
     }
   }
 }
@@ -330,12 +378,20 @@ void ::PhysicsSystem::syncTransforms(Registry &registry) {
       JPH::Vec3 velocity = bodyInterface.GetLinearVelocity(id);
 
       auto &transform = registry.get<TransformComponent>(entity);
+      const glm::vec3 bodyPos(position.GetX(), position.GetY(),
+                              position.GetZ());
+      const ColliderComponent *collider =
+          registry.has<ColliderComponent>(entity)
+              ? &registry.get<ColliderComponent>(entity)
+              : nullptr;
+
+      glm::quat q(rotation.GetW(), rotation.GetX(), rotation.GetY(),
+                  rotation.GetZ());
       transform.position =
-          glm::vec3(position.GetX(), position.GetY(), position.GetZ());
+          collider ? bodyPos - q * (collider->offset * transform.scale)
+                   : bodyPos;
 
       if (!rigidBody.lockRotation) {
-        glm::quat q(rotation.GetW(), rotation.GetX(), rotation.GetY(),
-                    rotation.GetZ());
         glm::vec3 euler = glm::eulerAngles(q);
         transform.rotation = glm::degrees(euler);
       }
@@ -344,6 +400,12 @@ void ::PhysicsSystem::syncTransforms(Registry &registry) {
           glm::vec3(velocity.GetX(), velocity.GetY(), velocity.GetZ());
       rigidBody.lastPosition = transform.position;
       rigidBody.lastRotation = transform.rotation;
+      rigidBody.lastScale = transform.scale;
+      if (collider) {
+        rigidBody.lastColliderDimensions = collider->dimensions;
+        rigidBody.lastColliderOffset = collider->offset;
+        rigidBody.lastColliderShape = static_cast<int>(collider->shape);
+      }
     }
   }
 }
@@ -382,20 +444,11 @@ void ::PhysicsSystem::drawDebugColliders(Registry &reg, const glm::mat4 &view,
 
     shader.setVec4("uColor", color);
 
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), transform.position);
-    model = glm::rotate(model, glm::radians(transform.rotation.y),
-                        glm::vec3(0, 1, 0));
-    model = glm::rotate(model, glm::radians(transform.rotation.x),
-                        glm::vec3(1, 0, 0));
-    model = glm::rotate(model, glm::radians(transform.rotation.z),
-                        glm::vec3(0, 0, 1));
+    glm::mat4 model = transform.getMatrix();
+    model = glm::translate(model, col.offset);
 
-    // The physics collider size needs to be adjusted.
-    // The visual mesh scale might be different from the collider size if the
-    // collider is offset or scaled. Since primitive meshes are generated at
-    // bounds [-0.5, 0.5] (size 1.0), and Jolt boxes take half-extents, we need
-    // to make sure the visual wireframe matches perfectly. Our Component uses
-    // "dimensions" which is full size for Box, Radius for Sphere
+    // Component dimensions are local-space. The entity transform handles scale,
+    // rotation and pivot offset so the wireframe matches the Jolt shape.
     glm::vec3 drawScale(1.0f);
     OBJModel *drawModel = mDebugCube;
 

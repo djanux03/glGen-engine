@@ -33,6 +33,7 @@ public:
 
   // Accessor for GL program ID (read-only).
   GLuint programId() const { return mId; }
+  bool isValid() const { return mId != 0; }
 
   // utility functions
   std::string loadShaderSrc(const char *filepath);

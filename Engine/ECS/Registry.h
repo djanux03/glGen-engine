@@ -60,28 +60,130 @@ public:
     return getPool<T>()->entities();
   }
 
-  // Multi-component view: iterate entities that have BOTH A and B
-  // Iterates the smaller pool and checks membership in the larger.
-  template <typename A, typename B> std::vector<EntityId> view2() {
-    auto *poolA = getPool<A>();
-    auto *poolB = getPool<B>();
-
-    auto &smallEntities = (poolA->entities().size() <= poolB->entities().size())
-                              ? poolA->entities()
-                              : poolB->entities();
-    auto *other = (poolA->entities().size() <= poolB->entities().size())
-                      ? static_cast<ISparseSet *>(poolB)
-                      : static_cast<ISparseSet *>(poolA);
-
-    std::vector<EntityId> result;
-    for (auto e : smallEntities) {
-      if (other->has(e))
-        result.push_back(e);
+  template <typename... Ts> class ViewAllIterator {
+  public:
+    ViewAllIterator(Registry *reg, const std::vector<EntityId> *seed, size_t index)
+        : registry(reg), seedEntities(seed), currentIndex(index) {
+      advanceToValid();
     }
-    return result; // NRVO — no copy
+
+    bool operator!=(const ViewAllIterator &other) const {
+      return currentIndex != other.currentIndex;
+    }
+
+    ViewAllIterator &operator++() {
+      ++currentIndex;
+      advanceToValid();
+      return *this;
+    }
+
+    EntityId operator*() const { return (*seedEntities)[currentIndex]; }
+
+  private:
+    Registry *registry;
+    const std::vector<EntityId> *seedEntities;
+    size_t currentIndex;
+
+    void advanceToValid() {
+      if (!seedEntities)
+        return;
+      while (currentIndex < seedEntities->size()) {
+        EntityId e = (*seedEntities)[currentIndex];
+        bool hasAll = true;
+        ((hasAll = hasAll && registry->has<Ts>(e)), ...);
+        if (hasAll)
+          break;
+        ++currentIndex;
+      }
+    }
+  };
+
+  template <typename... Ts> class ViewAllProxy {
+  public:
+    ViewAllProxy(Registry *reg, const std::vector<EntityId> *seed)
+        : registry(reg), seedEntities(seed) {}
+
+    ViewAllIterator<Ts...> begin() const {
+      return ViewAllIterator<Ts...>(registry, seedEntities, 0);
+    }
+
+    ViewAllIterator<Ts...> end() const {
+      return ViewAllIterator<Ts...>(
+          registry, seedEntities, seedEntities ? seedEntities->size() : 0);
+    }
+
+  private:
+    Registry *registry;
+    const std::vector<EntityId> *seedEntities;
+  };
+
+  template <typename Pred, typename... Ts> class ViewWhereIterator {
+  public:
+    ViewWhereIterator(Registry *reg, const std::vector<EntityId> *seed,
+                      size_t index, Pred p)
+        : registry(reg), seedEntities(seed), currentIndex(index), pred(p) {
+      advanceToValid();
+    }
+
+    bool operator!=(const ViewWhereIterator &other) const {
+      return currentIndex != other.currentIndex;
+    }
+
+    ViewWhereIterator &operator++() {
+      ++currentIndex;
+      advanceToValid();
+      return *this;
+    }
+
+    EntityId operator*() const { return (*seedEntities)[currentIndex]; }
+
+  private:
+    Registry *registry;
+    const std::vector<EntityId> *seedEntities;
+    size_t currentIndex;
+    Pred pred;
+
+    void advanceToValid() {
+      if (!seedEntities)
+        return;
+      while (currentIndex < seedEntities->size()) {
+        EntityId e = (*seedEntities)[currentIndex];
+        bool hasAll = true;
+        ((hasAll = hasAll && registry->has<Ts>(e)), ...);
+        if (hasAll && pred(e))
+          break;
+        ++currentIndex;
+      }
+    }
+  };
+
+  template <typename Pred, typename... Ts> class ViewWhereProxy {
+  public:
+    ViewWhereProxy(Registry *reg, const std::vector<EntityId> *seed, Pred p)
+        : registry(reg), seedEntities(seed), pred(p) {}
+
+    ViewWhereIterator<Pred, Ts...> begin() const {
+      return ViewWhereIterator<Pred, Ts...>(registry, seedEntities, 0, pred);
+    }
+
+    ViewWhereIterator<Pred, Ts...> end() const {
+      return ViewWhereIterator<Pred, Ts...>(
+          registry, seedEntities, seedEntities ? seedEntities->size() : 0,
+          pred);
+    }
+
+  private:
+    Registry *registry;
+    const std::vector<EntityId> *seedEntities;
+    Pred pred;
+  };
+
+  // Multi-component view: iterate entities that have BOTH A and B
+  template <typename A, typename B> ViewAllProxy<A, B> view2() {
+    return viewAll<A, B>();
   }
 
-  template <typename... Ts> std::vector<EntityId> viewAll() {
+  template <typename... Ts> ViewAllProxy<Ts...> viewAll() {
     auto pickSmallest = [this]() -> const std::vector<EntityId> * {
       const std::vector<EntityId> *smallest = nullptr;
       (([&]() {
@@ -93,29 +195,23 @@ public:
       return smallest;
     };
 
-    const std::vector<EntityId> *seed = pickSmallest();
-    std::vector<EntityId> result;
-    if (!seed)
-      return result;
-
-    for (EntityId e : *seed) {
-      bool hasAll = true;
-      ((hasAll = hasAll && getPool<Ts>()->has(e)), ...);
-      if (hasAll)
-        result.push_back(e);
-    }
-    return result; // NRVO — no copy
+    return ViewAllProxy<Ts...>(this, pickSmallest());
   }
 
   template <typename... Ts, typename Pred>
-  std::vector<EntityId> viewWhere(Pred pred) {
-    auto entities = viewAll<Ts...>();
-    std::vector<EntityId> result;
-    for (EntityId e : entities) {
-      if (pred(e))
-        result.push_back(e);
-    }
-    return result; // NRVO — no copy
+  ViewWhereProxy<Pred, Ts...> viewWhere(Pred pred) {
+    auto pickSmallest = [this]() -> const std::vector<EntityId> * {
+      const std::vector<EntityId> *smallest = nullptr;
+      (([&]() {
+         auto &entities = getPool<Ts>()->entities();
+         if (!smallest || entities.size() < smallest->size())
+           smallest = &entities;
+       }()),
+       ...);
+      return smallest;
+    };
+
+    return ViewWhereProxy<Pred, Ts...>(this, pickSmallest(), pred);
   }
 
   // Direct access to component array for cache-friendly iteration

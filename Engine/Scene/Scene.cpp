@@ -380,8 +380,19 @@ std::string Scene::serializeToString() const {
 
       ent["collider"] = {
           {"shape", shapeStr},
+          {"offset", {col.offset.x, col.offset.y, col.offset.z}},
           {"dimensions",
            {col.dimensions.x, col.dimensions.y, col.dimensions.z}}};
+    }
+    if (reg.has<DestructibleComponent>(e)) {
+      const auto &d = reg.get<DestructibleComponent>(e);
+      ent["destructible"] = {{"enabled", d.enabled},
+                             {"health", d.health},
+                             {"shardCount", d.shardCount},
+                             {"shardScale", d.shardScale},
+                             {"explosionForce", d.explosionForce},
+                             {"upwardImpulse", d.upwardImpulse},
+                             {"hideOriginal", d.hideOriginal}};
     }
 
     if (reg.has<CameraComponent>(e)) {
@@ -576,6 +587,21 @@ bool Scene::loadFromString(const std::string &jsonText) {
       auto dims = c.value("dimensions", std::vector<float>{1.0f, 1.0f, 1.0f});
       if (dims.size() == 3)
         col.dimensions = {dims[0], dims[1], dims[2]};
+      auto offset = c.value("offset", std::vector<float>{0.0f, 0.0f, 0.0f});
+      if (offset.size() == 3)
+        col.offset = {offset[0], offset[1], offset[2]};
+    }
+    if (ent.contains("destructible")) {
+      auto &d = mRegistry.emplace<DestructibleComponent>(id);
+      const auto &dj = ent["destructible"];
+      d.enabled = dj.value("enabled", true);
+      d.health = dj.value("health", 100.0f);
+      d.shardCount = dj.value("shardCount", 10);
+      d.shardScale = dj.value("shardScale", 0.75f);
+      d.explosionForce = dj.value("explosionForce", 18.0f);
+      d.upwardImpulse = dj.value("upwardImpulse", 5.0f);
+      d.hideOriginal = dj.value("hideOriginal", true);
+      d.fractured = false;
     }
 
     if (ent.contains("camera")) {
