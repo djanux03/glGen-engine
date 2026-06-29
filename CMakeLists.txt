@@ -28,3 +28,11 @@ add_subdirectory(ThirdParty)
 add_subdirectory(Engine)
 add_subdirectory(Editor)
 add_subdirectory(Runtime)
+
+# ── Experimental Vulkan backend (Phase 0 of the Vulkan-first rewrite) ────────
+# OFF by default: the OpenGL build (build.ps1 / build.sh) is unaffected.
+# Enable with:  cmake -S . -B <dir> -DGLGEN_BUILD_VULKAN=ON
+option(GLGEN_BUILD_VULKAN "Build the experimental Vulkan RHI + smoke test" OFF)
+if(GLGEN_BUILD_VULKAN)
+  add_subdirectory(VulkanRHI)
+endif()

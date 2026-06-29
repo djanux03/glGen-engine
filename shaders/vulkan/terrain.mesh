@@ -1,0 +1,81 @@
+#version 450
+#extension GL_EXT_mesh_shader : require
+
+// Mesh shader: generates one terrain patch (8x8 quads) entirely on the GPU,
+// displacing a flat grid by a procedural fbm height field and computing
+// per-vertex normals. No vertex/index buffers are involved.
+layout(local_size_x = 64) in;
+layout(triangles, max_vertices = 81, max_primitives = 128) out;
+
+layout(set = 1, binding = 0) uniform FrameData {
+    mat4 viewProj;
+    mat4 view;
+    mat4 lightSpace[3];
+    vec4 lightDir;
+    vec4 cascadeSplits;
+} uFrame;
+
+struct Payload { uint patchIndex; };
+taskPayloadSharedEXT Payload payload;
+
+layout(location = 0) out vec3 vNormalWS[];
+layout(location = 1) out vec3 vWorldPos[];
+layout(location = 2) out float vViewZ[];
+
+const uint kPatches = 24u;
+const float kHalf = 12.0;
+const float kPatchSize = (2.0 * kHalf) / float(kPatches);
+const uint N = 8u;
+const uint VPS = N + 1u;
+const uint NUMV = VPS * VPS;   // 81
+const uint NUMP = N * N * 2u;  // 128
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    float a = hash(i), b = hash(i + vec2(1, 0));
+    float c = hash(i + vec2(0, 1)), d = hash(i + vec2(1, 1));
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float heightAt(vec2 xz) {
+    float h = 0.0, amp = 0.5, freq = 0.35;
+    for (int i = 0; i < 4; ++i) { h += amp * vnoise(xz * freq); amp *= 0.5; freq *= 2.0; }
+    float base = -0.5 + 1.3 * (h - 0.45);
+    float flatten = smoothstep(0.0, 2.0, length(xz)); // keep the center flat for the axe
+    return mix(-0.5, base, flatten);
+}
+vec3 normalAt(vec2 xz) {
+    float e = 0.06;
+    float hl = heightAt(xz - vec2(e, 0)), hr = heightAt(xz + vec2(e, 0));
+    float hd = heightAt(xz - vec2(0, e)), hu = heightAt(xz + vec2(0, e));
+    return normalize(vec3(hl - hr, 2.0 * e, hd - hu));
+}
+
+void main() {
+    uint patchId = payload.patchIndex;
+    uint px = patchId % kPatches;
+    uint pz = patchId / kPatches;
+    vec2 origin = vec2(-kHalf) + vec2(px, pz) * kPatchSize;
+
+    SetMeshOutputsEXT(NUMV, NUMP);
+
+    for (uint i = gl_LocalInvocationID.x; i < NUMV; i += 64u) {
+        uint vx = i % VPS, vz = i / VPS;
+        vec2 xz = origin + (vec2(vx, vz) / float(N)) * kPatchSize;
+        float y = heightAt(xz);
+        vec3 world = vec3(xz.x, y, xz.y);
+        gl_MeshVerticesEXT[i].gl_Position = uFrame.viewProj * vec4(world, 1.0);
+        vWorldPos[i] = world;
+        vNormalWS[i] = normalAt(xz);
+        vViewZ[i] = -(uFrame.view * vec4(world, 1.0)).z;
+    }
+    for (uint i = gl_LocalInvocationID.x; i < NUMP; i += 64u) {
+        uint quad = i / 2u;
+        bool second = (i & 1u) == 1u;
+        uint qx = quad % N, qz = quad / N;
+        uint v00 = qz * VPS + qx, v10 = v00 + 1u, v01 = v00 + VPS, v11 = v01 + 1u;
+        gl_PrimitiveTriangleIndicesEXT[i] =
+            second ? uvec3(v10, v11, v01) : uvec3(v00, v10, v01);
+    }
+}
