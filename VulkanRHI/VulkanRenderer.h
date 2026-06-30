@@ -91,6 +91,7 @@ private:
   void updateTonemapSets();
   bool createScenePipeline(const std::string &shaderDir);
   bool createTerrainPipeline(const std::string &shaderDir);
+  bool createSkyPipeline(const std::string &shaderDir);
   bool createTonemapPipeline(const std::string &shaderDir);
   bool loadModel(const std::string &modelPath);
   bool createSyncObjects();
@@ -148,6 +149,10 @@ private:
   // --- scene (mesh) pipeline ---
   VkPipelineLayout mScenePipelineLayout = VK_NULL_HANDLE;
   VkPipeline mScenePipeline = VK_NULL_HANDLE;
+
+  // --- procedural sky (fullscreen, push-constant only) ---
+  VkPipelineLayout mSkyPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline mSkyPipeline = VK_NULL_HANDLE;
 
   // --- terrain (mesh-shader) pipeline; reuses the scene pipeline layout ---
   VkPipeline mTerrainPipeline = VK_NULL_HANDLE;

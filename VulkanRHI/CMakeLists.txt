@@ -25,7 +25,7 @@ set(VK_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${VK_SHADER_OUT_DIR})
 
 set(VK_SHADERS mesh.vert mesh.frag tonemap.vert tonemap.frag
-               terrain.task terrain.mesh terrain.frag)
+               terrain.task terrain.mesh terrain.frag sky.vert sky.frag)
 set(VK_SPV_FILES)
 foreach(shader ${VK_SHADERS})
     set(spv ${VK_SHADER_OUT_DIR}/${shader}.spv)

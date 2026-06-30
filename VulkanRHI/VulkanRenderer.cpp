@@ -14,6 +14,12 @@ namespace vkrhi {
 
 namespace {
 
+struct SkyPush {
+  glm::mat4 invViewProj;
+  glm::vec4 sunDir;
+  glm::vec4 camPos;
+};
+
 void imageBarrier(VkCommandBuffer cmd, VkImage image,
                   VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
                   VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
@@ -80,6 +86,8 @@ bool VulkanRenderer::init(
   if (!createScenePipeline(shaderDir))
     return false;
   if (!createTerrainPipeline(shaderDir))
+    return false;
+  if (!createSkyPipeline(shaderDir))
     return false;
   if (!createTonemapPipeline(shaderDir))
     return false;
@@ -821,6 +829,115 @@ bool VulkanRenderer::createTerrainPipeline(const std::string &shaderDir) {
   return true;
 }
 
+bool VulkanRenderer::createSkyPipeline(const std::string &shaderDir) {
+  VkPushConstantRange pcRange{};
+  pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  pcRange.offset = 0;
+  pcRange.size = sizeof(SkyPush);
+
+  VkPipelineLayoutCreateInfo layoutCi{};
+  layoutCi.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  layoutCi.pushConstantRangeCount = 1;
+  layoutCi.pPushConstantRanges = &pcRange;
+  VK_CHECK(vkCreatePipelineLayout(mCtx->device(), &layoutCi, nullptr,
+                                  &mSkyPipelineLayout));
+
+  VkShaderModule vert = loadShaderModule(shaderDir + "/sky.vert.spv");
+  VkShaderModule frag = loadShaderModule(shaderDir + "/sky.frag.spv");
+  VkPipelineShaderStageCreateInfo stages[2]{};
+  stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = vert;
+  stages[0].pName = "main";
+  stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = frag;
+  stages[1].pName = "main";
+
+  VkPipelineVertexInputStateCreateInfo vertexInput{};
+  vertexInput.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+  inputAssembly.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+  VkPipelineViewportStateCreateInfo viewport{};
+  viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewport.viewportCount = 1;
+  viewport.scissorCount = 1;
+
+  VkPipelineRasterizationStateCreateInfo raster{};
+  raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  raster.polygonMode = VK_POLYGON_MODE_FILL;
+  raster.cullMode = VK_CULL_MODE_NONE;
+  raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  raster.lineWidth = 1.0f;
+
+  VkPipelineMultisampleStateCreateInfo multisample{};
+  multisample.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+  // Sky is a background: no depth test or write (drawn before geometry).
+  VkPipelineDepthStencilStateCreateInfo depthStencil{};
+  depthStencil.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  depthStencil.depthTestEnable = VK_FALSE;
+  depthStencil.depthWriteEnable = VK_FALSE;
+
+  VkPipelineColorBlendAttachmentState blendAttachment{};
+  blendAttachment.colorWriteMask =
+      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  VkPipelineColorBlendStateCreateInfo colorBlend{};
+  colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  colorBlend.attachmentCount = 1;
+  colorBlend.pAttachments = &blendAttachment;
+
+  VkDynamicState dynamics[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                               VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dynamicState{};
+  dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  dynamicState.dynamicStateCount = 2;
+  dynamicState.pDynamicStates = dynamics;
+
+  VkPipelineRenderingCreateInfo renderingCi{};
+  renderingCi.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+  renderingCi.colorAttachmentCount = 1;
+  renderingCi.pColorAttachmentFormats = &mHdrFormat;
+  renderingCi.depthAttachmentFormat = mDepthFormat; // pass has a depth attachment
+
+  VkGraphicsPipelineCreateInfo pipelineCi{};
+  pipelineCi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipelineCi.pNext = &renderingCi;
+  pipelineCi.stageCount = 2;
+  pipelineCi.pStages = stages;
+  pipelineCi.pVertexInputState = &vertexInput;
+  pipelineCi.pInputAssemblyState = &inputAssembly;
+  pipelineCi.pViewportState = &viewport;
+  pipelineCi.pRasterizationState = &raster;
+  pipelineCi.pMultisampleState = &multisample;
+  pipelineCi.pDepthStencilState = &depthStencil;
+  pipelineCi.pColorBlendState = &colorBlend;
+  pipelineCi.pDynamicState = &dynamicState;
+  pipelineCi.layout = mSkyPipelineLayout;
+
+  uint64_t key = fnv1a64Str("sky.atmosphere");
+  key = fnv1a64(&mHdrFormat, sizeof(mHdrFormat), key);
+  mSkyPipeline = mPipelineCache.getOrCreate(key, [&](VkPipelineCache pc) {
+    VkPipeline p = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateGraphicsPipelines(mCtx->device(), pc, 1, &pipelineCi,
+                                       nullptr, &p));
+    return p;
+  });
+
+  vkDestroyShaderModule(mCtx->device(), vert, nullptr);
+  vkDestroyShaderModule(mCtx->device(), frag, nullptr);
+  return true;
+}
+
 bool VulkanRenderer::createTonemapPipeline(const std::string &shaderDir) {
   VkPushConstantRange pcRange{};
   pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -1175,6 +1292,19 @@ void VulkanRenderer::drawFrame() {
 
   vkCmdSetViewport(cmd, 0, 1, &vp);
   vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+  // Sky background first (no depth test/write); geometry draws over it.
+  {
+    SkyPush skyPush{};
+    skyPush.invViewProj = glm::inverse(proj * viewMat);
+    skyPush.sunDir = glm::vec4(lightDir, 0.0f);
+    skyPush.camPos = glm::vec4(eye, 0.0f);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mSkyPipeline);
+    vkCmdPushConstants(cmd, mSkyPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(SkyPush), &skyPush);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+  }
+
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mScenePipeline);
   VkDescriptorSet sets[3] = {mBindless.set(), mFrameSets[mCurrentFrame],
                              mTlasSets[mCurrentFrame]};
@@ -1425,14 +1555,18 @@ void VulkanRenderer::shutdown() {
   }
   if (mTonemapPipelineLayout)
     vkDestroyPipelineLayout(device, mTonemapPipelineLayout, nullptr);
+  if (mSkyPipelineLayout)
+    vkDestroyPipelineLayout(device, mSkyPipelineLayout, nullptr);
   if (mScenePipelineLayout)
     vkDestroyPipelineLayout(device, mScenePipelineLayout, nullptr);
   mTonemapPipelineLayout = VK_NULL_HANDLE;
+  mSkyPipelineLayout = VK_NULL_HANDLE;
   mScenePipelineLayout = VK_NULL_HANDLE;
 
   mPipelineCache.destroy(*mCtx);
   mScenePipeline = VK_NULL_HANDLE;
   mTerrainPipeline = VK_NULL_HANDLE;
+  mSkyPipeline = VK_NULL_HANDLE;
   mTonemapPipeline = VK_NULL_HANDLE;
 
   mSwapchain.destroy(*mCtx);
