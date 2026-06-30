@@ -15,9 +15,8 @@ layout(set = 0, binding = 0) uniform sampler2D uTextures[];
 layout(set = 1, binding = 0) uniform FrameData {
     mat4 viewProj;
     mat4 view;
-    mat4 lightSpace[3];
     vec4 lightDir;
-    vec4 cascadeSplits;
+    vec4 terrain;
 } uFrame;
 
 layout(set = 2, binding = 0) uniform accelerationStructureEXT uTLAS;

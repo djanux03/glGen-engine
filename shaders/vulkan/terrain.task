@@ -9,9 +9,8 @@ layout(local_size_x = 1) in;
 layout(set = 1, binding = 0) uniform FrameData {
     mat4 viewProj;
     mat4 view;
-    mat4 lightSpace[3];
     vec4 lightDir;
-    vec4 cascadeSplits;
+    vec4 terrain; // x=amplitude y=frequency z=octaves w=seed
 } uFrame;
 
 struct Payload { uint patchIndex; };
@@ -20,8 +19,6 @@ taskPayloadSharedEXT Payload payload;
 const uint kPatches = 24u;
 const float kHalf = 12.0;
 const float kPatchSize = (2.0 * kHalf) / float(kPatches);
-const float kMinH = -0.8;
-const float kMaxH = 1.0;
 
 bool aabbVisible(vec3 lo, vec3 hi) {
     int outL = 0, outR = 0, outB = 0, outT = 0, outN = 0, outF = 0;
@@ -46,8 +43,12 @@ void main() {
     uint px = patchId % kPatches;
     uint pz = patchId / kPatches;
     vec2 origin = vec2(-kHalf) + vec2(px, pz) * kPatchSize;
-    vec3 lo = vec3(origin.x, kMinH, origin.y);
-    vec3 hi = vec3(origin.x + kPatchSize, kMaxH, origin.y + kPatchSize);
+    // Conservative height bounds derived from the generator's amplitude.
+    float amp = uFrame.terrain.x;
+    float minH = -0.6 - amp * 0.6;
+    float maxH = -0.4 + amp * 0.7;
+    vec3 lo = vec3(origin.x, minH, origin.y);
+    vec3 hi = vec3(origin.x + kPatchSize, maxH, origin.y + kPatchSize);
 
     payload.patchIndex = patchId;
     EmitMeshTasksEXT(aabbVisible(lo, hi) ? 1u : 0u, 1u, 1u);

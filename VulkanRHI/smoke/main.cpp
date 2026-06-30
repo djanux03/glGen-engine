@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace {
@@ -233,7 +234,17 @@ int main() {
       ImGui::SliderFloat("Exposure", &p.exposure, 0.1f, 3.0f);
       ImGui::SliderFloat("Light yaw", &p.lightYawDeg, 0.0f, 360.0f);
       ImGui::SliderFloat("Light pitch", &p.lightPitchDeg, 5.0f, 89.0f);
+      ImGui::Separator();
+      ImGui::Text("Terrain generator");
       ImGui::Checkbox("Draw terrain", &p.drawTerrain);
+      ImGui::SliderFloat("Amplitude", &p.terrainAmplitude, 0.0f, 3.0f);
+      ImGui::SliderFloat("Frequency", &p.terrainFrequency, 0.05f, 1.5f);
+      ImGui::SliderFloat("Octaves", &p.terrainOctaves, 1.0f, 8.0f, "%.0f");
+      if (ImGui::Button("Randomize seed"))
+        p.terrainSeed = static_cast<float>(std::rand() % 1000);
+      ImGui::SameLine();
+      ImGui::Text("seed %.0f", p.terrainSeed);
+      ImGui::Separator();
       ImGui::Text("Cam  %.1f, %.1f, %.1f", p.camPos.x, p.camPos.y, p.camPos.z);
       ImGui::End();
     }

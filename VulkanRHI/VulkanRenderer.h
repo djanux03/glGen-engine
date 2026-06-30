@@ -47,7 +47,12 @@ public:
     float exposure = 1.1f;
     float lightYawDeg = 215.0f;
     float lightPitchDeg = 50.0f;
+    // Terrain generator.
     bool drawTerrain = true;
+    float terrainAmplitude = 1.3f;
+    float terrainFrequency = 0.35f;
+    float terrainOctaves = 4.0f;
+    float terrainSeed = 0.0f;
   };
   Params &params() { return mParams; }
 
@@ -60,15 +65,13 @@ public:
 
 private:
   static constexpr uint32_t kFramesInFlight = 2;
-  static constexpr uint32_t kShadowCascades = 3; // kept for the UBO layout
   static constexpr uint32_t kTerrainPatches = 24; // grid is kTerrainPatches^2
 
   struct FrameDataGpu {
     glm::mat4 viewProj;
     glm::mat4 view;
-    glm::mat4 lightSpace[kShadowCascades];
-    glm::vec4 lightDir;
-    glm::vec4 cascadeSplits;
+    glm::vec4 lightDir; // xyz world-space
+    glm::vec4 terrain;  // x=amplitude, y=frequency, z=octaves, w=seed
   };
 
   struct DrawItem {

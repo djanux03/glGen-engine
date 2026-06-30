@@ -14,9 +14,8 @@ layout(location = 3) out float vViewZ;
 layout(set = 1, binding = 0) uniform FrameData {
     mat4 viewProj;
     mat4 view;
-    mat4 lightSpace[3];
-    vec4 lightDir;       // world space, xyz
-    vec4 cascadeSplits;  // x,y,z = far view-depth of cascades 0,1,2
+    vec4 lightDir;
+    vec4 terrain; // x=amplitude y=frequency z=octaves w=seed
 } uFrame;
 
 void main() {

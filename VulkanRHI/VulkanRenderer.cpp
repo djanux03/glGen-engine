@@ -1092,7 +1092,9 @@ void VulkanRenderer::drawFrame() {
   frameData.viewProj = proj * viewMat;
   frameData.view = viewMat;
   frameData.lightDir = glm::vec4(lightDir, 0.0f);
-  // lightSpace/cascadeSplits are unused now that shadows are ray-traced.
+  frameData.terrain =
+      glm::vec4(mParams.terrainAmplitude, mParams.terrainFrequency,
+                mParams.terrainOctaves, mParams.terrainSeed);
   std::memcpy(mFrameUBOMapped[mCurrentFrame], &frameData, sizeof(frameData));
 
   VK_CHECK(vkResetFences(device, 1, &mInFlight[mCurrentFrame]));

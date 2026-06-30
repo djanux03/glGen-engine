@@ -10,9 +10,8 @@ layout(triangles, max_vertices = 81, max_primitives = 128) out;
 layout(set = 1, binding = 0) uniform FrameData {
     mat4 viewProj;
     mat4 view;
-    mat4 lightSpace[3];
     vec4 lightDir;
-    vec4 cascadeSplits;
+    vec4 terrain; // x=amplitude y=frequency z=octaves w=seed
 } uFrame;
 
 struct Payload { uint patchIndex; };
@@ -39,9 +38,15 @@ float vnoise(vec2 p) {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 float heightAt(vec2 xz) {
-    float h = 0.0, amp = 0.5, freq = 0.35;
-    for (int i = 0; i < 4; ++i) { h += amp * vnoise(xz * freq); amp *= 0.5; freq *= 2.0; }
-    float base = -0.5 + 1.3 * (h - 0.45);
+    float h = 0.0, amp = 0.5, freq = uFrame.terrain.y;
+    int octaves = int(uFrame.terrain.z);
+    vec2 seed = vec2(uFrame.terrain.w * 13.37, uFrame.terrain.w * 7.71);
+    for (int i = 0; i < octaves; ++i) {
+        h += amp * vnoise(xz * freq + seed);
+        amp *= 0.5;
+        freq *= 2.0;
+    }
+    float base = -0.5 + uFrame.terrain.x * (h - 0.45);
     float flatten = smoothstep(0.0, 2.0, length(xz)); // keep the center flat for the axe
     return mix(-0.5, base, flatten);
 }
