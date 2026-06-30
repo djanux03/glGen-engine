@@ -72,21 +72,20 @@ bool VulkanRenderer::init(
   mDefaultTexIndex = createDefaultTexture();
   if (!createSceneTargets())
     return false;
-  if (!createShadowResources())
+  if (!createTlasDescriptors())
     return false;
   if (!createTonemapResources())
     return false;
   updateTonemapSets();
-  if (!createShadowPipeline(shaderDir))
-    return false;
   if (!createScenePipeline(shaderDir))
     return false;
   if (!createTerrainPipeline(shaderDir))
     return false;
   if (!createTonemapPipeline(shaderDir))
     return false;
-  if (!loadModel(modelPath))
+  if (!loadModel(modelPath)) // builds the acceleration structures
     return false;
+  writeTlasDescriptors();
   if (!createSyncObjects())
     return false;
   return true;
@@ -469,26 +468,11 @@ void VulkanRenderer::destroySceneTargets() {
   mDepthAllocs.clear();
 }
 
-bool VulkanRenderer::createShadowResources() {
-  // Comparison sampler for hardware PCF.
-  VkSamplerCreateInfo samplerCi{};
-  samplerCi.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-  samplerCi.magFilter = VK_FILTER_LINEAR;
-  samplerCi.minFilter = VK_FILTER_LINEAR;
-  samplerCi.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-  samplerCi.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  samplerCi.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  samplerCi.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  samplerCi.compareEnable = VK_TRUE;
-  samplerCi.compareOp = VK_COMPARE_OP_LESS;
-  samplerCi.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-  VK_CHECK(
-      vkCreateSampler(mCtx->device(), &samplerCi, nullptr, &mShadowSampler));
-
-  // Descriptor set layout (set 2 in the scene pipeline): sampler2DArrayShadow.
+bool VulkanRenderer::createTlasDescriptors() {
+  // Set 2 in the scene/terrain pipelines: the TLAS, queried for RT shadows.
   VkDescriptorSetLayoutBinding binding{};
   binding.binding = 0;
-  binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  binding.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
   binding.descriptorCount = 1;
   binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
   VkDescriptorSetLayoutCreateInfo layoutCi{};
@@ -496,114 +480,47 @@ bool VulkanRenderer::createShadowResources() {
   layoutCi.bindingCount = 1;
   layoutCi.pBindings = &binding;
   VK_CHECK(vkCreateDescriptorSetLayout(mCtx->device(), &layoutCi, nullptr,
-                                       &mShadowSetLayout));
+                                       &mTlasSetLayout));
 
   VkDescriptorPoolSize poolSize{};
-  poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  poolSize.type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
   poolSize.descriptorCount = kFramesInFlight;
   VkDescriptorPoolCreateInfo poolCi{};
   poolCi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   poolCi.maxSets = kFramesInFlight;
   poolCi.poolSizeCount = 1;
   poolCi.pPoolSizes = &poolSize;
-  VK_CHECK(
-      vkCreateDescriptorPool(mCtx->device(), &poolCi, nullptr, &mShadowPool));
+  VK_CHECK(vkCreateDescriptorPool(mCtx->device(), &poolCi, nullptr, &mTlasPool));
 
-  mShadowImages.resize(kFramesInFlight);
-  mShadowAllocs.resize(kFramesInFlight);
-  mShadowArrayViews.resize(kFramesInFlight);
-  mShadowLayerViews.resize(kFramesInFlight);
-  mShadowSets.resize(kFramesInFlight);
-
+  mTlasSets.resize(kFramesInFlight);
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-    VkImageCreateInfo imageCi{};
-    imageCi.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageCi.imageType = VK_IMAGE_TYPE_2D;
-    imageCi.format = mDepthFormat;
-    imageCi.extent = {kShadowRes, kShadowRes, 1};
-    imageCi.mipLevels = 1;
-    imageCi.arrayLayers = kShadowCascades;
-    imageCi.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageCi.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageCi.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                    VK_IMAGE_USAGE_SAMPLED_BIT;
-    imageCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VmaAllocationCreateInfo alloc{};
-    alloc.usage = VMA_MEMORY_USAGE_AUTO;
-    VK_CHECK(vmaCreateImage(mCtx->allocator(), &imageCi, &alloc,
-                            &mShadowImages[i], &mShadowAllocs[i], nullptr));
-
-    // Array view for sampling.
-    VkImageViewCreateInfo arrayView{};
-    arrayView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    arrayView.image = mShadowImages[i];
-    arrayView.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    arrayView.format = mDepthFormat;
-    arrayView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    arrayView.subresourceRange.levelCount = 1;
-    arrayView.subresourceRange.layerCount = kShadowCascades;
-    VK_CHECK(vkCreateImageView(mCtx->device(), &arrayView, nullptr,
-                               &mShadowArrayViews[i]));
-
-    // One single-layer view per cascade for rendering.
-    for (uint32_t c = 0; c < kShadowCascades; ++c) {
-      VkImageViewCreateInfo layerView{};
-      layerView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-      layerView.image = mShadowImages[i];
-      layerView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-      layerView.format = mDepthFormat;
-      layerView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-      layerView.subresourceRange.levelCount = 1;
-      layerView.subresourceRange.baseArrayLayer = c;
-      layerView.subresourceRange.layerCount = 1;
-      VK_CHECK(vkCreateImageView(mCtx->device(), &layerView, nullptr,
-                                 &mShadowLayerViews[i][c]));
-    }
-
     VkDescriptorSetAllocateInfo setAlloc{};
     setAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    setAlloc.descriptorPool = mShadowPool;
+    setAlloc.descriptorPool = mTlasPool;
     setAlloc.descriptorSetCount = 1;
-    setAlloc.pSetLayouts = &mShadowSetLayout;
-    VK_CHECK(
-        vkAllocateDescriptorSets(mCtx->device(), &setAlloc, &mShadowSets[i]));
-
-    VkDescriptorImageInfo image{};
-    image.sampler = mShadowSampler;
-    image.imageView = mShadowArrayViews[i];
-    image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = mShadowSets[i];
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &image;
-    vkUpdateDescriptorSets(mCtx->device(), 1, &write, 0, nullptr);
+    setAlloc.pSetLayouts = &mTlasSetLayout;
+    VK_CHECK(vkAllocateDescriptorSets(mCtx->device(), &setAlloc, &mTlasSets[i]));
   }
   return true;
 }
 
-void VulkanRenderer::destroyShadowResources() {
-  for (uint32_t i = 0; i < mShadowImages.size(); ++i) {
-    for (uint32_t c = 0; c < kShadowCascades; ++c)
-      vkDestroyImageView(mCtx->device(), mShadowLayerViews[i][c], nullptr);
-    vkDestroyImageView(mCtx->device(), mShadowArrayViews[i], nullptr);
-    vmaDestroyImage(mCtx->allocator(), mShadowImages[i], mShadowAllocs[i]);
+void VulkanRenderer::writeTlasDescriptors() {
+  VkAccelerationStructureKHR tlas = mAccel.tlas();
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
+    asInfo.sType =
+        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+    asInfo.accelerationStructureCount = 1;
+    asInfo.pAccelerationStructures = &tlas;
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.pNext = &asInfo;
+    write.dstSet = mTlasSets[i];
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    vkUpdateDescriptorSets(mCtx->device(), 1, &write, 0, nullptr);
   }
-  mShadowImages.clear();
-  mShadowAllocs.clear();
-  mShadowArrayViews.clear();
-  mShadowLayerViews.clear();
-  if (mShadowPool)
-    vkDestroyDescriptorPool(mCtx->device(), mShadowPool, nullptr);
-  if (mShadowSetLayout)
-    vkDestroyDescriptorSetLayout(mCtx->device(), mShadowSetLayout, nullptr);
-  if (mShadowSampler)
-    vkDestroySampler(mCtx->device(), mShadowSampler, nullptr);
-  mShadowPool = VK_NULL_HANDLE;
-  mShadowSetLayout = VK_NULL_HANDLE;
-  mShadowSampler = VK_NULL_HANDLE;
 }
 
 bool VulkanRenderer::createTonemapResources() {
@@ -680,115 +597,9 @@ VkShaderModule VulkanRenderer::loadShaderModule(const std::string &path) {
   return module;
 }
 
-bool VulkanRenderer::createShadowPipeline(const std::string &shaderDir) {
-  VkPushConstantRange pcRange{};
-  pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-  pcRange.offset = 0;
-  pcRange.size = sizeof(glm::mat4);
-
-  VkPipelineLayoutCreateInfo layoutCi{};
-  layoutCi.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  layoutCi.pushConstantRangeCount = 1;
-  layoutCi.pPushConstantRanges = &pcRange;
-  VK_CHECK(vkCreatePipelineLayout(mCtx->device(), &layoutCi, nullptr,
-                                  &mShadowPipelineLayout));
-
-  VkShaderModule vert = loadShaderModule(shaderDir + "/shadow.vert.spv");
-  VkPipelineShaderStageCreateInfo stage{};
-  stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-  stage.module = vert;
-  stage.pName = "main";
-
-  // Only position is needed; the binding still spans the full vertex stride.
-  VkVertexInputBindingDescription binding{};
-  binding.binding = 0;
-  binding.stride = sizeof(MeshVertex);
-  binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-  VkVertexInputAttributeDescription attr{};
-  attr = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)};
-  VkPipelineVertexInputStateCreateInfo vertexInput{};
-  vertexInput.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-  vertexInput.vertexBindingDescriptionCount = 1;
-  vertexInput.pVertexBindingDescriptions = &binding;
-  vertexInput.vertexAttributeDescriptionCount = 1;
-  vertexInput.pVertexAttributeDescriptions = &attr;
-
-  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-  inputAssembly.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-  VkPipelineViewportStateCreateInfo viewport{};
-  viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-  viewport.viewportCount = 1;
-  viewport.scissorCount = 1;
-
-  VkPipelineRasterizationStateCreateInfo raster{};
-  raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-  raster.polygonMode = VK_POLYGON_MODE_FILL;
-  raster.cullMode = VK_CULL_MODE_NONE;
-  raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-  raster.lineWidth = 1.0f;
-  // Depth bias fights shadow acne.
-  raster.depthBiasEnable = VK_TRUE;
-  raster.depthBiasConstantFactor = 1.25f;
-  raster.depthBiasSlopeFactor = 1.75f;
-
-  VkPipelineMultisampleStateCreateInfo multisample{};
-  multisample.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-  multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-  VkPipelineDepthStencilStateCreateInfo depthStencil{};
-  depthStencil.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-  depthStencil.depthTestEnable = VK_TRUE;
-  depthStencil.depthWriteEnable = VK_TRUE;
-  depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-
-  VkDynamicState dynamics[] = {VK_DYNAMIC_STATE_VIEWPORT,
-                               VK_DYNAMIC_STATE_SCISSOR};
-  VkPipelineDynamicStateCreateInfo dynamicState{};
-  dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-  dynamicState.dynamicStateCount = 2;
-  dynamicState.pDynamicStates = dynamics;
-
-  VkPipelineRenderingCreateInfo renderingCi{};
-  renderingCi.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-  renderingCi.depthAttachmentFormat = mDepthFormat;
-
-  VkGraphicsPipelineCreateInfo pipelineCi{};
-  pipelineCi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-  pipelineCi.pNext = &renderingCi;
-  pipelineCi.stageCount = 1;
-  pipelineCi.pStages = &stage;
-  pipelineCi.pVertexInputState = &vertexInput;
-  pipelineCi.pInputAssemblyState = &inputAssembly;
-  pipelineCi.pViewportState = &viewport;
-  pipelineCi.pRasterizationState = &raster;
-  pipelineCi.pMultisampleState = &multisample;
-  pipelineCi.pDepthStencilState = &depthStencil;
-  pipelineCi.pDynamicState = &dynamicState;
-  pipelineCi.layout = mShadowPipelineLayout;
-
-  uint64_t key = fnv1a64Str("shadow.depth");
-  key = fnv1a64(&mDepthFormat, sizeof(mDepthFormat), key);
-  mShadowPipeline = mPipelineCache.getOrCreate(key, [&](VkPipelineCache pc) {
-    VkPipeline p = VK_NULL_HANDLE;
-    VK_CHECK(vkCreateGraphicsPipelines(mCtx->device(), pc, 1, &pipelineCi,
-                                       nullptr, &p));
-    return p;
-  });
-
-  vkDestroyShaderModule(mCtx->device(), vert, nullptr);
-  return true;
-}
-
 bool VulkanRenderer::createScenePipeline(const std::string &shaderDir) {
   VkDescriptorSetLayout setLayouts[3] = {mBindless.layout(), mFrameSetLayout,
-                                         mShadowSetLayout};
+                                         mTlasSetLayout};
   VkPushConstantRange pcRange{};
   pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
   pcRange.offset = 0;
@@ -1127,15 +938,21 @@ bool VulkanRenderer::loadModel(const std::string &modelPath) {
   // model still casts its shadow, which the terrain receives.
   mTotalIndexCount = static_cast<uint32_t>(mesh.indices.size());
   mTerrainTexIndex = mDefaultTexIndex;
+  const uint32_t vertexCount = static_cast<uint32_t>(mesh.vertices.size());
 
+  // Mesh buffers also feed the BLAS, so they need device-address +
+  // acceleration-structure-build-input usage.
+  const VkBufferUsageFlags asInput =
+      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+      VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
   createDeviceLocalBuffer(mesh.vertices.data(),
                           mesh.vertices.size() * sizeof(MeshVertex),
-                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, mVertexBuffer,
-                          mVertexAlloc);
+                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | asInput,
+                          mVertexBuffer, mVertexAlloc);
   createDeviceLocalBuffer(mesh.indices.data(),
                           mesh.indices.size() * sizeof(uint32_t),
-                          VK_BUFFER_USAGE_INDEX_BUFFER_BIT, mIndexBuffer,
-                          mIndexAlloc);
+                          VK_BUFFER_USAGE_INDEX_BUFFER_BIT | asInput,
+                          mIndexBuffer, mIndexAlloc);
 
   std::vector<uint32_t> materialTexIndex(mesh.materials.size(),
                                          mDefaultTexIndex);
@@ -1157,6 +974,21 @@ bool VulkanRenderer::loadModel(const std::string &modelPath) {
   }
   std::fprintf(stderr, "[VulkanRHI] %zu draw item(s); %u total indices\n",
                mDrawItems.size(), mTotalIndexCount);
+
+  // Build ray-tracing acceleration structures from the model geometry.
+  auto deviceAddress = [&](VkBuffer buffer) {
+    VkBufferDeviceAddressInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    info.buffer = buffer;
+    return vkGetBufferDeviceAddress(mCtx->device(), &info);
+  };
+  auto submit = [this](const std::function<void(VkCommandBuffer)> &fn) {
+    immediateSubmit(fn);
+  };
+  if (!mAccel.build(*mCtx, submit, deviceAddress(mVertexBuffer), vertexCount,
+                    sizeof(MeshVertex), deviceAddress(mIndexBuffer),
+                    mTotalIndexCount))
+    return false;
   return true;
 }
 
@@ -1216,61 +1048,6 @@ void VulkanRenderer::recreateSwapchain() {
                                &mRenderFinished[i]));
 }
 
-void VulkanRenderer::computeCascades(const glm::mat4 &view, float fovY,
-                                     float aspect, const glm::vec3 &lightDir,
-                                     glm::mat4 outLightSpace[kShadowCascades],
-                                     glm::vec4 &outSplits) {
-  const float nearPlane = 0.1f;
-  const float farPlane = 8.0f;
-  const float lambda = 0.5f;
-
-  float cascadeFar[kShadowCascades];
-  for (uint32_t i = 0; i < kShadowCascades; ++i) {
-    const float p = float(i + 1) / float(kShadowCascades);
-    const float logSplit = nearPlane * std::pow(farPlane / nearPlane, p);
-    const float uniSplit = nearPlane + (farPlane - nearPlane) * p;
-    cascadeFar[i] = glm::mix(uniSplit, logSplit, lambda);
-  }
-  outSplits = glm::vec4(cascadeFar[0], cascadeFar[1], cascadeFar[2], farPlane);
-
-  float sliceNear = nearPlane;
-  for (uint32_t i = 0; i < kShadowCascades; ++i) {
-    const float sliceFar = cascadeFar[i];
-    glm::mat4 sliceProj = glm::perspective(fovY, aspect, sliceNear, sliceFar);
-    sliceProj[1][1] *= -1.0f; // match the render projection
-    const glm::mat4 invVP = glm::inverse(sliceProj * view);
-
-    glm::vec3 corners[8];
-    int idx = 0;
-    for (int x = 0; x < 2; ++x)
-      for (int y = 0; y < 2; ++y)
-        for (int z = 0; z < 2; ++z) {
-          glm::vec4 pt = invVP * glm::vec4(x ? 1.0f : -1.0f, y ? 1.0f : -1.0f,
-                                           z ? 1.0f : 0.0f, 1.0f);
-          corners[idx++] = glm::vec3(pt) / pt.w;
-        }
-
-    glm::vec3 center(0.0f);
-    for (const glm::vec3 &c : corners)
-      center += c;
-    center /= 8.0f;
-    float radius = 0.0f;
-    for (const glm::vec3 &c : corners)
-      radius = glm::max(radius, glm::length(c - center));
-    radius = std::ceil(radius * 16.0f) / 16.0f;
-
-    const glm::vec3 ld = glm::normalize(lightDir);
-    glm::vec3 up = std::abs(ld.y) > 0.95f ? glm::vec3(1, 0, 0)
-                                          : glm::vec3(0, 1, 0);
-    const glm::vec3 eye = center - ld * (radius + 2.0f);
-    const glm::mat4 lightView = glm::lookAt(eye, center, up);
-    const glm::mat4 lightProj =
-        glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * radius + 4.0f);
-    outLightSpace[i] = lightProj * lightView;
-    sliceNear = sliceFar;
-  }
-}
-
 void VulkanRenderer::drawFrame() {
   VkDevice device = mCtx->device();
   VK_CHECK(vkWaitForFences(device, 1, &mInFlight[mCurrentFrame], VK_TRUE,
@@ -1318,17 +1095,11 @@ void VulkanRenderer::drawFrame() {
   const float lp = glm::radians(mParams.lightPitchDeg);
   const glm::vec3 lightDir = glm::normalize(glm::vec3(
       std::cos(lp) * std::sin(ly), -std::sin(lp), std::cos(lp) * std::cos(ly)));
-  glm::mat4 lightSpace[kShadowCascades];
-  glm::vec4 splits;
-  computeCascades(viewMat, fovY, aspect, lightDir, lightSpace, splits);
-
   FrameDataGpu frameData{};
   frameData.viewProj = proj * viewMat;
   frameData.view = viewMat;
-  for (uint32_t i = 0; i < kShadowCascades; ++i)
-    frameData.lightSpace[i] = lightSpace[i];
   frameData.lightDir = glm::vec4(lightDir, 0.0f);
-  frameData.cascadeSplits = splits;
+  // lightSpace/cascadeSplits are unused now that shadows are ray-traced.
   std::memcpy(mFrameUBOMapped[mCurrentFrame], &frameData, sizeof(frameData));
 
   VK_CHECK(vkResetFences(device, 1, &mInFlight[mCurrentFrame]));
@@ -1363,59 +1134,8 @@ void VulkanRenderer::drawFrame() {
     captureMapped = info.pMappedData;
   }
 
-  // ---- Pass 0: shadow cascades ----
-  imageBarrier(cmd, mShadowImages[mCurrentFrame],
-               VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-               VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
-               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-               VK_IMAGE_LAYOUT_UNDEFINED,
-               VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-               VK_IMAGE_ASPECT_DEPTH_BIT, kShadowCascades);
-
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mShadowPipeline);
-  vkCmdBindVertexBuffers(cmd, 0, 1, &mVertexBuffer, &vbOffset);
-  vkCmdBindIndexBuffer(cmd, mIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
-  VkViewport shadowVp{};
-  shadowVp.width = static_cast<float>(kShadowRes);
-  shadowVp.height = static_cast<float>(kShadowRes);
-  shadowVp.minDepth = 0.0f;
-  shadowVp.maxDepth = 1.0f;
-  VkRect2D shadowScissor{};
-  shadowScissor.extent = {kShadowRes, kShadowRes};
-
-  for (uint32_t c = 0; c < kShadowCascades; ++c) {
-    VkRenderingAttachmentInfo depthAttachment{};
-    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depthAttachment.imageView = mShadowLayerViews[mCurrentFrame][c];
-    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depthAttachment.clearValue.depthStencil = {1.0f, 0};
-
-    VkRenderingInfo shadowRender{};
-    shadowRender.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    shadowRender.renderArea.extent = {kShadowRes, kShadowRes};
-    shadowRender.layerCount = 1;
-    shadowRender.pDepthAttachment = &depthAttachment;
-    vkCmdBeginRendering(cmd, &shadowRender);
-
-    vkCmdSetViewport(cmd, 0, 1, &shadowVp);
-    vkCmdSetScissor(cmd, 0, 1, &shadowScissor);
-    vkCmdPushConstants(cmd, mShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                       sizeof(glm::mat4), &lightSpace[c]);
-    vkCmdDrawIndexed(cmd, mTotalIndexCount, 1, 0, 0, 0);
-    vkCmdEndRendering(cmd);
-  }
-
-  imageBarrier(cmd, mShadowImages[mCurrentFrame],
-               VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-               VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-               VK_IMAGE_ASPECT_DEPTH_BIT, kShadowCascades);
+  // (Shadows are ray-traced in the scene fragment shader — no shadow pass.)
+  (void)vbOffset;
 
   VkViewport vp{};
   vp.width = static_cast<float>(extent.width);
@@ -1462,7 +1182,7 @@ void VulkanRenderer::drawFrame() {
   vkCmdSetScissor(cmd, 0, 1, &scissor);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mScenePipeline);
   VkDescriptorSet sets[3] = {mBindless.set(), mFrameSets[mCurrentFrame],
-                             mShadowSets[mCurrentFrame]};
+                             mTlasSets[mCurrentFrame]};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           mScenePipelineLayout, 0, 3, sets, 0, nullptr);
   vkCmdBindVertexBuffers(cmd, 0, 1, &mVertexBuffer, &vbOffset);
@@ -1674,7 +1394,13 @@ void VulkanRenderer::shutdown() {
     vkDestroySampler(device, mSampler, nullptr);
   mSampler = VK_NULL_HANDLE;
 
-  destroyShadowResources();
+  mAccel.destroy(*mCtx);
+  if (mTlasPool)
+    vkDestroyDescriptorPool(device, mTlasPool, nullptr);
+  if (mTlasSetLayout)
+    vkDestroyDescriptorSetLayout(device, mTlasSetLayout, nullptr);
+  mTlasPool = VK_NULL_HANDLE;
+  mTlasSetLayout = VK_NULL_HANDLE;
   destroySceneTargets();
 
   if (mTonemapPool)
@@ -1706,17 +1432,13 @@ void VulkanRenderer::shutdown() {
     vkDestroyPipelineLayout(device, mTonemapPipelineLayout, nullptr);
   if (mScenePipelineLayout)
     vkDestroyPipelineLayout(device, mScenePipelineLayout, nullptr);
-  if (mShadowPipelineLayout)
-    vkDestroyPipelineLayout(device, mShadowPipelineLayout, nullptr);
   mTonemapPipelineLayout = VK_NULL_HANDLE;
   mScenePipelineLayout = VK_NULL_HANDLE;
-  mShadowPipelineLayout = VK_NULL_HANDLE;
 
   mPipelineCache.destroy(*mCtx);
   mScenePipeline = VK_NULL_HANDLE;
   mTerrainPipeline = VK_NULL_HANDLE;
   mTonemapPipeline = VK_NULL_HANDLE;
-  mShadowPipeline = VK_NULL_HANDLE;
 
   mSwapchain.destroy(*mCtx);
 }

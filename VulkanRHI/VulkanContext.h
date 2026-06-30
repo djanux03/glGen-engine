@@ -32,6 +32,7 @@ public:
     bool descriptorIndexing = false;
     bool accelerationStructure = false;
     bool rayTracingPipeline = false;
+    bool rayQuery = false;
     bool meshShader = false;
   };
 

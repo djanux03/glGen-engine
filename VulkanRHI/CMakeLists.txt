@@ -24,7 +24,7 @@ set(VK_SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/shaders/vulkan)
 set(VK_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${VK_SHADER_OUT_DIR})
 
-set(VK_SHADERS mesh.vert mesh.frag tonemap.vert tonemap.frag shadow.vert
+set(VK_SHADERS mesh.vert mesh.frag tonemap.vert tonemap.frag
                terrain.task terrain.mesh terrain.frag)
 set(VK_SPV_FILES)
 foreach(shader ${VK_SHADERS})
@@ -48,6 +48,7 @@ add_library(VulkanRHI STATIC
     VulkanBindless.cpp
     VulkanPipelineCache.cpp
     VulkanMesh.cpp
+    VulkanAccel.cpp
     VulkanRenderer.cpp
     vk_mem_alloc_impl.cpp
     vk_stb_write_impl.cpp

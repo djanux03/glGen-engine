@@ -1,7 +1,10 @@
-#version 450
+#version 460
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_ray_query : require
 
-// Directional lighting × bindless texture, attenuated by cascaded shadow maps.
+// Directional lighting × bindless texture, with HARDWARE RAY-TRACED shadows:
+// a shadow ray is traced toward the sun against the scene TLAS (set 2). No
+// shadow maps, no cascades — sharp, correct contact shadows.
 layout(location = 0) in vec3 vNormalWS;
 layout(location = 1) in vec2 vUV;
 layout(location = 2) in vec3 vWorldPos;
@@ -14,42 +17,29 @@ layout(set = 0, binding = 0) uniform sampler2D uTextures[];
 layout(set = 1, binding = 0) uniform FrameData {
     mat4 viewProj;
     mat4 view;
-    mat4 lightSpace[3];
+    mat4 lightSpace[3]; // unused (kept for std140 layout compatibility)
     vec4 lightDir;
-    vec4 cascadeSplits;
+    vec4 cascadeSplits; // unused
 } uFrame;
 
-layout(set = 2, binding = 0) uniform sampler2DArrayShadow uShadowMap;
+layout(set = 2, binding = 0) uniform accelerationStructureEXT uTLAS;
 
 layout(push_constant) uniform Push {
     uint textureIndex;
 } pc;
 
-int pickCascade(float viewZ) {
-    if (viewZ < uFrame.cascadeSplits.x) return 0;
-    if (viewZ < uFrame.cascadeSplits.y) return 1;
-    return 2;
-}
-
-float sampleShadow(int cascade, vec3 worldPos, float ndl) {
-    vec4 lc = uFrame.lightSpace[cascade] * vec4(worldPos, 1.0);
-    vec3 ndc = lc.xyz / lc.w;
-    vec2 uv = ndc.xy * 0.5 + 0.5;
-    float depthRef = ndc.z; // Vulkan depth is already [0,1]
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || depthRef > 1.0)
-        return 1.0; // outside this cascade -> treat as lit
-
-    float bias = max(0.0015 * (1.0 - ndl), 0.0006);
-    depthRef -= bias;
-
-    // 3x3 PCF on top of hardware comparison filtering.
-    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0).xy);
-    float shadow = 0.0;
-    for (int x = -1; x <= 1; ++x)
-        for (int y = -1; y <= 1; ++y)
-            shadow += texture(uShadowMap,
-                              vec4(uv + vec2(x, y) * texel, float(cascade), depthRef));
-    return shadow / 9.0;
+float traceShadow(vec3 origin, vec3 dir) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, uTLAS,
+                          gl_RayFlagsTerminateOnFirstHitEXT |
+                              gl_RayFlagsOpaqueEXT |
+                              gl_RayFlagsSkipClosestHitShaderEXT,
+                          0xFFu, origin, 0.001, dir, 1000.0);
+    rayQueryProceedEXT(rq);
+    return rayQueryGetIntersectionTypeEXT(rq, true) ==
+                   gl_RayQueryCommittedIntersectionNoneEXT
+               ? 1.0
+               : 0.0;
 }
 
 void main() {
@@ -57,8 +47,9 @@ void main() {
     vec3 L = normalize(-uFrame.lightDir.xyz);
     float ndl = max(dot(N, L), 0.0);
 
-    int cascade = pickCascade(vViewZ);
-    float vis = sampleShadow(cascade, vWorldPos, ndl);
+    float vis = 1.0;
+    if (ndl > 0.0)
+        vis = traceShadow(vWorldPos + N * 0.02, L);
 
     vec3 tex = texture(uTextures[nonuniformEXT(pc.textureIndex)], vUV).rgb;
     vec3 color = tex * (0.2 + 0.8 * ndl * vis);

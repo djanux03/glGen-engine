@@ -1,5 +1,6 @@
 #pragma once
 
+#include "VulkanAccel.h"
 #include "VulkanBindless.h"
 #include "VulkanMesh.h"
 #include "VulkanPipelineCache.h"
@@ -57,8 +58,7 @@ public:
 
 private:
   static constexpr uint32_t kFramesInFlight = 2;
-  static constexpr uint32_t kShadowCascades = 3;
-  static constexpr uint32_t kShadowRes = 2048;
+  static constexpr uint32_t kShadowCascades = 3; // kept for the UBO layout
   static constexpr uint32_t kTerrainPatches = 24; // grid is kTerrainPatches^2
 
   struct FrameDataGpu {
@@ -80,23 +80,16 @@ private:
   bool createSampler();
   bool createSceneTargets();
   void destroySceneTargets();
-  bool createShadowResources();
-  void destroyShadowResources();
+  bool createTlasDescriptors();
+  void writeTlasDescriptors();
   bool createTonemapResources();
   void updateTonemapSets();
-  bool createShadowPipeline(const std::string &shaderDir);
   bool createScenePipeline(const std::string &shaderDir);
   bool createTerrainPipeline(const std::string &shaderDir);
   bool createTonemapPipeline(const std::string &shaderDir);
   bool loadModel(const std::string &modelPath);
   bool createSyncObjects();
   void recreateSwapchain();
-
-  // Fit per-cascade light-space matrices to slices of the camera frustum.
-  void computeCascades(const glm::mat4 &view, float fovY, float aspect,
-                       const glm::vec3 &lightDir,
-                       glm::mat4 outLightSpace[kShadowCascades],
-                       glm::vec4 &outSplits);
 
   uint32_t addTexture(const uint8_t *rgba, uint32_t w, uint32_t h,
                       VkFormat format);
@@ -141,17 +134,11 @@ private:
   std::vector<VmaAllocation> mDepthAllocs;
   std::vector<VkImageView> mDepthViews;
 
-  // --- shadow / CSM (per frame in flight; fixed resolution) ---
-  std::vector<VkImage> mShadowImages;        // each: kShadowCascades layers
-  std::vector<VmaAllocation> mShadowAllocs;
-  std::vector<VkImageView> mShadowArrayViews; // 2D_ARRAY sample view
-  std::vector<std::array<VkImageView, kShadowCascades>> mShadowLayerViews;
-  VkSampler mShadowSampler = VK_NULL_HANDLE;  // comparison sampler
-  VkDescriptorSetLayout mShadowSetLayout = VK_NULL_HANDLE;
-  VkDescriptorPool mShadowPool = VK_NULL_HANDLE;
-  std::vector<VkDescriptorSet> mShadowSets;   // per frame in flight
-  VkPipelineLayout mShadowPipelineLayout = VK_NULL_HANDLE;
-  VkPipeline mShadowPipeline = VK_NULL_HANDLE; // owned by mPipelineCache
+  // --- ray tracing: acceleration structures + TLAS descriptor (set 2) ---
+  VulkanAccel mAccel;
+  VkDescriptorSetLayout mTlasSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool mTlasPool = VK_NULL_HANDLE;
+  std::vector<VkDescriptorSet> mTlasSets; // per frame in flight (same TLAS)
 
   // --- scene (mesh) pipeline ---
   VkPipelineLayout mScenePipelineLayout = VK_NULL_HANDLE;

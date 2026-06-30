@@ -30,10 +30,11 @@ namespace {
 
 // Phase 0 hard requirement: the GPU must be able to host the modern paths the
 // rewrite is being done for. Easy to relax later by trimming this list.
-const std::array<const char *, 5> kRequiredDeviceExtensions = {
+const std::array<const char *, 6> kRequiredDeviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
     VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
+    VK_KHR_RAY_QUERY_EXTENSION_NAME,
     VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
     VK_EXT_MESH_SHADER_EXTENSION_NAME,
 };
@@ -235,10 +236,14 @@ bool VulkanContext::createLogicalDevice() {
   VkPhysicalDeviceMeshShaderFeaturesEXT mesh{};
   mesh.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
 
+  VkPhysicalDeviceRayQueryFeaturesKHR rayQuery{};
+  rayQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+  rayQuery.pNext = &mesh;
+
   VkPhysicalDeviceRayTracingPipelineFeaturesKHR rt{};
   rt.sType =
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
-  rt.pNext = &mesh;
+  rt.pNext = &rayQuery;
 
   VkPhysicalDeviceAccelerationStructureFeaturesKHR accel{};
   accel.sType =
@@ -264,6 +269,7 @@ bool VulkanContext::createLogicalDevice() {
   mFeatures.descriptorIndexing = v12.descriptorIndexing;
   mFeatures.accelerationStructure = accel.accelerationStructure;
   mFeatures.rayTracingPipeline = rt.rayTracingPipeline;
+  mFeatures.rayQuery = rayQuery.rayQuery;
   mFeatures.meshShader = mesh.meshShader;
 
   if (!mFeatures.dynamicRendering || !mFeatures.synchronization2) {
