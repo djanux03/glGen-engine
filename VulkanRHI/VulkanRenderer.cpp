@@ -20,6 +20,13 @@ struct SkyPush {
   glm::vec4 camPos;
 };
 
+// Scene / terrain push constant. model is per-instance (vertex stage);
+// textureIndex selects the bindless material (fragment stage).
+struct ScenePush {
+  glm::mat4 model;
+  uint32_t textureIndex;
+};
+
 void imageBarrier(VkCommandBuffer cmd, VkImage image,
                   VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
                   VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
@@ -52,7 +59,7 @@ void imageBarrier(VkCommandBuffer cmd, VkImage image,
 
 bool VulkanRenderer::init(
     VulkanContext &ctx, VkSurfaceKHR surface, const std::string &shaderDir,
-    const std::string &modelPath,
+    const std::vector<std::string> &modelPaths,
     std::function<void(uint32_t &, uint32_t &)> queryFramebufferSize) {
   mCtx = &ctx;
   mSurface = surface;
@@ -91,7 +98,7 @@ bool VulkanRenderer::init(
     return false;
   if (!createTonemapPipeline(shaderDir))
     return false;
-  if (!loadModel(modelPath)) // builds the acceleration structures
+  if (!loadScene(modelPaths)) // builds the acceleration structures
     return false;
   writeTlasDescriptors();
   if (!createSyncObjects())
@@ -608,10 +615,12 @@ VkShaderModule VulkanRenderer::loadShaderModule(const std::string &path) {
 bool VulkanRenderer::createScenePipeline(const std::string &shaderDir) {
   VkDescriptorSetLayout setLayouts[3] = {mBindless.layout(), mFrameSetLayout,
                                          mTlasSetLayout};
+  // model (vertex) + textureIndex (fragment). Terrain reuses this layout.
   VkPushConstantRange pcRange{};
-  pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  pcRange.stageFlags =
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
   pcRange.offset = 0;
-  pcRange.size = sizeof(uint32_t);
+  pcRange.size = sizeof(ScenePush);
 
   VkPipelineLayoutCreateInfo layoutCi{};
   layoutCi.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1046,39 +1055,34 @@ bool VulkanRenderer::createTonemapPipeline(const std::string &shaderDir) {
   return true;
 }
 
-bool VulkanRenderer::loadModel(const std::string &modelPath) {
-  MeshData mesh;
-  if (!loadObj(modelPath, mesh))
+bool VulkanRenderer::loadMeshFromObj(const std::string &path, Mesh &outMesh) {
+  MeshData data;
+  if (!loadObj(path, data))
     return false;
 
-  // The ground is now mesh-shader terrain (see createTerrainPipeline); the
-  // model still casts its shadow, which the terrain receives.
-  mTotalIndexCount = static_cast<uint32_t>(mesh.indices.size());
-  mTerrainTexIndex = mDefaultTexIndex;
-  const uint32_t vertexCount = static_cast<uint32_t>(mesh.vertices.size());
+  outMesh.indexCount = static_cast<uint32_t>(data.indices.size());
+  outMesh.vertexCount = static_cast<uint32_t>(data.vertices.size());
 
-  // Mesh buffers also feed the BLAS, so they need device-address +
-  // acceleration-structure-build-input usage.
+  // Mesh buffers also feed the BLAS: device-address + AS-build-input usage.
   const VkBufferUsageFlags asInput =
       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
       VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-  createDeviceLocalBuffer(mesh.vertices.data(),
-                          mesh.vertices.size() * sizeof(MeshVertex),
+  createDeviceLocalBuffer(data.vertices.data(),
+                          data.vertices.size() * sizeof(MeshVertex),
                           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | asInput,
-                          mVertexBuffer, mVertexAlloc);
-  createDeviceLocalBuffer(mesh.indices.data(),
-                          mesh.indices.size() * sizeof(uint32_t),
+                          outMesh.vertexBuffer, outMesh.vertexAlloc);
+  createDeviceLocalBuffer(data.indices.data(),
+                          data.indices.size() * sizeof(uint32_t),
                           VK_BUFFER_USAGE_INDEX_BUFFER_BIT | asInput,
-                          mIndexBuffer, mIndexAlloc);
+                          outMesh.indexBuffer, outMesh.indexAlloc);
 
-  std::vector<uint32_t> materialTexIndex(mesh.materials.size(),
+  std::vector<uint32_t> materialTexIndex(data.materials.size(),
                                          mDefaultTexIndex);
-  for (size_t i = 0; i < mesh.materials.size(); ++i) {
-    if (!mesh.materials[i].diffuseTexturePath.empty())
-      materialTexIndex[i] = loadTextureFile(mesh.materials[i].diffuseTexturePath);
-  }
+  for (size_t i = 0; i < data.materials.size(); ++i)
+    if (!data.materials[i].diffuseTexturePath.empty())
+      materialTexIndex[i] = loadTextureFile(data.materials[i].diffuseTexturePath);
 
-  for (const SubMesh &sub : mesh.submeshes) {
+  for (const SubMesh &sub : data.submeshes) {
     DrawItem item{};
     item.indexOffset = sub.indexOffset;
     item.indexCount = sub.indexCount;
@@ -1087,24 +1091,78 @@ bool VulkanRenderer::loadModel(const std::string &modelPath) {
          sub.materialId < static_cast<int>(materialTexIndex.size()))
             ? materialTexIndex[sub.materialId]
             : mDefaultTexIndex;
-    mDrawItems.push_back(item);
+    outMesh.drawItems.push_back(item);
   }
-  std::fprintf(stderr, "[VulkanRHI] %zu draw item(s); %u total indices\n",
-               mDrawItems.size(), mTotalIndexCount);
+  return true;
+}
 
-  // Build ray-tracing acceleration structures from the model geometry.
+bool VulkanRenderer::loadScene(const std::vector<std::string> &modelPaths) {
+  mTerrainTexIndex = mDefaultTexIndex;
+
+  // Load each model (fail-soft: skip ones that don't load).
+  for (const std::string &path : modelPaths) {
+    Mesh mesh;
+    if (loadMeshFromObj(path, mesh)) {
+      std::fprintf(stderr, "[VulkanRHI] mesh %zu: '%s' (%u indices)\n",
+                   mMeshes.size(), path.c_str(), mesh.indexCount);
+      mMeshes.push_back(std::move(mesh));
+    } else {
+      std::fprintf(stderr, "[VulkanRHI] skipping model '%s'\n", path.c_str());
+    }
+  }
+  if (mMeshes.empty()) {
+    std::fprintf(stderr, "[VulkanRHI] no models loaded\n");
+    return false;
+  }
+
+  // Scatter instances across the flat central area (terrain is flattened within
+  // ~2 units of the origin), cycling through the loaded meshes.
+  const uint32_t meshCount = static_cast<uint32_t>(mMeshes.size());
+  struct Slot {
+    float x, z, yawDeg, scale;
+  };
+  const Slot slots[] = {
+      {0.0f, 0.0f, 25.0f, 0.50f},   {-1.3f, 0.6f, 200.0f, 0.40f},
+      {1.2f, -0.8f, 120.0f, 0.45f}, {1.1f, 1.1f, 70.0f, 0.42f},
+      {-1.0f, -1.1f, 310.0f, 0.44f}, {0.4f, 1.4f, 160.0f, 0.38f},
+  };
+  uint32_t k = 0;
+  for (const Slot &s : slots) {
+    Instance inst;
+    inst.meshIndex = k % meshCount;
+    glm::mat4 m = glm::translate(
+        glm::mat4(1.0f), glm::vec3(s.x, -0.5f + 0.5f * s.scale, s.z));
+    m = glm::rotate(m, glm::radians(s.yawDeg), glm::vec3(0.0f, 1.0f, 0.0f));
+    m = glm::scale(m, glm::vec3(s.scale));
+    inst.model = m;
+    mInstances.push_back(inst);
+    ++k;
+  }
+
+  // Build acceleration structures: one BLAS per mesh, TLAS from the instances.
   auto deviceAddress = [&](VkBuffer buffer) {
     VkBufferDeviceAddressInfo info{};
     info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
     info.buffer = buffer;
     return vkGetBufferDeviceAddress(mCtx->device(), &info);
   };
+  std::vector<VulkanAccel::BlasInput> blasInputs(mMeshes.size());
+  for (size_t i = 0; i < mMeshes.size(); ++i) {
+    blasInputs[i].vertexAddress = deviceAddress(mMeshes[i].vertexBuffer);
+    blasInputs[i].vertexCount = mMeshes[i].vertexCount;
+    blasInputs[i].vertexStride = sizeof(MeshVertex);
+    blasInputs[i].indexAddress = deviceAddress(mMeshes[i].indexBuffer);
+    blasInputs[i].indexCount = mMeshes[i].indexCount;
+  }
+  std::vector<VulkanAccel::InstanceInput> instInputs(mInstances.size());
+  for (size_t i = 0; i < mInstances.size(); ++i) {
+    instInputs[i].blasIndex = mInstances[i].meshIndex;
+    instInputs[i].transform = mInstances[i].model;
+  }
   auto submit = [this](const std::function<void(VkCommandBuffer)> &fn) {
     immediateSubmit(fn);
   };
-  if (!mAccel.build(*mCtx, submit, deviceAddress(mVertexBuffer), vertexCount,
-                    sizeof(MeshVertex), deviceAddress(mIndexBuffer),
-                    mTotalIndexCount))
+  if (!mAccel.build(*mCtx, submit, blasInputs, instInputs))
     return false;
   return true;
 }
@@ -1305,17 +1363,28 @@ void VulkanRenderer::drawFrame() {
     vkCmdDraw(cmd, 3, 1, 0, 0);
   }
 
+  const VkShaderStageFlags pushStages =
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mScenePipeline);
   VkDescriptorSet sets[3] = {mBindless.set(), mFrameSets[mCurrentFrame],
                              mTlasSets[mCurrentFrame]};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           mScenePipelineLayout, 0, 3, sets, 0, nullptr);
-  vkCmdBindVertexBuffers(cmd, 0, 1, &mVertexBuffer, &vbOffset);
-  vkCmdBindIndexBuffer(cmd, mIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
-  for (const DrawItem &item : mDrawItems) {
-    vkCmdPushConstants(cmd, mScenePipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(uint32_t), &item.textureIndex);
-    vkCmdDrawIndexed(cmd, item.indexCount, 1, item.indexOffset, 0, 0);
+
+  // One push of the model matrix per instance; one draw per material submesh.
+  for (const Instance &inst : mInstances) {
+    const Mesh &mesh = mMeshes[inst.meshIndex];
+    vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertexBuffer, &vbOffset);
+    vkCmdBindIndexBuffer(cmd, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    for (const DrawItem &item : mesh.drawItems) {
+      ScenePush push{};
+      push.model = inst.model;
+      push.textureIndex = item.textureIndex;
+      vkCmdPushConstants(cmd, mScenePipelineLayout, pushStages, 0,
+                         sizeof(ScenePush), &push);
+      vkCmdDrawIndexed(cmd, item.indexCount, 1, item.indexOffset, 0, 0);
+    }
   }
 
   // Terrain via mesh shaders (same layout/sets; task shader frustum-culls
@@ -1324,8 +1393,11 @@ void VulkanRenderer::drawFrame() {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mTerrainPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             mScenePipelineLayout, 0, 3, sets, 0, nullptr);
-    vkCmdPushConstants(cmd, mScenePipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(uint32_t), &mTerrainTexIndex);
+    ScenePush terrainPush{};
+    terrainPush.model = glm::mat4(1.0f); // unused by terrain
+    terrainPush.textureIndex = mTerrainTexIndex;
+    vkCmdPushConstants(cmd, mScenePipelineLayout, pushStages, 0,
+                       sizeof(ScenePush), &terrainPush);
     mDrawMeshTasks(cmd, kTerrainPatches * kTerrainPatches, 1, 1);
   }
   vkCmdEndRendering(cmd);
@@ -1501,12 +1573,14 @@ void VulkanRenderer::shutdown() {
     vkDestroyFence(device, f, nullptr);
   mInFlight.clear();
 
-  if (mIndexBuffer)
-    vmaDestroyBuffer(mCtx->allocator(), mIndexBuffer, mIndexAlloc);
-  if (mVertexBuffer)
-    vmaDestroyBuffer(mCtx->allocator(), mVertexBuffer, mVertexAlloc);
-  mIndexBuffer = VK_NULL_HANDLE;
-  mVertexBuffer = VK_NULL_HANDLE;
+  for (Mesh &mesh : mMeshes) {
+    if (mesh.indexBuffer)
+      vmaDestroyBuffer(mCtx->allocator(), mesh.indexBuffer, mesh.indexAlloc);
+    if (mesh.vertexBuffer)
+      vmaDestroyBuffer(mCtx->allocator(), mesh.vertexBuffer, mesh.vertexAlloc);
+  }
+  mMeshes.clear();
+  mInstances.clear();
 
   for (VkImageView v : mTextureViews)
     vkDestroyImageView(device, v, nullptr);

@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <vector>
 
 namespace {
@@ -91,7 +92,14 @@ int main() {
     w = static_cast<uint32_t>(iw);
     h = static_cast<uint32_t>(ih);
   };
-  if (!renderer.init(ctx, surface, GLGEN_VK_SHADER_DIR, GLGEN_VK_MODEL_PATH,
+  std::vector<std::string> modelPaths = {GLGEN_VK_MODEL_PATH};
+#ifdef GLGEN_VK_MODEL_PATH2
+  modelPaths.push_back(GLGEN_VK_MODEL_PATH2);
+#endif
+#ifdef GLGEN_VK_MODEL_PATH3
+  modelPaths.push_back(GLGEN_VK_MODEL_PATH3);
+#endif
+  if (!renderer.init(ctx, surface, GLGEN_VK_SHADER_DIR, modelPaths,
                      queryFbSize)) {
     std::fprintf(stderr, "[smoke] renderer init failed\n");
     return 1;

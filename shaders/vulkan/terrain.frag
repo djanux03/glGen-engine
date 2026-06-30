@@ -22,6 +22,7 @@ layout(set = 1, binding = 0) uniform FrameData {
 layout(set = 2, binding = 0) uniform accelerationStructureEXT uTLAS;
 
 layout(push_constant) uniform Push {
+    mat4 model;        // unused by terrain; matches the scene push layout
     uint textureIndex;
 } pc;
 

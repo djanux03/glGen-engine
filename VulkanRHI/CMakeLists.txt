@@ -86,5 +86,7 @@ add_executable(glGenVulkanSmoke smoke/main.cpp)
 target_link_libraries(glGenVulkanSmoke PRIVATE VulkanRHI glfw Vulkan::Vulkan imgui_vk)
 target_compile_definitions(glGenVulkanSmoke PRIVATE
     GLGEN_VK_SHADER_DIR="${VK_SHADER_OUT_DIR}"
-    GLGEN_VK_MODEL_PATH="${CMAKE_SOURCE_DIR}/assets/playerassets/axe.obj")
+    GLGEN_VK_MODEL_PATH="${CMAKE_SOURCE_DIR}/assets/playerassets/axe.obj"
+    GLGEN_VK_MODEL_PATH2="${CMAKE_SOURCE_DIR}/assets/terraingeneratorassets/rock.obj"
+    GLGEN_VK_MODEL_PATH3="${CMAKE_SOURCE_DIR}/assets/terraingeneratorassets/tree.obj")
 add_dependencies(glGenVulkanSmoke VulkanShaders)

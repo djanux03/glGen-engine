@@ -18,11 +18,16 @@ layout(set = 1, binding = 0) uniform FrameData {
     vec4 terrain; // x=amplitude y=frequency z=octaves w=seed
 } uFrame;
 
+layout(push_constant) uniform Push {
+    mat4 model;        // per-instance transform
+    uint textureIndex; // used in the fragment stage
+} pc;
+
 void main() {
-    vec4 world = vec4(inPos, 1.0);
+    vec4 world = pc.model * vec4(inPos, 1.0);
     gl_Position = uFrame.viewProj * world;
-    vNormalWS = inNormal;
+    vNormalWS = mat3(pc.model) * inNormal;
     vUV = inUV;
-    vWorldPos = inPos;
+    vWorldPos = world.xyz;
     vViewZ = -(uFrame.view * world).z; // positive distance in front of camera
 }

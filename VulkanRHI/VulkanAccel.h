@@ -4,25 +4,36 @@
 
 #include <vk_mem_alloc.h>
 
+#include <glm/glm.hpp>
+
 #include <functional>
+#include <vector>
 
 namespace vkrhi {
 
-// Builds and owns the ray-tracing acceleration structures: a BLAS over the
-// model's triangles and a single-instance TLAS. The TLAS is what shaders query
-// (via ray queries) for hardware ray-traced shadows.
+// Builds and owns the ray-tracing acceleration structures: one BLAS per mesh
+// and a single TLAS over a list of instances (each referencing a BLAS with its
+// own transform). Shaders query the TLAS for ray-traced shadows.
 class VulkanAccel {
 public:
   using SubmitFn =
       std::function<void(const std::function<void(VkCommandBuffer)> &)>;
 
-  // Builds BLAS + TLAS from device addresses of the model's vertex/index
-  // buffers (which must have been created with SHADER_DEVICE_ADDRESS +
-  // ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY usage).
+  struct BlasInput {
+    VkDeviceAddress vertexAddress;
+    uint32_t vertexCount;
+    uint32_t vertexStride;
+    VkDeviceAddress indexAddress;
+    uint32_t indexCount;
+  };
+  struct InstanceInput {
+    uint32_t blasIndex;
+    glm::mat4 transform;
+  };
+
   bool build(VulkanContext &ctx, const SubmitFn &submit,
-             VkDeviceAddress vertexAddress, uint32_t vertexCount,
-             uint32_t vertexStride, VkDeviceAddress indexAddress,
-             uint32_t indexCount);
+             const std::vector<BlasInput> &blases,
+             const std::vector<InstanceInput> &instances);
   void destroy(VulkanContext &ctx);
 
   VkAccelerationStructureKHR tlas() const { return mTlas; }
@@ -34,14 +45,14 @@ private:
   PFN_vkGetAccelerationStructureDeviceAddressKHR pfnGetAccelAddress = nullptr;
   PFN_vkDestroyAccelerationStructureKHR pfnDestroyAccel = nullptr;
 
-  VkAccelerationStructureKHR mBlas = VK_NULL_HANDLE;
-  VkBuffer mBlasBuffer = VK_NULL_HANDLE;
-  VmaAllocation mBlasAlloc = VK_NULL_HANDLE;
+  std::vector<VkAccelerationStructureKHR> mBlas;
+  std::vector<VkBuffer> mBlasBuffers;
+  std::vector<VmaAllocation> mBlasAllocs;
+  std::vector<VkDeviceAddress> mBlasAddresses;
 
   VkAccelerationStructureKHR mTlas = VK_NULL_HANDLE;
   VkBuffer mTlasBuffer = VK_NULL_HANDLE;
   VmaAllocation mTlasAlloc = VK_NULL_HANDLE;
-
   VkBuffer mInstanceBuffer = VK_NULL_HANDLE;
   VmaAllocation mInstanceAlloc = VK_NULL_HANDLE;
 

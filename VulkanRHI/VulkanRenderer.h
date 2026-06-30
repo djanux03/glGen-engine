@@ -25,7 +25,8 @@ namespace vkrhi {
 class VulkanRenderer {
 public:
   bool init(VulkanContext &ctx, VkSurfaceKHR surface,
-            const std::string &shaderDir, const std::string &modelPath,
+            const std::string &shaderDir,
+            const std::vector<std::string> &modelPaths,
             std::function<void(uint32_t &, uint32_t &)> queryFramebufferSize);
 
   void drawFrame();
@@ -80,6 +81,23 @@ private:
     uint32_t textureIndex;
   };
 
+  // A loaded mesh: device-local geometry + its per-material submesh draws.
+  struct Mesh {
+    VkBuffer vertexBuffer = VK_NULL_HANDLE;
+    VmaAllocation vertexAlloc = VK_NULL_HANDLE;
+    VkBuffer indexBuffer = VK_NULL_HANDLE;
+    VmaAllocation indexAlloc = VK_NULL_HANDLE;
+    std::vector<DrawItem> drawItems;
+    uint32_t indexCount = 0;
+    uint32_t vertexCount = 0;
+  };
+
+  // A placed object: which mesh + its world transform.
+  struct Instance {
+    uint32_t meshIndex;
+    glm::mat4 model;
+  };
+
   bool createCommandPool();
   bool createDescriptorsAndFrameData();
   bool createSampler();
@@ -93,7 +111,8 @@ private:
   bool createTerrainPipeline(const std::string &shaderDir);
   bool createSkyPipeline(const std::string &shaderDir);
   bool createTonemapPipeline(const std::string &shaderDir);
-  bool loadModel(const std::string &modelPath);
+  bool loadScene(const std::vector<std::string> &modelPaths);
+  bool loadMeshFromObj(const std::string &path, Mesh &outMesh);
   bool createSyncObjects();
   void recreateSwapchain();
 
@@ -167,12 +186,8 @@ private:
   VkPipeline mTonemapPipeline = VK_NULL_HANDLE;
 
   // --- mesh (device-local) ---
-  VkBuffer mVertexBuffer = VK_NULL_HANDLE;
-  VmaAllocation mVertexAlloc = VK_NULL_HANDLE;
-  VkBuffer mIndexBuffer = VK_NULL_HANDLE;
-  VmaAllocation mIndexAlloc = VK_NULL_HANDLE;
-  std::vector<DrawItem> mDrawItems;
-  uint32_t mTotalIndexCount = 0; // whole mesh, for the shadow pass
+  std::vector<Mesh> mMeshes;
+  std::vector<Instance> mInstances;
 
   // --- frame loop ---
   VkCommandPool mCommandPool = VK_NULL_HANDLE;
