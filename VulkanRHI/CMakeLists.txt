@@ -84,6 +84,12 @@ target_link_libraries(imgui_vk PUBLIC glfw Vulkan::Vulkan)
 # --- Phase 0 smoke-test executable -------------------------------------------
 add_executable(glGenVulkanSmoke smoke/main.cpp)
 target_link_libraries(glGenVulkanSmoke PRIVATE VulkanRHI glfw Vulkan::Vulkan imgui_vk)
+# The engine's (now GL-free) ECS headers drive the scene. Header-only: no Engine
+# link needed, just the include paths.
+target_include_directories(glGenVulkanSmoke PRIVATE
+    ${CMAKE_SOURCE_DIR}/Engine
+    ${CMAKE_SOURCE_DIR}/Engine/ECS
+    ${CMAKE_SOURCE_DIR}/Engine/Assets)
 target_compile_definitions(glGenVulkanSmoke PRIVATE
     GLGEN_VK_SHADER_DIR="${VK_SHADER_OUT_DIR}"
     GLGEN_VK_MODEL_PATH="${CMAKE_SOURCE_DIR}/assets/playerassets/axe.obj"

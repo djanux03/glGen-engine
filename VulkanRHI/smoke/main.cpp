@@ -14,6 +14,10 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 
+// The engine's real ECS (now OpenGL-free) drives the scene.
+#include "ECS/Components.h"
+#include "ECS/Registry.h"
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -22,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -98,27 +103,31 @@ int main() {
     return 1;
   }
 
-  // Build the demo scene through the engine-drivable API (this is exactly how
-  // the engine's render loop will drive the renderer from the ECS).
+  // Build the scene in the engine's ECS, then bridge it to the renderer. This
+  // is the integration seam: the engine's render loop will walk ECS Transform +
+  // Mesh components and drive VulkanRHI exactly like this.
   {
     using MeshHandle = vkrhi::VulkanRenderer::MeshHandle;
-    std::vector<std::string> modelPaths = {GLGEN_VK_MODEL_PATH};
+
+    Registry registry;
+    auto spawn = [&](const std::string &path, glm::vec3 pos, float yawDeg,
+                     float scale) {
+      EntityId e = registry.create();
+      TransformComponent &t = registry.emplace<TransformComponent>(e);
+      t.position = pos;
+      t.rotation = glm::vec3(0.0f, yawDeg, 0.0f);
+      t.scale = glm::vec3(scale);
+      MeshComponent &mc = registry.emplace<MeshComponent>(e);
+      mc.assetId = path; // resolved to a renderer mesh by the bridge below
+    };
+
+    std::vector<std::string> paths = {GLGEN_VK_MODEL_PATH};
 #ifdef GLGEN_VK_MODEL_PATH2
-    modelPaths.push_back(GLGEN_VK_MODEL_PATH2);
+    paths.push_back(GLGEN_VK_MODEL_PATH2);
 #endif
 #ifdef GLGEN_VK_MODEL_PATH3
-    modelPaths.push_back(GLGEN_VK_MODEL_PATH3);
+    paths.push_back(GLGEN_VK_MODEL_PATH3);
 #endif
-    std::vector<MeshHandle> meshes;
-    for (const std::string &p : modelPaths) {
-      MeshHandle h = renderer.createMeshFromObj(p);
-      if (h != UINT32_MAX)
-        meshes.push_back(h);
-    }
-    if (meshes.empty()) {
-      std::fprintf(stderr, "[smoke] no meshes loaded\n");
-      return 1;
-    }
     struct Slot {
       float x, z, yawDeg, scale;
     };
@@ -129,12 +138,31 @@ int main() {
     };
     size_t k = 0;
     for (const Slot &s : slots) {
-      glm::mat4 m = glm::translate(
-          glm::mat4(1.0f), glm::vec3(s.x, -0.5f + 0.5f * s.scale, s.z));
-      m = glm::rotate(m, glm::radians(s.yawDeg), glm::vec3(0.0f, 1.0f, 0.0f));
-      m = glm::scale(m, glm::vec3(s.scale));
-      renderer.addInstance(meshes[k % meshes.size()], m);
+      spawn(paths[k % paths.size()],
+            glm::vec3(s.x, -0.5f + 0.5f * s.scale, s.z), s.yawDeg, s.scale);
       ++k;
+    }
+
+    // --- ECS -> renderer bridge (the seed of the Vulkan render system) ---
+    std::unordered_map<std::string, MeshHandle> meshCache;
+    for (EntityId e : registry.view<MeshComponent>()) {
+      if (!registry.has<TransformComponent>(e))
+        continue;
+      MeshComponent &mc = registry.get<MeshComponent>(e);
+      if (mc.assetId.empty())
+        continue;
+      MeshHandle handle;
+      auto it = meshCache.find(mc.assetId);
+      if (it != meshCache.end()) {
+        handle = it->second;
+      } else {
+        handle = renderer.createMeshFromObj(mc.assetId);
+        if (handle == UINT32_MAX)
+          continue;
+        meshCache[mc.assetId] = handle;
+      }
+      renderer.addInstance(
+          handle, registry.get<TransformComponent>(e).getMatrix());
     }
     renderer.finalizeScene();
   }
