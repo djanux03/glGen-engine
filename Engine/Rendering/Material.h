@@ -1,11 +1,14 @@
 #pragma once
 
-#include "Shader.h"
-#include "Texture.h"
-
-#include <glad/glad.h>
 #include <glm/glm.hpp>
+
+#include <cstdint>
 #include <string>
+
+// MaterialAsset is pure, backend-neutral data so it can live in ECS components
+// without pulling in any graphics API. The renderer (OpenGL today, Vulkan next)
+// interprets the texture handles and applies the material.
+class Shader; // forward declaration only
 
 enum class ShaderVariant {
   Lit = 0,
@@ -30,19 +33,21 @@ struct MaterialAsset {
   int aoChannel = 0;
   int opacityChannel = 3;
 
-  GLuint texDiffuse = 0;
+  // GPU texture handles. Backend-neutral: an OpenGL texture name or a Vulkan
+  // bindless index, depending on the active renderer. 0 = none.
+  uint32_t texDiffuse = 0;
   std::string texDiffusePath;
-  GLuint texNormal = 0;
+  uint32_t texNormal = 0;
   std::string texNormalPath;
-  GLuint texRoughness = 0;
+  uint32_t texRoughness = 0;
   std::string texRoughnessPath;
-  GLuint texMetallic = 0;
+  uint32_t texMetallic = 0;
   std::string texMetallicPath;
-  GLuint texAO = 0;
+  uint32_t texAO = 0;
   std::string texAOPath;
-  GLuint texEmissive = 0;
+  uint32_t texEmissive = 0;
   std::string texEmissivePath;
-  GLuint texOpacity = 0;
+  uint32_t texOpacity = 0;
   std::string texOpacityPath;
 
   glm::vec3 emissiveColor = glm::vec3(0.0f);
@@ -50,6 +55,13 @@ struct MaterialAsset {
   float alphaCutoff = 0.0f;
   bool roughnessMapIsGloss = false;
 
-  void apply(Shader &shader) const;
-  bool usesAnyTextureMaps() const;
+  bool usesAnyTextureMaps() const {
+    return texDiffuse != 0 || texNormal != 0 || texRoughness != 0 ||
+           texMetallic != 0 || texAO != 0 || texEmissive != 0 ||
+           texOpacity != 0;
+  }
 };
+
+// Binds the material to an OpenGL shader. Defined in the GL rendering layer
+// (Material.cpp); not available to GL-free targets.
+void applyMaterial(const MaterialAsset &material, Shader &shader);

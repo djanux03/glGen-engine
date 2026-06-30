@@ -1015,9 +1015,9 @@ void OBJModel::draw(Shader &shader, const glm::vec3 &position,
     shader.setMat4("model", model);
 
     if (materialOverride) {
-      materialOverride->apply(shader);
+      applyMaterial(*materialOverride, shader);
     } else {
-      sm.material.apply(shader);
+      applyMaterial(sm.material, shader);
     }
     GLStateCache::instance().bindVertexArray(sm.vao);
     glDrawArrays(GL_TRIANGLES, 0, sm.vertexCount);
@@ -1033,7 +1033,7 @@ void OBJModel::drawInstanced(Shader &shader, unsigned int instanceVBO,
     if (sm.vertexCount == 0 || sm.vao == 0)
       continue;
 
-    sm.material.apply(shader);
+    applyMaterial(sm.material, shader);
     GLStateCache::instance().bindVertexArray(sm.vao);
 
     if (!sm.instancingReady || sm.instancedVBO != instanceVBO) {

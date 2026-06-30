@@ -562,9 +562,9 @@ void FBXModel::draw(Shader &shader, const glm::vec3 &pos, const glm::vec3 &rot,
                   " roughness=" +
                   std::to_string((unsigned long long)sm.material.texRoughness));
     if (materialOverride) {
-      materialOverride->apply(shader);
+      applyMaterial(*materialOverride, shader);
     } else {
-      sm.material.apply(shader);
+      applyMaterial(sm.material, shader);
     }
 
     GLStateCache::instance().bindVertexArray(sm.vao);

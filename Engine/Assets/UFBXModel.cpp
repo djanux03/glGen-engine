@@ -428,9 +428,9 @@ void UFBXModel::draw(Shader &shader, const glm::vec3 &pos, const glm::vec3 &rot,
     if (sm.vao == 0)
       continue;
     if (materialOverride) {
-      materialOverride->apply(shader);
+      applyMaterial(*materialOverride, shader);
     } else {
-      sm.material.apply(shader);
+      applyMaterial(sm.material, shader);
     }
     GLStateCache::instance().bindVertexArray(sm.vao);
     glDrawElements(GL_TRIANGLES, sm.indexCount, GL_UNSIGNED_INT, 0);
@@ -465,7 +465,7 @@ void UFBXModel::drawInstanced(Shader &shader, unsigned int instanceVBO,
     if (sm.vao == 0)
       continue;
 
-    sm.material.apply(shader);
+    applyMaterial(sm.material, shader);
     GLStateCache::instance().bindVertexArray(sm.vao);
 
     if (!sm.instancingReady || sm.instancedVBO != instanceVBO) {
