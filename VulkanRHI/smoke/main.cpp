@@ -15,6 +15,7 @@
 #include "imgui_impl_vulkan.h"
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -92,17 +93,50 @@ int main() {
     w = static_cast<uint32_t>(iw);
     h = static_cast<uint32_t>(ih);
   };
-  std::vector<std::string> modelPaths = {GLGEN_VK_MODEL_PATH};
-#ifdef GLGEN_VK_MODEL_PATH2
-  modelPaths.push_back(GLGEN_VK_MODEL_PATH2);
-#endif
-#ifdef GLGEN_VK_MODEL_PATH3
-  modelPaths.push_back(GLGEN_VK_MODEL_PATH3);
-#endif
-  if (!renderer.init(ctx, surface, GLGEN_VK_SHADER_DIR, modelPaths,
-                     queryFbSize)) {
+  if (!renderer.init(ctx, surface, GLGEN_VK_SHADER_DIR, queryFbSize)) {
     std::fprintf(stderr, "[smoke] renderer init failed\n");
     return 1;
+  }
+
+  // Build the demo scene through the engine-drivable API (this is exactly how
+  // the engine's render loop will drive the renderer from the ECS).
+  {
+    using MeshHandle = vkrhi::VulkanRenderer::MeshHandle;
+    std::vector<std::string> modelPaths = {GLGEN_VK_MODEL_PATH};
+#ifdef GLGEN_VK_MODEL_PATH2
+    modelPaths.push_back(GLGEN_VK_MODEL_PATH2);
+#endif
+#ifdef GLGEN_VK_MODEL_PATH3
+    modelPaths.push_back(GLGEN_VK_MODEL_PATH3);
+#endif
+    std::vector<MeshHandle> meshes;
+    for (const std::string &p : modelPaths) {
+      MeshHandle h = renderer.createMeshFromObj(p);
+      if (h != UINT32_MAX)
+        meshes.push_back(h);
+    }
+    if (meshes.empty()) {
+      std::fprintf(stderr, "[smoke] no meshes loaded\n");
+      return 1;
+    }
+    struct Slot {
+      float x, z, yawDeg, scale;
+    };
+    const Slot slots[] = {
+        {0.0f, 0.0f, 25.0f, 0.50f},    {-1.3f, 0.6f, 200.0f, 0.40f},
+        {1.2f, -0.8f, 120.0f, 0.45f},  {1.1f, 1.1f, 70.0f, 0.42f},
+        {-1.0f, -1.1f, 310.0f, 0.44f}, {0.4f, 1.4f, 160.0f, 0.38f},
+    };
+    size_t k = 0;
+    for (const Slot &s : slots) {
+      glm::mat4 m = glm::translate(
+          glm::mat4(1.0f), glm::vec3(s.x, -0.5f + 0.5f * s.scale, s.z));
+      m = glm::rotate(m, glm::radians(s.yawDeg), glm::vec3(0.0f, 1.0f, 0.0f));
+      m = glm::scale(m, glm::vec3(s.scale));
+      renderer.addInstance(meshes[k % meshes.size()], m);
+      ++k;
+    }
+    renderer.finalizeScene();
   }
 
   // --- Dear ImGui (platform: GLFW, renderer: Vulkan, dynamic rendering) ---

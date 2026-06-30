@@ -26,8 +26,15 @@ class VulkanRenderer {
 public:
   bool init(VulkanContext &ctx, VkSurfaceKHR surface,
             const std::string &shaderDir,
-            const std::vector<std::string> &modelPaths,
             std::function<void(uint32_t &, uint32_t &)> queryFramebufferSize);
+
+  // --- engine-drivable scene API ---------------------------------------
+  // Build the scene after init(): create meshes, place instances, then call
+  // finalizeScene() to build the ray-tracing acceleration structures.
+  using MeshHandle = uint32_t;
+  MeshHandle createMeshFromObj(const std::string &path);
+  void addInstance(MeshHandle mesh, const glm::mat4 &transform);
+  bool finalizeScene();
 
   void drawFrame();
   void waitIdle();
@@ -111,7 +118,6 @@ private:
   bool createTerrainPipeline(const std::string &shaderDir);
   bool createSkyPipeline(const std::string &shaderDir);
   bool createTonemapPipeline(const std::string &shaderDir);
-  bool loadScene(const std::vector<std::string> &modelPaths);
   bool loadMeshFromObj(const std::string &path, Mesh &outMesh);
   bool createSyncObjects();
   void recreateSwapchain();

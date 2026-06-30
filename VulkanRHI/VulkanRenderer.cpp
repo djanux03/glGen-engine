@@ -59,7 +59,6 @@ void imageBarrier(VkCommandBuffer cmd, VkImage image,
 
 bool VulkanRenderer::init(
     VulkanContext &ctx, VkSurfaceKHR surface, const std::string &shaderDir,
-    const std::vector<std::string> &modelPaths,
     std::function<void(uint32_t &, uint32_t &)> queryFramebufferSize) {
   mCtx = &ctx;
   mSurface = surface;
@@ -83,6 +82,7 @@ bool VulkanRenderer::init(
   if (!createSampler())
     return false;
   mDefaultTexIndex = createDefaultTexture();
+  mTerrainTexIndex = mDefaultTexIndex;
   if (!createSceneTargets())
     return false;
   if (!createTlasDescriptors())
@@ -98,9 +98,8 @@ bool VulkanRenderer::init(
     return false;
   if (!createTonemapPipeline(shaderDir))
     return false;
-  if (!loadScene(modelPaths)) // builds the acceleration structures
-    return false;
-  writeTlasDescriptors();
+  // Scene is supplied by the caller via createMeshFromObj()/addInstance() and
+  // finalized with finalizeScene() before the first drawFrame().
   if (!createSyncObjects())
     return false;
   return true;
@@ -1096,47 +1095,33 @@ bool VulkanRenderer::loadMeshFromObj(const std::string &path, Mesh &outMesh) {
   return true;
 }
 
-bool VulkanRenderer::loadScene(const std::vector<std::string> &modelPaths) {
-  mTerrainTexIndex = mDefaultTexIndex;
-
-  // Load each model (fail-soft: skip ones that don't load).
-  for (const std::string &path : modelPaths) {
-    Mesh mesh;
-    if (loadMeshFromObj(path, mesh)) {
-      std::fprintf(stderr, "[VulkanRHI] mesh %zu: '%s' (%u indices)\n",
-                   mMeshes.size(), path.c_str(), mesh.indexCount);
-      mMeshes.push_back(std::move(mesh));
-    } else {
-      std::fprintf(stderr, "[VulkanRHI] skipping model '%s'\n", path.c_str());
-    }
+VulkanRenderer::MeshHandle
+VulkanRenderer::createMeshFromObj(const std::string &path) {
+  Mesh mesh;
+  if (!loadMeshFromObj(path, mesh)) {
+    std::fprintf(stderr, "[VulkanRHI] failed to load mesh '%s'\n", path.c_str());
+    return UINT32_MAX;
   }
+  const MeshHandle handle = static_cast<MeshHandle>(mMeshes.size());
+  std::fprintf(stderr, "[VulkanRHI] mesh %u: '%s' (%u indices)\n", handle,
+               path.c_str(), mesh.indexCount);
+  mMeshes.push_back(std::move(mesh));
+  return handle;
+}
+
+void VulkanRenderer::addInstance(MeshHandle mesh, const glm::mat4 &transform) {
+  if (mesh >= mMeshes.size())
+    return;
+  Instance inst;
+  inst.meshIndex = mesh;
+  inst.model = transform;
+  mInstances.push_back(inst);
+}
+
+bool VulkanRenderer::finalizeScene() {
   if (mMeshes.empty()) {
-    std::fprintf(stderr, "[VulkanRHI] no models loaded\n");
+    std::fprintf(stderr, "[VulkanRHI] finalizeScene: no meshes\n");
     return false;
-  }
-
-  // Scatter instances across the flat central area (terrain is flattened within
-  // ~2 units of the origin), cycling through the loaded meshes.
-  const uint32_t meshCount = static_cast<uint32_t>(mMeshes.size());
-  struct Slot {
-    float x, z, yawDeg, scale;
-  };
-  const Slot slots[] = {
-      {0.0f, 0.0f, 25.0f, 0.50f},   {-1.3f, 0.6f, 200.0f, 0.40f},
-      {1.2f, -0.8f, 120.0f, 0.45f}, {1.1f, 1.1f, 70.0f, 0.42f},
-      {-1.0f, -1.1f, 310.0f, 0.44f}, {0.4f, 1.4f, 160.0f, 0.38f},
-  };
-  uint32_t k = 0;
-  for (const Slot &s : slots) {
-    Instance inst;
-    inst.meshIndex = k % meshCount;
-    glm::mat4 m = glm::translate(
-        glm::mat4(1.0f), glm::vec3(s.x, -0.5f + 0.5f * s.scale, s.z));
-    m = glm::rotate(m, glm::radians(s.yawDeg), glm::vec3(0.0f, 1.0f, 0.0f));
-    m = glm::scale(m, glm::vec3(s.scale));
-    inst.model = m;
-    mInstances.push_back(inst);
-    ++k;
   }
 
   // Build acceleration structures: one BLAS per mesh, TLAS from the instances.
@@ -1164,6 +1149,7 @@ bool VulkanRenderer::loadScene(const std::vector<std::string> &modelPaths) {
   };
   if (!mAccel.build(*mCtx, submit, blasInputs, instInputs))
     return false;
+  writeTlasDescriptors();
   return true;
 }
 
