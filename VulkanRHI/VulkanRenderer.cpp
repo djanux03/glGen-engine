@@ -1067,28 +1067,21 @@ void VulkanRenderer::drawFrame() {
     std::abort();
   }
 
-  const float seconds =
-      std::chrono::duration<float>(std::chrono::steady_clock::now() -
-                                   mStartTime)
-          .count();
   const VkExtent2D extent = mSwapchain.extent();
   const float aspect =
       static_cast<float>(extent.width) / static_cast<float>(extent.height);
-  const float fovY = glm::radians(50.0f);
 
-  // Camera + light from the (UI-driven) params.
-  const glm::vec3 center(0.0f, -0.1f, 0.0f);
-  const float yaw = glm::radians(mParams.autoOrbit
-                                     ? seconds * 23.0f + mParams.camYawDeg
-                                     : mParams.camYawDeg);
+  // Free-fly camera from the input-driven params.
+  const float yaw = glm::radians(mParams.camYawDeg);
   const float pitch = glm::radians(mParams.camPitchDeg);
-  const glm::vec3 eye =
-      center + mParams.camDistance *
-                   glm::vec3(std::cos(pitch) * std::sin(yaw), std::sin(pitch),
-                             std::cos(pitch) * std::cos(yaw));
+  const glm::vec3 forward = glm::normalize(
+      glm::vec3(std::cos(pitch) * std::sin(yaw), std::sin(pitch),
+                std::cos(pitch) * std::cos(yaw)));
+  const glm::vec3 eye = mParams.camPos;
   const glm::mat4 viewMat =
-      glm::lookAt(eye, center, glm::vec3(0.0f, 1.0f, 0.0f));
-  glm::mat4 proj = glm::perspective(fovY, aspect, 0.1f, 100.0f);
+      glm::lookAt(eye, eye + forward, glm::vec3(0.0f, 1.0f, 0.0f));
+  glm::mat4 proj =
+      glm::perspective(glm::radians(mParams.fovDeg), aspect, 0.05f, 300.0f);
   proj[1][1] *= -1.0f;
 
   const float ly = glm::radians(mParams.lightYawDeg);

@@ -14,8 +14,21 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 
+#include <glm/glm.hpp>
+
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <vector>
+
+namespace {
+// Accumulated scroll, drained each frame. Installed before ImGui so ImGui's
+// own callback chains to it.
+double g_scrollY = 0.0;
+void scrollCallback(GLFWwindow *, double, double yoffset) {
+  g_scrollY += yoffset;
+}
+} // namespace
 
 #ifndef GLGEN_VK_SHADER_DIR
 #define GLGEN_VK_SHADER_DIR "."
@@ -99,6 +112,7 @@ int main() {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGui::StyleColorsDark();
+  glfwSetScrollCallback(window, scrollCallback); // before ImGui so it chains
   ImGui_ImplGlfw_InitForVulkan(window, true);
 
   static VkFormat colorFormat = renderer.swapchainColorFormat();
@@ -140,25 +154,87 @@ int main() {
   while (!glfwWindowShouldClose(window)) {
     glfwPollEvents();
 
+    // --- free-fly camera input ---
+    static double prevTime = glfwGetTime();
+    const double nowTime = glfwGetTime();
+    const float dt = static_cast<float>(nowTime - prevTime);
+    prevTime = nowTime;
+
+    ImGuiIO &io = ImGui::GetIO();
+    vkrhi::VulkanRenderer::Params &p = renderer.params();
+
+    // Mouse-look while holding the right button (cursor captured).
+    static bool looking = false;
+    static double lastX = 0.0, lastY = 0.0;
+    const bool rmb =
+        glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    if (rmb && !looking) {
+      looking = true;
+      glfwGetCursorPos(window, &lastX, &lastY);
+      glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    } else if (!rmb && looking) {
+      looking = false;
+      glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    }
+    if (looking) {
+      double mx, my;
+      glfwGetCursorPos(window, &mx, &my);
+      p.camYawDeg -= static_cast<float>(mx - lastX) * 0.12f;
+      p.camPitchDeg -= static_cast<float>(my - lastY) * 0.12f;
+      p.camPitchDeg = std::clamp(p.camPitchDeg, -89.0f, 89.0f);
+      lastX = mx;
+      lastY = my;
+    }
+
+    // Scroll to zoom (FOV), unless hovering the UI.
+    if (!io.WantCaptureMouse && g_scrollY != 0.0)
+      p.fovDeg = std::clamp(p.fovDeg - static_cast<float>(g_scrollY) * 3.0f,
+                            20.0f, 90.0f);
+    g_scrollY = 0.0;
+
+    // WASD + Space/Ctrl to fly (Shift = fast), unless the UI has focus.
+    if (!io.WantCaptureKeyboard) {
+      const float yaw = glm::radians(p.camYawDeg);
+      const float pitch = glm::radians(p.camPitchDeg);
+      const glm::vec3 forward = glm::normalize(
+          glm::vec3(std::cos(pitch) * std::sin(yaw), std::sin(pitch),
+                    std::cos(pitch) * std::cos(yaw)));
+      const glm::vec3 right =
+          glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
+      float speed = 3.0f * dt;
+      if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)
+        speed *= 3.0f;
+      if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        p.camPos += forward * speed;
+      if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+        p.camPos -= forward * speed;
+      if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        p.camPos += right * speed;
+      if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        p.camPos -= right * speed;
+      if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS)
+        p.camPos.y += speed;
+      if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
+        p.camPos.y -= speed;
+    }
+
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
     {
-      vkrhi::VulkanRenderer::Params &p = renderer.params();
       ImGui::Begin("glGen Vulkan");
-      ImGui::Text("RTX 3070 - mesh-shader terrain + CSM");
-      ImGui::Text("%.1f FPS (%.2f ms)", ImGui::GetIO().Framerate,
-                  1000.0f / ImGui::GetIO().Framerate);
+      ImGui::Text("RTX 3070 - RT shadows + mesh-shader terrain");
+      ImGui::Text("%.1f FPS (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
       ImGui::Separator();
+      ImGui::TextWrapped(
+          "RMB: look   Scroll: zoom   WASD + Space/Ctrl: fly (Shift = fast)");
+      ImGui::Separator();
+      ImGui::SliderFloat("FOV", &p.fovDeg, 20.0f, 90.0f);
       ImGui::SliderFloat("Exposure", &p.exposure, 0.1f, 3.0f);
       ImGui::SliderFloat("Light yaw", &p.lightYawDeg, 0.0f, 360.0f);
       ImGui::SliderFloat("Light pitch", &p.lightPitchDeg, 5.0f, 89.0f);
-      ImGui::Separator();
-      ImGui::Checkbox("Auto-orbit camera", &p.autoOrbit);
-      ImGui::SliderFloat("Cam yaw", &p.camYawDeg, -180.0f, 180.0f);
-      ImGui::SliderFloat("Cam pitch", &p.camPitchDeg, -10.0f, 80.0f);
-      ImGui::SliderFloat("Cam distance", &p.camDistance, 1.2f, 6.0f);
       ImGui::Checkbox("Draw terrain", &p.drawTerrain);
+      ImGui::Text("Cam  %.1f, %.1f, %.1f", p.camPos.x, p.camPos.y, p.camPos.z);
       ImGui::End();
     }
     ImGui::Render();

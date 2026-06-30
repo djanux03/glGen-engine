@@ -36,15 +36,17 @@ public:
   // PNG at `path`. Used to visually verify rendering headlessly.
   void requestCapture(const std::string &path);
 
-  // Live, UI-tweakable render parameters.
+  // Live, UI/input-driven render parameters.
   struct Params {
+    // Free-fly camera (driven by mouse-look / scroll / WASD in the app).
+    glm::vec3 camPos = glm::vec3(0.0f, 0.7f, 3.0f);
+    float camYawDeg = 180.0f;   // facing -Z toward the origin
+    float camPitchDeg = -8.0f;
+    float fovDeg = 55.0f;
+    // Lighting / rendering.
     float exposure = 1.1f;
     float lightYawDeg = 215.0f;
     float lightPitchDeg = 50.0f;
-    float camYawDeg = 0.0f;
-    float camPitchDeg = 28.0f;
-    float camDistance = 2.6f;
-    bool autoOrbit = true;
     bool drawTerrain = true;
   };
   Params &params() { return mParams; }
