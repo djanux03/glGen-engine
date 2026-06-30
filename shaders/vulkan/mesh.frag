@@ -52,5 +52,12 @@ void main() {
 
     vec3 tex = texture(uTextures[nonuniformEXT(pc.textureIndex)], vUV).rgb;
     vec3 color = tex * (0.2 + 0.8 * ndl * vis);
+
+    // Aerial/distance fog toward the sky (day/night aware via sun elevation).
+    float day = smoothstep(-0.1, 0.2, -uFrame.lightDir.y);
+    vec3 fogColor = mix(vec3(0.03, 0.04, 0.07), vec3(0.55, 0.65, 0.78), day);
+    float fog = 1.0 - exp(-max(vViewZ - 2.0, 0.0) * 0.05);
+    color = mix(color, fogColor, clamp(fog, 0.0, 0.9));
+
     outColor = vec4(color, 1.0);
 }
