@@ -48,9 +48,22 @@ void main() {
     if (ndl > 0.0)
         vis = traceShadow(vWorldPos + N * 0.02, L);
 
-    vec2 uv = vWorldPos.xz * 0.5;
-    vec3 tex = texture(uTextures[nonuniformEXT(pc.textureIndex)], uv).rgb;
-    tex *= vec3(0.45, 0.62, 0.35);
-    vec3 color = tex * (0.25 + 0.75 * ndl * vis);
+    // Slope/height based terrain materials: sand -> grass, snow on peaks,
+    // rock on steep slopes.
+    float slope = 1.0 - clamp(N.y, 0.0, 1.0);
+    float h = vWorldPos.y;
+    vec3 sand  = vec3(0.60, 0.54, 0.37);
+    vec3 grass = vec3(0.22, 0.42, 0.16);
+    vec3 rock  = vec3(0.33, 0.29, 0.25);
+    vec3 snow  = vec3(0.90, 0.93, 0.97);
+    vec3 albedo = mix(sand, grass, smoothstep(-0.52, -0.38, h));
+    albedo = mix(albedo, snow, smoothstep(0.30, 0.60, h));
+    albedo = mix(albedo, rock, smoothstep(0.35, 0.65, slope));
+    // Subtle detail break-up from the bindless texture.
+    float det = texture(uTextures[nonuniformEXT(pc.textureIndex)],
+                        vWorldPos.xz * 0.35).r;
+    albedo *= 0.8 + 0.4 * det;
+
+    vec3 color = albedo * (0.25 + 0.75 * ndl * vis);
     outColor = vec4(color, 1.0);
 }
