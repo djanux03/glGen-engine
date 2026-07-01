@@ -27,6 +27,26 @@ uniform float uSunRaysIntensity;
 uniform float uSunDiscSoftness;
 uniform float uSunHaloSize;
 uniform float uSunRaySharpness;
+uniform bool uUseBlackHole;
+uniform vec3 uBlackHoleDir;
+uniform float uBlackHoleSize;
+uniform float uBlackHoleDiskTilt;
+uniform float uBlackHoleDiskInclination;
+uniform vec3 uBlackHoleColor;
+uniform float uBlackHoleRingIntensity;
+uniform float uBlackHoleRingWidth;
+uniform float uBlackHoleDistortion;
+uniform float uBlackHoleHaloIntensity;
+uniform float uBlackHoleDiskSpinSpeed;
+uniform float uBlackHoleDiskTurbulence;
+uniform float uBlackHoleChromaticAberration;
+uniform float uBlackHoleEclipseStrength;
+uniform float uBlackHolePhotonRingIntensity;
+uniform float uBlackHoleDopplerBoost;
+uniform float uBlackHoleJetIntensity;
+uniform float uBlackHoleCoronaIntensity;
+uniform float uBlackHoleStarLensIntensity;
+uniform float uBlackHoleShadowStrength;
 uniform float uSkyAtmosphereStrength;
 uniform float uSkyGradientPower;
 uniform float uSkyHorizonGlow;
@@ -117,6 +137,8 @@ vec3 inverseACES(vec3 srgb)
     return max(x, vec3(0.0));
 }
 
+vec3 calculateAtmosphere(vec3 rayDir, vec3 sunDir);
+
 vec3 customSkyGradient(vec3 worldDir)
 {
     float vertical = clamp(worldDir.y * 0.5 + 0.5, 0.0, 1.0);
@@ -126,6 +148,54 @@ vec3 customSkyGradient(vec3 worldDir)
     float horizon = pow(1.0 - clamp(abs(worldDir.y), 0.0, 1.0), 2.3);
     sky += inverseACES(uSkyHorizon) * (horizon * max(uSkyHorizonGlow, 0.0));
     return sky;
+}
+
+vec3 sampleBaseSky(vec3 worldDir, vec3 sunDir, bool solidSky)
+{
+    if (solidSky) {
+        vec3 customSky = customSkyGradient(worldDir);
+        float lowSunDamp = mix(0.34, 1.0, smoothstep(0.02, 0.34, sunDir.y));
+        float atmosphereBlend =
+            clamp(uSkyAtmosphereStrength, 0.0, 1.0) * lowSunDamp;
+        if (atmosphereBlend > 0.001) {
+            vec3 atmosphereSky = calculateAtmosphere(worldDir, sunDir);
+            return mix(customSky, atmosphereSky, atmosphereBlend);
+        }
+        return customSky;
+    }
+
+    vec2 uv = dirToEquirectUV(worldDir);
+    vec3 hdr = texture(uHDR, uv).rgb;
+    return hdr * uExposure;
+}
+
+mat2 rotate2D(float a)
+{
+    float s = sin(a);
+    float c = cos(a);
+    return mat2(c, -s, s, c);
+}
+
+vec3 blackHoleSpaceBackdrop(vec3 worldDir)
+{
+    vec2 uv = dirToEquirectUV(worldDir);
+    vec3 base = inverseACES(vec3(0.006, 0.008, 0.016));
+
+    float bandAxis =
+        dot(worldDir, normalize(vec3(-0.22, 0.62, 0.75)));
+    float milkyBand = exp(-bandAxis * bandAxis * 13.0);
+    float dust = fbm(uv * 12.0 + vec2(0.0, uTime * 0.0015));
+    float darkDust = fbm(uv * 34.0 + vec2(11.0, -7.0));
+    vec3 nebula = vec3(0.10, 0.14, 0.28) * milkyBand * dust *
+                  (1.0 - darkDust * 0.45);
+
+    float stars = starField(worldDir);
+    float tinyStars = smoothstep(0.992, 1.0,
+                                 hash21(floor(uv * vec2(2900.0, 1450.0))));
+    vec3 starColor = vec3(1.25, 1.18, 1.02) * stars +
+                     vec3(0.55, 0.68, 1.0) * tinyStars * 0.30;
+
+    return (base + nebula + starColor) * uExposure;
 }
 
 float cloudShape(vec2 uv)
@@ -303,31 +373,285 @@ void main()
     worldDir = normalize(uSkyRot * worldDir);
     vec3 mapped;
     vec3 sunDir = normalize(-uSunDir);
+    vec3 blackHoleDir = normalize(uBlackHoleDir);
 
     bool solidSky = uUseSolidSky;
-    if (solidSky)
-    {
-        vec3 customSky = customSkyGradient(worldDir);
-        float lowSunDamp = mix(0.34, 1.0, smoothstep(0.02, 0.34, sunDir.y));
-        float atmosphereBlend =
-            clamp(uSkyAtmosphereStrength, 0.0, 1.0) * lowSunDamp;
-        if (atmosphereBlend > 0.001) {
-            vec3 atmosphereSky = calculateAtmosphere(worldDir, sunDir);
-            mapped = mix(customSky, atmosphereSky, atmosphereBlend);
-        } else {
-            mapped = customSky;
-        }
-    }
-    else
-    {
-        vec2 uv = dirToEquirectUV(worldDir);
-        vec3 hdr = texture(uHDR, uv).rgb;
-        mapped = hdr * uExposure;
+    mapped = sampleBaseSky(worldDir, sunDir, solidSky);
+    float eventHorizonMask = 0.0;
+    float eventShadowMask = 0.0;
+    vec3 foregroundDiskAdd = vec3(0.0);
+
+    if (uUseBlackHole) {
+        float eventRadius =
+            max(acos(clamp(uBlackHoleSize, -0.999999, 0.999999)), 0.0009);
+        // A black hole shadow appears much larger than the true event horizon
+        // because the photon sphere captures and redirects nearby light.
+        float shadowRadius = eventRadius * 2.05;
+        float holeDot = clamp(dot(worldDir, blackHoleDir), -1.0, 1.0);
+        float holeAngle = acos(holeDot);
+        float shadowRadial = holeAngle / max(shadowRadius, 0.0009);
+        float radialAA = max(fwidth(shadowRadial) * 1.5, 0.0015);
+
+        eventHorizonMask =
+            1.0 - smoothstep(0.93 - radialAA, 1.00 + radialAA, shadowRadial);
+        eventShadowMask =
+            1.0 - smoothstep(1.00 + radialAA, 1.48 + radialAA, shadowRadial);
+        float outsideShadow =
+            smoothstep(0.98 - radialAA, 1.08 + radialAA, shadowRadial);
+
+        vec3 refUp = abs(blackHoleDir.y) > 0.94 ? vec3(1.0, 0.0, 0.0)
+                                                : vec3(0.0, 1.0, 0.0);
+        vec3 holeRight = normalize(cross(refUp, blackHoleDir));
+        vec3 holeUp = normalize(cross(blackHoleDir, holeRight));
+        vec3 radialVec = worldDir - blackHoleDir * holeDot;
+        vec3 radialDir = length(radialVec) > 0.00001
+                             ? normalize(radialVec)
+                             : holeRight;
+
+        float shadowScale = max(sin(shadowRadius), 0.0005);
+        vec2 holeUv =
+            vec2(dot(worldDir, holeRight), dot(worldDir, holeUp)) / shadowScale;
+        vec2 diskBasisUv = rotate2D(uBlackHoleDiskTilt) * holeUv;
+
+        vec3 blackHoleBackdrop = blackHoleSpaceBackdrop(worldDir);
+
+        float lensReach = 6.5 + uBlackHoleDistortion * 4.5;
+        float lensMask =
+            1.0 - smoothstep(1.12, lensReach, shadowRadial);
+        float closePass = max(shadowRadial - 0.72, 0.08);
+        float bend =
+            uBlackHoleDistortion *
+            (0.36 / closePass + 0.16 / max(shadowRadial + 0.12, 0.12));
+        bend = clamp(bend * lensMask, 0.0, 2.4);
+
+        float sourceTheta =
+            clamp(holeAngle + bend * shadowRadius * 4.8, 0.0, PI - 0.001);
+        float chromaOffset =
+            shadowRadius * bend * clamp(uBlackHoleChromaticAberration, 0.0, 1.0) *
+            0.55;
+        vec3 lensedDirG =
+            normalize(blackHoleDir * cos(sourceTheta) +
+                      radialDir * sin(sourceTheta));
+        vec3 lensedDirR =
+            normalize(blackHoleDir * cos(min(sourceTheta + chromaOffset, PI)) +
+                      radialDir * sin(min(sourceTheta + chromaOffset, PI)));
+        vec3 lensedDirB =
+            normalize(blackHoleDir * cos(max(sourceTheta - chromaOffset, 0.0)) +
+                      radialDir * sin(max(sourceTheta - chromaOffset, 0.0)));
+        vec3 lensedSkyR = blackHoleSpaceBackdrop(lensedDirR);
+        vec3 lensedSkyG = blackHoleSpaceBackdrop(lensedDirG);
+        vec3 lensedSkyB = blackHoleSpaceBackdrop(lensedDirB);
+        vec3 lensedSky = vec3(lensedSkyR.r, lensedSkyG.g, lensedSkyB.b);
+        mapped = mix(blackHoleBackdrop, lensedSky,
+                     clamp(lensMask * (0.45 + bend * 0.30), 0.0, 0.90));
+
+        float ringWidth =
+            mix(0.045, 0.32, clamp(uBlackHoleRingWidth, 0.02, 0.90));
+        float diskInclination =
+            clamp(uBlackHoleDiskInclination, 0.0, radians(88.0));
+        float inclinationSin = sin(diskInclination);
+        float projectedMinor = max(cos(diskInclination), 0.035);
+        float diskDepth = diskBasisUv.y / projectedMinor;
+        float perspective =
+            clamp(1.0 + diskDepth * inclinationSin * 0.105, 0.76, 1.30);
+        vec2 diskUv = vec2(diskBasisUv.x / perspective, diskDepth);
+        float nearSide = smoothstep(0.42, -0.20, diskBasisUv.y);
+        float farSide = smoothstep(-0.08, 0.46, diskBasisUv.y);
+        float depthLight = mix(0.70, 1.22, nearSide) * mix(1.0, 0.74, farSide);
+
+        float diskRadial = length(diskUv);
+        float diskAngle = atan(diskUv.y, diskUv.x);
+        vec2 flowUv = rotate2D(uTime * uBlackHoleDiskSpinSpeed * 0.18) * diskUv;
+        float diskNoise =
+            fbm(flowUv * mix(2.0, 7.5, uBlackHoleDiskTurbulence) +
+                vec2(uTime * 0.055, -uTime * 0.038));
+        float fineNoise =
+            fbm(flowUv * mix(9.0, 22.0, uBlackHoleDiskTurbulence) +
+                vec2(-uTime * 0.030, uTime * 0.047));
+        float filamentPhase =
+            diskAngle * mix(10.0, 30.0, uBlackHoleDiskTurbulence) -
+            log(max(diskRadial, 0.08)) * 11.0 -
+            uTime * uBlackHoleDiskSpinSpeed * 3.6 + diskNoise * 6.2;
+        float filaments =
+            mix(0.28, 1.0,
+                pow(clamp(0.5 + 0.5 * sin(filamentPhase), 0.0, 1.0),
+                    mix(3.2, 0.72, uBlackHoleDiskTurbulence)));
+        float darkLanes =
+            smoothstep(0.18, 0.92, fineNoise) *
+            (0.58 + 0.42 * smoothstep(1.2, 4.2, diskRadial));
+
+        float diskInner = 1.12;
+        float diskPeak = 1.55 + ringWidth * 0.25;
+        float diskOuter = 4.35 + uBlackHoleDistortion * 1.15;
+        float diskAA = max(fwidth(diskRadial) * 2.8, radialAA * 5.0);
+        float radialWindow =
+            smoothstep(diskInner, diskInner + diskAA * 1.8, diskRadial) *
+            (1.0 - smoothstep(diskOuter, diskOuter + 0.55, diskRadial));
+        float radialEnergy =
+            exp(-max(diskRadial - diskPeak, 0.0) * 0.52) *
+            (0.35 + 0.65 * exp(-pow((diskRadial - diskPeak) / 0.78, 2.0)));
+        float diskThickness =
+            (0.080 + ringWidth * 0.24) *
+            (1.0 + smoothstep(1.5, diskOuter, diskRadial) * 0.45) *
+            mix(0.72, 1.0, nearSide);
+        float volumeRimThickness = diskThickness * mix(1.45, 2.20, nearSide);
+        float diskCoreProfile =
+            exp(-pow(abs(diskUv.y) / max(diskThickness, 0.012), 2.0));
+        float diskRimProfile =
+            exp(-pow((abs(diskUv.y) - volumeRimThickness) /
+                         max(diskThickness * 0.55, 0.008),
+                     2.0));
+        float farSideInnerOcclusion =
+            mix(1.0, smoothstep(1.05, 1.62, diskRadial), farSide * 0.92);
+        float directDisk =
+            (diskCoreProfile + diskRimProfile * 0.24 * nearSide) *
+            radialWindow * radialEnergy * outsideShadow * farSideInnerOcclusion;
+
+        float arcX = abs(diskBasisUv.x);
+        float upperArcY =
+            (0.33 + 0.095 * arcX + 0.016 * arcX * arcX +
+             0.05 * uBlackHoleDistortion) *
+            mix(0.78, 1.08, inclinationSin);
+        float lowerArcY =
+            (0.24 + 0.050 * arcX + 0.009 * arcX * arcX +
+             0.03 * uBlackHoleDistortion) *
+            mix(0.70, 0.96, inclinationSin);
+        float arcThickness =
+            (0.050 + ringWidth * 0.085) *
+            (1.0 + arcX * 0.12) *
+            mix(0.70, 1.10, inclinationSin);
+        float arcRadialEnvelope =
+            smoothstep(0.92, 1.05, shadowRadial) *
+            (1.0 - smoothstep(3.55 + uBlackHoleDistortion * 0.55,
+                              4.55 + uBlackHoleDistortion * 0.55,
+                              shadowRadial)) *
+            (1.0 - smoothstep(4.2, 5.4, arcX));
+        float upperArc =
+            exp(-pow((diskBasisUv.y - upperArcY) /
+                         max(arcThickness, 0.012),
+                     2.0)) *
+            arcRadialEnvelope * outsideShadow * 1.10;
+        float lowerArc =
+            exp(-pow((diskBasisUv.y + lowerArcY) /
+                         max(arcThickness * 0.86, 0.010),
+                     2.0)) *
+            arcRadialEnvelope * 0.92 * outsideShadow;
+        float secondaryArcs = max(upperArc, lowerArc);
+
+        float dopplerSide =
+            smoothstep(-2.5, 2.5, diskBasisUv.x);
+        float doppler = mix(1.0 - uBlackHoleDopplerBoost * 0.42,
+                            1.0 + uBlackHoleDopplerBoost * 1.65,
+                            dopplerSide);
+        float diskTemperature =
+            pow(clamp((diskOuter - diskRadial) / max(diskOuter - diskInner, 0.1),
+                      0.0, 1.0),
+                0.72);
+        diskTemperature = max(diskTemperature,
+                              exp(-pow((diskRadial - diskPeak) / 0.45, 2.0)) *
+                                  0.65);
+
+        vec3 userAccretion =
+            inverseACES(clamp(uBlackHoleColor, vec3(0.0), vec3(1.0)));
+        vec3 dustyOuter = userAccretion * vec3(0.72, 0.25, 0.08);
+        vec3 amberMid = userAccretion * vec3(1.28, 0.68, 0.30);
+        vec3 whiteHot = mix(userAccretion * vec3(1.55, 1.05, 0.70),
+                            vec3(1.45, 1.26, 0.92),
+                            0.58);
+        vec3 diskColor = mix(dustyOuter, amberMid,
+                             smoothstep(0.18, 0.68, diskTemperature));
+        diskColor = mix(diskColor, whiteHot,
+                        smoothstep(0.62, 1.0, diskTemperature));
+        float filamentEnergy =
+            mix(0.42, 1.18, filaments) * mix(0.62, 1.08, darkLanes);
+        float clumpBreakup =
+            mix(0.50, 1.10,
+                smoothstep(0.26, 0.86,
+                           fbm(flowUv * 3.8 +
+                               vec2(uTime * 0.080, uTime * 0.025))));
+        diskColor *= filamentEnergy * clumpBreakup * max(doppler, 0.0) *
+                     depthLight;
+
+        float diskMask = max(directDisk, secondaryArcs * 1.05);
+        float innerDiskGlow =
+            exp(-pow((diskRadial - diskPeak) /
+                         max(0.12 + ringWidth * 0.28, 0.05),
+                     2.0)) *
+            outsideShadow * smoothstep(0.55, 1.0, abs(diskUv.x)) *
+            mix(0.62, 1.18, nearSide);
+        float diskGain = log(1.0 + max(uBlackHoleRingIntensity, 0.0)) * 1.35;
+        mapped += diskColor *
+                  (diskMask + innerDiskGlow * 0.20) *
+                  diskGain * uExposure;
+
+        float foregroundWindow =
+            (1.0 - outsideShadow) *
+            smoothstep(0.38, 0.72, shadowRadial) *
+            smoothstep(0.45, 1.35, abs(diskBasisUv.x)) * nearSide;
+        float foregroundBand =
+            exp(-pow((diskUv.y + 0.018) / max(diskThickness * 0.92, 0.018),
+                     2.0)) *
+            radialWindow * radialEnergy * foregroundWindow;
+        foregroundDiskAdd =
+            diskColor * foregroundBand * diskGain * uExposure * 0.92;
+
+        float nearRim =
+            diskRimProfile * radialWindow * radialEnergy * nearSide *
+            outsideShadow * (0.35 + 0.65 * smoothstep(1.15, 3.0, diskRadial));
+        mapped += diskColor * nearRim * diskGain * uExposure * 0.36;
+
+        float photonWidth = max(0.010 + ringWidth * 0.055, radialAA * 1.4);
+        float photonRing =
+            exp(-pow((shadowRadial - 1.018) / photonWidth, 2.0)) *
+            (0.72 + 0.28 * doppler);
+        float einsteinRing =
+            exp(-pow((shadowRadial - (1.28 + uBlackHoleDistortion * 0.18)) /
+                         max(0.09 + ringWidth * 0.15, radialAA * 2.0),
+                     2.0)) *
+            lensMask;
+        vec3 photonColor =
+            mix(vec3(0.55, 0.70, 1.45), vec3(1.25, 0.96, 0.62), dopplerSide) *
+            (userAccretion + vec3(0.08, 0.10, 0.16));
+        mapped += photonColor * photonRing *
+                  max(uBlackHolePhotonRingIntensity, 0.0) * uExposure;
+        mapped += mix(lensedSky, photonColor, 0.55) * einsteinRing *
+                  (0.06 + 0.10 * uBlackHoleStarLensIntensity);
+
+        float corona =
+            exp(-pow((shadowRadial - 1.42) /
+                         max(0.44 + ringWidth * 0.55, 0.10),
+                     2.0)) *
+            outsideShadow;
+        float broadHalo =
+            exp(-pow(shadowRadial /
+                         (2.8 + uBlackHoleDistortion * 3.2),
+                     2.0)) *
+            outsideShadow;
+        vec3 coronaColor =
+            mix(userAccretion * vec3(0.45, 0.62, 1.35),
+                userAccretion * vec3(1.65, 0.82, 0.32),
+                0.70 + diskNoise * 0.30);
+        mapped += coronaColor *
+                  (corona * max(uBlackHoleCoronaIntensity, 0.0) * 0.52 +
+                   broadHalo * max(uBlackHoleHaloIntensity, 0.0) * 0.28) *
+                  uExposure;
+
+        float jetAxis = 1.0 - smoothstep(0.018, 0.13, abs(diskBasisUv.x));
+        float jetReach = 1.0 - smoothstep(1.12, 7.8, abs(diskBasisUv.y));
+        float jetGap = smoothstep(1.08, 1.55, abs(diskBasisUv.y));
+        float jetCore =
+            pow(max(jetAxis * jetReach * jetGap, 0.0), 2.4) * outsideShadow;
+        vec3 jetColor =
+            inverseACES(vec3(0.45, 0.68, 1.0)) *
+            jetCore *
+            (0.75 + 0.25 * sin(uTime * 2.0 + abs(diskBasisUv.y) * 4.0));
+        mapped += jetColor * max(uBlackHoleJetIntensity, 0.0) * 0.18 *
+                  uExposure;
+    } else {
+        mapped = applySkyClouds(mapped, worldDir, sunDir);
     }
 
-    mapped = applySkyClouds(mapped, worldDir, sunDir);
-
-    if (solidSky) {
+    if (!uUseBlackHole && solidSky) {
         float sunDot = max(dot(worldDir, sunDir), 0.0);
         float lowSunDamp = mix(0.22, 1.0, smoothstep(0.02, 0.34, sunDir.y));
         float discSoftness = max(uSunDiscSoftness, 0.0001);
@@ -361,6 +685,15 @@ void main()
     if (uNightFactor > 0.001 && uNightDither > 0.0) {
         float d = (hash21(vUV * vec2(1024.0, 512.0)) - 0.5) * uNightDither;
         mapped += vec3(d);
+    }
+
+    if (uUseBlackHole) {
+        // The event horizon is a final occluder so clouds, stars, halo, or disk
+        // glow can never accidentally fill the black core back in.
+        mapped *= 1.0 - eventShadowMask *
+                           (0.24 + 0.22 * clamp(uBlackHoleShadowStrength, 0.0, 1.0));
+        mapped = mix(mapped, vec3(0.0), clamp(eventHorizonMask, 0.0, 1.0));
+        mapped += foregroundDiskAdd;
     }
 
     FragColor = vec4(mapped, 1.0);

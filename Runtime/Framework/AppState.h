@@ -16,6 +16,7 @@
 #include <glm/glm.hpp>
 
 #include "AssetManager.h"
+#include "BlackHoleRenderer.h"
 #include "CloudFX.h"
 #include "Core/PerformanceSnapshot.h"
 #include "ECS/Systems/CameraSystem.h"
@@ -33,6 +34,7 @@
 #include "ProjectileSystem.h"
 #include "PlayerControllerSystem.h"
 #include "PlayerInteractionSystem.h"
+#include "SpaceshipControlSystem.h"
 #include "FireflySystem.h"
 #include "RenderGraph.h"
 #include "Renderer.h"
@@ -42,6 +44,7 @@
 #include "SunFX.h"
 #include "Terrain/TerrainMaterialSettings.h"
 #include "Terrain/TerrainSystem.h"
+#include "GameplayState.h"
 
 #include <memory>
 #include <string>
@@ -172,29 +175,12 @@ struct InputSettings {
   float jumpStrength = 0.18f;
   float gravity = 0.01f;
   bool freezePhysics = false;
+  bool creativeFlight = false;
   float mouseSensitivity = 0.10f;
   float fov = 50.0f;
 };
 
-struct SelectionState {
-  uint32_t selectedEntityId = 0;
-  std::vector<uint32_t> selectedEntities;
-  uint32_t lastClickedEntity = 0;
 
-  bool editObjPart = false;
-  std::string selectedObjPartName;
-
-  bool editColliderBounds =
-      false; // Toggle to intercept gizmo scaling for colliders
-
-  ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE;
-  ImGuizmo::MODE gizmoMode = ImGuizmo::WORLD;
-
-  bool renaming = false;
-  char renameBuf[128] = "";
-  char outlinerFilter[128] = "";
-  float focusDistance = 12.0f;
-};
 
 struct SkySettings {
   bool solidSky = true;
@@ -217,6 +203,40 @@ struct SkySettings {
   glm::vec3 visualSunDayColor = glm::vec3(1.0f, 0.88f, 0.62f);
   glm::vec3 visualSunDuskColor = glm::vec3(1.0f, 0.48f, 0.18f);
   glm::vec3 visualSunNightColor = glm::vec3(0.16f, 0.22f, 0.45f);
+  bool useBlackHole = false;
+  bool blackHoleWorldMode = false;
+  float blackHoleAzimuth = 225.0f;
+  float blackHoleElevation = 28.0f;
+  glm::vec3 blackHoleWorldPosition = glm::vec3(0.0f, 35.0f, -120.0f);
+  float blackHoleWorldRadius = 12.0f;
+  float blackHoleViewPitchDeg = 0.0f;
+  float blackHoleSizeDeg = 5.0f;
+  float blackHoleDiskTiltDeg = -28.0f;
+  float blackHoleDiskInclinationDeg = 76.0f;
+  glm::vec3 blackHoleColor = glm::vec3(1.0f, 0.58f, 0.18f);
+  float blackHoleRingIntensity = 4.6f;
+  float blackHoleRingWidth = 0.18f;
+  float blackHoleDistortion = 0.62f;
+  float blackHoleHaloIntensity = 0.24f;
+  float blackHoleDiskSpinSpeed = 0.45f;
+  float blackHoleDiskFlowShear = 0.22f;
+  float blackHoleDiskTurbulence = 0.55f;
+  float blackHoleChromaticAberration = 0.08f;
+  float blackHoleEclipseStrength = 0.40f;
+  float blackHolePhotonRingIntensity = 2.10f;
+  float blackHoleDopplerBoost = 0.62f;
+  float blackHoleJetIntensity = 0.0f;
+  float blackHoleCoronaIntensity = 0.42f;
+  float blackHoleStarLensIntensity = 0.70f;
+  float blackHoleShadowStrength = 0.82f;
+  float blackHoleInnerDiskRadius = 1.25f;
+  float blackHoleOuterDiskRadius = 6.8f;
+  float blackHoleDiskTemperature = 1.12f;
+  float blackHoleDiskDensity = 1.15f;
+  float blackHoleLensingStrength = 0.90f;
+  float blackHoleBackgroundStarIntensity = 1.15f;
+  float blackHoleExposure = 1.0f;
+  int blackHoleQuality = 1;
   float skyAtmosphereStrength = 0.28f;
   float skyGradientPower = 1.15f;
   float skyHorizonGlow = 0.16f;
@@ -240,56 +260,7 @@ struct SkySettings {
   glm::vec3 fireflyColor = glm::vec3(0.90f, 1.00f, 0.65f);
 };
 
-struct TerrainBrushSettings {
-  bool enabled = false;
-  int mode = 0;   // 0=Raise,1=Lower,2=Add,3=Remove
-  int target = 0; // 0=Tree,1=Rock,2=Grass
-  float radius = 6.0f;
-  float strength = 2.0f; // units per second
-  int scatterCount = 6;
-};
 
-struct PendingActions {
-  std::vector<std::string> pendingDropPaths;
-  std::vector<std::string> pendingSpawnPaths;
-  std::vector<uint32_t> pendingDeleteEntityIds;
-  std::vector<std::string> pendingEmptyEntityNames;
-  std::vector<std::string> pendingConsoleCommands;
-  bool requestTestFootstepAudio = false;
-
-  bool requestSaveConfig = false;
-  bool requestLoadConfig = false;
-  bool requestSaveProjectConfig = false;
-  std::string pendingSceneSavePath;
-  std::string pendingSceneLoadPath;
-};
-
-struct HistoryState {
-  bool requestUndo = false;
-  bool requestRedo = false;
-  int requestHistoryJump = -1;
-  std::vector<std::string> historySnapshots;
-  std::vector<std::string> historyLabels;
-  int historyCursor = -1;
-  bool pendingHistoryCommit = false;
-  std::string pendingHistoryLabel;
-};
-
-struct AudioSettings {
-  bool enabled = true;
-  bool mute = false;
-  float masterVolume = 1.0f;
-
-  bool ambientEnabled = true;
-  std::string ambientPath;
-  float ambientVolume = 0.65f;
-
-  bool footstepsEnabled = true;
-  std::string footstepPath;
-  float footstepVolume = 0.60f;
-  float footstepWalkCadence = 0.34f;
-  float footstepRunCadence = 0.24f;
-};
 
 // ---------------------------------------------------------------------------
 // AppState — organized into focused sub-structs
@@ -307,12 +278,14 @@ struct AppState {
   SunFX sun;
   CloudFX cloud;
   HDRSky sky;
+  BlackHoleRenderer blackHole;
   FireFX fire;
   PostProcessor postProcessor;
   EditorUI editor;
   ProjectileSystem projectiles;
   PlayerControllerSystem playerController;
   PlayerInteractionSystem playerInteraction;
+  SpaceshipControlSystem spaceshipControl;
   FireflySystem fireflies;
 
   // ECS Systems
@@ -326,13 +299,8 @@ struct AppState {
   std::vector<std::string> lastRenderPassOrder;
   std::unique_ptr<Shader> terrainFlatShader;
 
-  // Player ID
-  uint32_t playerId = 0;
-  int woodCount = 0;
-  uint32_t axeEntity = 0;
-  float lastPlayerYaw = 0.0f;
-  float lastPlayerPitch = 0.0f;
-  bool hasLastPlayerRot = false;
+  // Gameplay (player, viewmodel, grab, debug) — owned struct
+  GameplayState gameplay;
 
   // Terrain
   int terrainSize = 10;
@@ -340,7 +308,6 @@ struct AppState {
   TerrainSettings terrainSettings;
   TerrainSystem terrainSystem;
   TerrainMaterialSettings terrainMaterial;
-  TerrainBrushSettings terrainBrush;
 
   // Fire
   bool hasFire = false;
@@ -352,61 +319,6 @@ struct AppState {
   bool uiMode = true;
   bool escWasDown = false;
 
-  // Hotbar System
-  enum class HotbarSlot { Axe = 1, Torch = 2 };
-  HotbarSlot activeSlot = HotbarSlot::Axe;
-
-  // Viewmodel (axe)
-  bool axeEnabled = true;
-  glm::vec3 axeOffset = glm::vec3(0.06f, -0.15f, 0.24f);
-  glm::vec3 axeRotation = glm::vec3(117.5f, 84.5f, 2.0f); // degrees
-  
-  // Viewmodel (torch)
-  bool torchEnabled = true;
-  uint32_t torchEntity = 0;
-  glm::vec3 torchOffset = glm::vec3(0.12f, -0.3f, 0.40f); // further right, lower down
-  glm::vec3 torchRotation = glm::vec3(-20.0f, -20.0f, 0.0f); // tilted slightly forward
-  glm::vec3 torchScale = glm::vec3(0.05f, 0.5f, 0.05f); // long, thin wooden stick
-  glm::vec3 axeScale = glm::vec3(0.66f);
-  std::string axePath = "assets/playerassets/axe.obj";
-  bool usePlayerCameraInEdit = true;
-  // Debug: last mouse deltas + camera rotation
-  float debugMouseDX = 0.0f;
-  float debugMouseDY = 0.0f;
-  float debugYaw = 0.0f;
-  float debugPitch = 0.0f;
-  glm::vec3 debugCamFront = glm::vec3(0.0f, 0.0f, -1.0f);
-  glm::vec3 debugCamUp = glm::vec3(0.0f, 1.0f, 0.0f);
-  bool debugGameplayHit = false;
-  uint32_t debugGameplayHitId = 0;
-  float debugGameplayHitDist = 0.0f;
-  std::string debugGameplayHitName;
-  std::string debugGameplayHitKind;
-  std::string debugGameplayMissReason;
-  glm::vec3 debugGameplayAimOrigin = glm::vec3(0.0f);
-  glm::vec3 debugGameplayAimDirection = glm::vec3(0.0f, 0.0f, -1.0f);
-  glm::vec3 debugGameplayHitPosition = glm::vec3(0.0f);
-
-  // Magic wand grab (play mode)
-  uint32_t grabbedEntityId = 0;
-  float grabbedDistance = 3.0f;
-  bool grabbedHadRigidbody = false;
-  int grabbedPrevBodyType = 0;
-  bool grabbedIsTreeInstance = false;
-  std::string grabbedPrefab;
-  uint32_t grabbedInstanceIndex = 0;
-  glm::mat4 grabbedBaseMatrix = glm::mat4(1.0f);
-  glm::vec3 grabbedOffset = glm::vec3(0.0f);
-  glm::vec3 grabbedReleaseVelocity = glm::vec3(0.0f);
-  bool grabbedReleased = false;
-  // Debug: last grab raycast
-  uint32_t debugGrabHitId = 0;
-  float debugGrabHitDist = 0.0f;
-  std::string debugGrabHitName;
-  std::string debugGrabPrefab;
-  int debugGrabInstance = -1;
-  bool debugGrabMoved = false;
-
   // Play state (controls Lua script execution)
   enum class PlayState { Stopped, Playing, Paused };
   PlayState playState = PlayState::Stopped;
@@ -414,11 +326,7 @@ struct AppState {
   // --- Focused sub-structs ---
   RenderSettings render;
   InputSettings input;
-  SelectionState selection;
   SkySettings skyUI;
-  PendingActions pending;
-  HistoryState history;
-  AudioSettings audio;
   PlayPerfHudSettings playPerfHud;
   PerformanceLogSettings performanceLog;
   FramePerformanceSnapshot performance;
@@ -455,6 +363,4 @@ struct AppState {
   bool hotReloadEnabled = true;
   bool autoProcessImportQueue = false;
   bool iconFontLoaded = false;
-  bool audioBackendAvailable = false;
-  std::string audioStatus;
 };

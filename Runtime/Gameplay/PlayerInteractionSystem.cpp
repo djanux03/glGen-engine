@@ -65,8 +65,8 @@ glm::vec3 axeLaserStart(const AppState &state, const TransformComponent &camTr,
                         const glm::vec3 &front) {
   glm::vec3 right, up;
   cameraBasis(front, right, up);
-  return camTr.position + right * state.axeOffset.x + up * state.axeOffset.y +
-         front * (std::abs(state.axeOffset.z) + 0.10f);
+  return camTr.position + right * state.gameplay.viewmodel.axeOffset.x + up * state.gameplay.viewmodel.axeOffset.y +
+         front * (std::abs(state.gameplay.viewmodel.axeOffset.z) + 0.10f);
 }
 
 bool raySphere(const glm::vec3 &origin, const glm::vec3 &dir,
@@ -304,18 +304,18 @@ bool damageTreeHit(AppState &state, Registry &reg, const GameplayHit &hit,
 
 void setGameplayDebug(AppState &state, Registry &reg, const GameplayHit &hit,
                       const char *kind, const char *missReason) {
-  state.debugGameplayHit = hit.hit;
-  state.debugGameplayHitId = hit.entityId;
-  state.debugGameplayHitDist = hit.hit ? hit.distance : 0.0f;
-  state.debugGameplayHitKind = kind ? kind : "";
-  state.debugGameplayMissReason = hit.hit ? "" : (missReason ? missReason : "");
-  state.debugGameplayHitName.clear();
+  state.gameplay.debug.debugGameplayHit = hit.hit;
+  state.gameplay.debug.debugGameplayHitId = hit.entityId;
+  state.gameplay.debug.debugGameplayHitDist = hit.hit ? hit.distance : 0.0f;
+  state.gameplay.debug.debugGameplayHitKind = kind ? kind : "";
+  state.gameplay.debug.debugGameplayMissReason = hit.hit ? "" : (missReason ? missReason : "");
+  state.gameplay.debug.debugGameplayHitName.clear();
   if (hit.entityId != 0 && reg.has<NameComponent>(hit.entityId))
-    state.debugGameplayHitName = reg.get<NameComponent>(hit.entityId).name;
+    state.gameplay.debug.debugGameplayHitName = reg.get<NameComponent>(hit.entityId).name;
 
-  state.debugGrabHitId = hit.entityId;
-  state.debugGrabHitDist = hit.hit ? hit.distance : 0.0f;
-  state.debugGrabHitName = state.debugGameplayHitName;
+  state.gameplay.debug.debugGrabHitId = hit.entityId;
+  state.gameplay.debug.debugGrabHitDist = hit.hit ? hit.distance : 0.0f;
+  state.gameplay.debug.debugGrabHitName = state.gameplay.debug.debugGameplayHitName;
 }
 
 bool raycastTerrain(const TerrainSystem &terrain, const glm::vec3 &origin,
@@ -340,12 +340,12 @@ bool raycastTerrain(const TerrainSystem &terrain, const glm::vec3 &origin,
 void beginGrab(AppState &state, Registry &reg, const TransformComponent &camTr,
                const glm::vec3 &front) {
   GameplayHit hit =
-      gameplayRaycast(state, camTr.position, front, 20.0f, state.playerId, 0.2f);
+      gameplayRaycast(state, camTr.position, front, 20.0f, state.gameplay.playerId, 0.2f);
   setGameplayDebug(state, reg, hit, "Grab", "No grabbable hit");
   if (!hit.hit || hit.entityId == 0 || !reg.has<TransformComponent>(hit.entityId))
     return;
 
-  bool canGrab = hit.entityId != state.playerId;
+  bool canGrab = hit.entityId != state.gameplay.playerId;
   if (reg.has<MeshComponent>(hit.entityId)) {
     const auto &mesh = reg.get<MeshComponent>(hit.entityId);
     if (mesh.isTerrain || mesh.isViewModel)
@@ -354,114 +354,114 @@ void beginGrab(AppState &state, Registry &reg, const TransformComponent &camTr,
   if (!canGrab)
     return;
 
-  state.grabbedEntityId = hit.entityId;
-  state.grabbedDistance = std::max(1.0f, hit.distance);
-  state.grabbedHadRigidbody = false;
-  state.grabbedPrevBodyType = 0;
-  state.grabbedIsTreeInstance = false;
-  state.grabbedPrefab.clear();
-  state.grabbedInstanceIndex = 0;
-  state.grabbedBaseMatrix = glm::mat4(1.0f);
+  state.gameplay.grab.grabbedEntityId = hit.entityId;
+  state.gameplay.grab.grabbedDistance = std::max(1.0f, hit.distance);
+  state.gameplay.grab.grabbedHadRigidbody = false;
+  state.gameplay.grab.grabbedPrevBodyType = 0;
+  state.gameplay.grab.grabbedIsTreeInstance = false;
+  state.gameplay.grab.grabbedPrefab.clear();
+  state.gameplay.grab.grabbedInstanceIndex = 0;
+  state.gameplay.grab.grabbedBaseMatrix = glm::mat4(1.0f);
 
   if (reg.has<RigidbodyComponent>(hit.entityId)) {
     auto &rb = reg.get<RigidbodyComponent>(hit.entityId);
-    state.grabbedHadRigidbody = true;
-    state.grabbedPrevBodyType = static_cast<int>(rb.type);
+    state.gameplay.grab.grabbedHadRigidbody = true;
+    state.gameplay.grab.grabbedPrevBodyType = static_cast<int>(rb.type);
     if (rb.type == RigidbodyComponent::Type::Static)
       rb.type = RigidbodyComponent::Type::Kinematic;
   }
 
   if (reg.has<TreeComponent>(hit.entityId)) {
     auto &tree = reg.get<TreeComponent>(hit.entityId);
-    state.grabbedIsTreeInstance = true;
-    state.grabbedPrefab = tree.prefabName;
-    state.grabbedInstanceIndex = tree.instanceIndex;
+    state.gameplay.grab.grabbedIsTreeInstance = true;
+    state.gameplay.grab.grabbedPrefab = tree.prefabName;
+    state.gameplay.grab.grabbedInstanceIndex = tree.instanceIndex;
     glm::mat4 instM;
     if (state.terrainSystem.getPrefabInstanceMatrix(tree.prefabName,
                                                     tree.instanceIndex, instM)) {
-      state.grabbedBaseMatrix = instM;
-      state.grabbedOffset = glm::vec3(instM[3]) - camTr.position;
+      state.gameplay.grab.grabbedBaseMatrix = instM;
+      state.gameplay.grab.grabbedOffset = glm::vec3(instM[3]) - camTr.position;
       return;
     }
   }
 
-  state.grabbedOffset = front * state.grabbedDistance;
+  state.gameplay.grab.grabbedOffset = front * state.gameplay.grab.grabbedDistance;
 }
 
 void updateGrab(AppState &state, Registry &reg, float dt, const glm::vec3 &front,
                 const glm::vec3 &right, const glm::vec3 &up) {
-  if (state.grabbedEntityId == 0)
+  if (state.gameplay.grab.grabbedEntityId == 0)
     return;
-  if (!reg.has<TransformComponent>(state.grabbedEntityId) ||
-      state.playerId == 0 || !reg.has<TransformComponent>(state.playerId)) {
-    state.grabbedEntityId = 0;
+  if (!reg.has<TransformComponent>(state.gameplay.grab.grabbedEntityId) ||
+      state.gameplay.playerId == 0 || !reg.has<TransformComponent>(state.gameplay.playerId)) {
+    state.gameplay.grab.grabbedEntityId = 0;
     return;
   }
 
-  auto &grabTr = reg.get<TransformComponent>(state.grabbedEntityId);
-  const auto &camTr = reg.get<TransformComponent>(state.playerId);
-  const float dragScale = 0.01f * state.grabbedDistance;
-  state.grabbedOffset += right * (-state.debugMouseDX) * dragScale;
-  state.grabbedOffset += up * (state.debugMouseDY) * dragScale;
+  auto &grabTr = reg.get<TransformComponent>(state.gameplay.grab.grabbedEntityId);
+  const auto &camTr = reg.get<TransformComponent>(state.gameplay.playerId);
+  const float dragScale = 0.01f * state.gameplay.grab.grabbedDistance;
+  state.gameplay.grab.grabbedOffset += right * (-state.gameplay.debug.debugMouseDX) * dragScale;
+  state.gameplay.grab.grabbedOffset += up * (state.gameplay.debug.debugMouseDY) * dragScale;
 
-  const glm::vec3 targetPos = camTr.position + state.grabbedOffset;
+  const glm::vec3 targetPos = camTr.position + state.gameplay.grab.grabbedOffset;
   const glm::vec3 oldPos = grabTr.position;
   const glm::vec3 delta = targetPos - oldPos;
   const float invDt = dt > 0.0001f ? 1.0f / dt : 0.0f;
-  state.grabbedReleaseVelocity = delta * invDt;
+  state.gameplay.grab.grabbedReleaseVelocity = delta * invDt;
 
-  if (reg.has<RigidbodyComponent>(state.grabbedEntityId)) {
-    auto &rb = reg.get<RigidbodyComponent>(state.grabbedEntityId);
+  if (reg.has<RigidbodyComponent>(state.gameplay.grab.grabbedEntityId)) {
+    auto &rb = reg.get<RigidbodyComponent>(state.gameplay.grab.grabbedEntityId);
     rb.pendingLinearVelocity = delta * invDt * 0.85f;
     rb.setLinearVelocity = true;
   }
 
   grabTr.position = targetPos;
 
-  state.debugGrabPrefab.clear();
-  state.debugGrabInstance = -1;
-  state.debugGrabMoved = false;
-  if (reg.has<TreeComponent>(state.grabbedEntityId)) {
-    auto &tree = reg.get<TreeComponent>(state.grabbedEntityId);
-    state.debugGrabPrefab = tree.prefabName;
-    state.debugGrabInstance = static_cast<int>(tree.instanceIndex);
-    glm::mat4 instM = state.grabbedBaseMatrix;
+  state.gameplay.debug.debugGrabPrefab.clear();
+  state.gameplay.debug.debugGrabInstance = -1;
+  state.gameplay.debug.debugGrabMoved = false;
+  if (reg.has<TreeComponent>(state.gameplay.grab.grabbedEntityId)) {
+    auto &tree = reg.get<TreeComponent>(state.gameplay.grab.grabbedEntityId);
+    state.gameplay.debug.debugGrabPrefab = tree.prefabName;
+    state.gameplay.debug.debugGrabInstance = static_cast<int>(tree.instanceIndex);
+    glm::mat4 instM = state.gameplay.grab.grabbedBaseMatrix;
     instM[3] = glm::vec4(targetPos, 1.0f);
-    state.debugGrabMoved =
+    state.gameplay.debug.debugGrabMoved =
         state.terrainSystem.setPrefabInstanceMatrix(tree.prefabName,
                                                     tree.instanceIndex, instM);
   }
 }
 
 void endGrab(AppState &state, Registry &reg) {
-  if (state.grabbedEntityId != 0 && reg.has<TreeComponent>(state.grabbedEntityId)) {
-    if (state.terrainSystem.convertTreeToEntity(state.grabbedEntityId)) {
+  if (state.gameplay.grab.grabbedEntityId != 0 && reg.has<TreeComponent>(state.gameplay.grab.grabbedEntityId)) {
+    if (state.terrainSystem.convertTreeToEntity(state.gameplay.grab.grabbedEntityId)) {
       RigidbodyComponent *rb = nullptr;
-      if (reg.has<RigidbodyComponent>(state.grabbedEntityId))
-        rb = &reg.get<RigidbodyComponent>(state.grabbedEntityId);
+      if (reg.has<RigidbodyComponent>(state.gameplay.grab.grabbedEntityId))
+        rb = &reg.get<RigidbodyComponent>(state.gameplay.grab.grabbedEntityId);
       else
-        rb = &reg.emplace<RigidbodyComponent>(state.grabbedEntityId);
+        rb = &reg.emplace<RigidbodyComponent>(state.gameplay.grab.grabbedEntityId);
       rb->type = RigidbodyComponent::Type::Dynamic;
       rb->lockRotation = false;
-      rb->pendingLinearVelocity = state.grabbedReleaseVelocity;
+      rb->pendingLinearVelocity = state.gameplay.grab.grabbedReleaseVelocity;
       rb->setLinearVelocity = true;
     }
   }
 
-  if (state.grabbedEntityId != 0 && state.grabbedHadRigidbody &&
-      reg.has<RigidbodyComponent>(state.grabbedEntityId)) {
-    auto &rb = reg.get<RigidbodyComponent>(state.grabbedEntityId);
-    rb.type = static_cast<RigidbodyComponent::Type>(state.grabbedPrevBodyType);
+  if (state.gameplay.grab.grabbedEntityId != 0 && state.gameplay.grab.grabbedHadRigidbody &&
+      reg.has<RigidbodyComponent>(state.gameplay.grab.grabbedEntityId)) {
+    auto &rb = reg.get<RigidbodyComponent>(state.gameplay.grab.grabbedEntityId);
+    rb.type = static_cast<RigidbodyComponent::Type>(state.gameplay.grab.grabbedPrevBodyType);
   }
 
-  state.grabbedEntityId = 0;
-  state.grabbedHadRigidbody = false;
-  state.grabbedPrevBodyType = 0;
-  state.grabbedIsTreeInstance = false;
-  state.grabbedPrefab.clear();
-  state.grabbedInstanceIndex = 0;
-  state.grabbedBaseMatrix = glm::mat4(1.0f);
-  state.grabbedReleaseVelocity = glm::vec3(0.0f);
+  state.gameplay.grab.grabbedEntityId = 0;
+  state.gameplay.grab.grabbedHadRigidbody = false;
+  state.gameplay.grab.grabbedPrevBodyType = 0;
+  state.gameplay.grab.grabbedIsTreeInstance = false;
+  state.gameplay.grab.grabbedPrefab.clear();
+  state.gameplay.grab.grabbedInstanceIndex = 0;
+  state.gameplay.grab.grabbedBaseMatrix = glm::mat4(1.0f);
+  state.gameplay.grab.grabbedReleaseVelocity = glm::vec3(0.0f);
 }
 } // namespace
 
@@ -469,23 +469,23 @@ void PlayerInteractionSystem::reset() { mCraterCooldown = 0.0f; }
 
 void PlayerInteractionSystem::update(AppState &state, float dt) {
   Registry &reg = state.scene.registry();
-  if (state.playerId == 0 || !reg.has<CameraComponent>(state.playerId) ||
-      !reg.has<TransformComponent>(state.playerId) ||
-      !isAlive(reg, state.playerId)) {
-    state.playerId = findPlayerCamera(reg);
+  if (state.gameplay.playerId == 0 || !reg.has<CameraComponent>(state.gameplay.playerId) ||
+      !reg.has<TransformComponent>(state.gameplay.playerId) ||
+      !isAlive(reg, state.gameplay.playerId)) {
+    state.gameplay.playerId = findPlayerCamera(reg);
   }
-  if (state.playerId == 0 || !reg.has<TransformComponent>(state.playerId))
+  if (state.gameplay.playerId == 0 || !reg.has<TransformComponent>(state.gameplay.playerId))
     return;
 
-  const auto &camTr = reg.get<TransformComponent>(state.playerId);
+  const auto &camTr = reg.get<TransformComponent>(state.gameplay.playerId);
   const glm::vec3 front = cameraForwardFromRotation(camTr.rotation);
   glm::vec3 right, up;
   cameraBasis(front, right, up);
 
-  state.debugCamFront = front;
-  state.debugCamUp = glm::vec3(0.0f, 1.0f, 0.0f);
-  state.debugGameplayAimOrigin = camTr.position;
-  state.debugGameplayAimDirection = front;
+  state.gameplay.debug.debugCamFront = front;
+  state.gameplay.debug.debugCamUp = glm::vec3(0.0f, 1.0f, 0.0f);
+  state.gameplay.debug.debugGameplayAimOrigin = camTr.position;
+  state.gameplay.debug.debugGameplayAimDirection = front;
 
   const bool primaryDown = Mouse::button(GLFW_MOUSE_BUTTON_LEFT);
   const bool primaryPressed = Mouse::buttonWentDown(GLFW_MOUSE_BUTTON_LEFT);
@@ -493,15 +493,15 @@ void PlayerInteractionSystem::update(AppState &state, float dt) {
   const bool grabModifier =
       Keyboard::key(GLFW_KEY_LEFT_SHIFT) || Keyboard::key(GLFW_KEY_RIGHT_SHIFT);
 
-  if (primaryPressed && grabModifier && state.grabbedEntityId == 0) {
+  if (primaryPressed && grabModifier && state.gameplay.grab.grabbedEntityId == 0) {
     beginGrab(state, reg, camTr, front);
   } else if (primaryPressed && !grabModifier &&
-             state.activeSlot == AppState::HotbarSlot::Axe && state.axeEnabled &&
-             state.grabbedEntityId == 0) {
+             state.gameplay.activeSlot == GameplayState::HotbarSlot::Axe && state.gameplay.viewmodel.axeEnabled &&
+             state.gameplay.grab.grabbedEntityId == 0) {
     constexpr float kLaserDistance = 240.0f;
     constexpr float kLaserRadius = 0.35f;
     GameplayHit hit = gameplayRaycast(state, camTr.position, front,
-                                      kLaserDistance, state.playerId,
+                                      kLaserDistance, state.gameplay.playerId,
                                       kLaserRadius);
 
     const glm::vec3 visualStart = axeLaserStart(state, camTr, front);
@@ -510,7 +510,7 @@ void PlayerInteractionSystem::update(AppState &state, float dt) {
     state.projectiles.setLaserBeam(visualStart, visualEnd, hit.hit,
                                    hit.entityId, hit.normal, 0.24f);
 
-    state.debugGameplayHitPosition = visualEnd;
+    state.gameplay.debug.debugGameplayHitPosition = visualEnd;
     const bool damagedTree = damageTreeHit(state, reg, hit, front, 3.0f);
     const bool damagedDestructible =
         !damagedTree && damageDestructibleHit(state, reg, hit, front, 100.0f);
@@ -521,7 +521,7 @@ void PlayerInteractionSystem::update(AppState &state, float dt) {
                      "Laser missed every gameplay target");
   }
 
-  if (state.grabbedEntityId != 0 && primaryDown)
+  if (state.gameplay.grab.grabbedEntityId != 0 && primaryDown)
     updateGrab(state, reg, dt, front, right, up);
 
   if (primaryReleased)
@@ -536,7 +536,7 @@ void PlayerInteractionSystem::update(AppState &state, float dt) {
   if (secondaryDown && mCraterCooldown <= 0.0f) {
     constexpr float kToolDistance = 100.0f;
     GameplayHit hit = gameplayRaycast(state, camTr.position, front,
-                                      kToolDistance, state.playerId, 0.25f);
+                                      kToolDistance, state.gameplay.playerId, 0.25f);
     const bool damagedTree = damageTreeHit(state, reg, hit, front, 1.0f);
     const bool damaged =
         damagedTree || damageDestructibleHit(state, reg, hit, front, 100.0f);

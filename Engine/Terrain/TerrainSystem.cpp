@@ -331,7 +331,31 @@ static constexpr uint32_t INVALID_TREE_INSTANCE_INDEX =
     std::numeric_limits<uint32_t>::max();
 
 static bool isInteractiveTreePrefab(const std::string &prefabName) {
-  return prefabName == "prefab_pine";
+  return prefabName == "prefab_pine" || prefabName == "prefab_oak" ||
+         prefabName == "prefab_birch";
+}
+
+static TreeType chooseForestTreeType(const PerlinNoise &noise, float worldX,
+                                     float worldZ) {
+  const float species =
+      noise.noise(worldX * 0.023f + 91.7f, worldZ * 0.023f - 34.2f) * 0.5f +
+      0.5f;
+  if (species < 0.58f)
+    return TreeType::Pine;
+  if (species < 0.84f)
+    return TreeType::Oak;
+  return TreeType::Birch;
+}
+
+static const char *treePrefabName(TreeType type) {
+  switch (type) {
+  case TreeType::Oak:
+    return "prefab_oak";
+  case TreeType::Birch:
+    return "prefab_birch";
+  default:
+    return "prefab_pine";
+  }
 }
 
 static bool shouldSpawnInteractiveTree(const TerrainSettings &settings,
@@ -372,7 +396,8 @@ static bool chunkNeedsCollision(const TerrainSettings &settings,
 // Generate a tapered cylinder (trunk shapes)
 static void addCylinder(std::vector<OBJModel::VertexData> &verts,
                         glm::vec3 base, float radiusBot, float radiusTop,
-                        float height, int segments, float biomeUV) {
+                        float height, int segments, float biomeUV,
+                        float materialUV = 0.0f) {
   for (int i = 0; i < segments; ++i) {
     float a0 = (float)i / segments * TWO_PI;
     float a1 = (float)(i + 1) / segments * TWO_PI;
@@ -389,7 +414,7 @@ static void addCylinder(std::vector<OBJModel::VertexData> &verts,
     float slope = (radiusBot - radiusTop) / height;
     glm::vec3 nbl = glm::normalize(glm::vec3(c0, slope, s0));
     glm::vec3 nbr = glm::normalize(glm::vec3(c1, slope, s1));
-    glm::vec2 uv(0.0f, biomeUV);
+    glm::vec2 uv(materialUV, biomeUV);
 
     verts.push_back({bl, uv, nbl});
     verts.push_back({tl, uv, nbl});
@@ -402,7 +427,8 @@ static void addCylinder(std::vector<OBJModel::VertexData> &verts,
 
 // Generate a cone (canopy shapes)
 static void addCone(std::vector<OBJModel::VertexData> &verts, glm::vec3 base,
-                    float radius, float height, int segments, float biomeUV) {
+                    float radius, float height, int segments, float biomeUV,
+                    float materialUV = 0.0f) {
   glm::vec3 tip = base + glm::vec3(0.0f, height, 0.0f);
   float slopeAngle = std::atan2(radius, height);
   float ny = std::sin(slopeAngle);
@@ -420,7 +446,7 @@ static void addCone(std::vector<OBJModel::VertexData> &verts, glm::vec3 base,
     glm::vec3 n0 = glm::normalize(glm::vec3(nr * c0, ny, nr * s0));
     glm::vec3 n1 = glm::normalize(glm::vec3(nr * c1, ny, nr * s1));
     glm::vec3 nTip = glm::normalize(n0 + n1);
-    glm::vec2 uv(0.0f, biomeUV);
+    glm::vec2 uv(materialUV, biomeUV);
 
     verts.push_back({p0, uv, n0});
     verts.push_back({tip, uv, nTip});
@@ -436,7 +462,7 @@ static void addCone(std::vector<OBJModel::VertexData> &verts, glm::vec3 base,
                  base.z + radius * std::sin(a0));
     glm::vec3 p1(base.x + radius * std::cos(a1), base.y,
                  base.z + radius * std::sin(a1));
-    glm::vec2 uv(0.0f, biomeUV);
+    glm::vec2 uv(materialUV, biomeUV);
     verts.push_back({base, uv, nDown});
     verts.push_back({p1, uv, nDown});
     verts.push_back({p0, uv, nDown});
@@ -447,7 +473,8 @@ static void addCone(std::vector<OBJModel::VertexData> &verts, glm::vec3 base,
 static void addSphere(std::vector<OBJModel::VertexData> &verts,
                       glm::vec3 center, float radius, int rings, int sectors,
                       float biomeUV, float roughness = 0.0f,
-                      const PerlinNoise *noiseGen = nullptr) {
+                      const PerlinNoise *noiseGen = nullptr,
+                      float materialUV = 0.0f) {
   for (int r = 0; r < rings; ++r) {
     float phi0 = PI * (float)r / rings;
     float phi1 = PI * (float)(r + 1) / rings;
@@ -476,7 +503,7 @@ static void addSphere(std::vector<OBJModel::VertexData> &verts,
       glm::vec3 n10 = glm::normalize(p10 - center);
       glm::vec3 n01 = glm::normalize(p01 - center);
       glm::vec3 n11 = glm::normalize(p11 - center);
-      glm::vec2 uv(0.0f, biomeUV);
+      glm::vec2 uv(materialUV, biomeUV);
 
       verts.push_back({p00, uv, n00});
       verts.push_back({p01, uv, n01});
@@ -491,9 +518,9 @@ static void addSphere(std::vector<OBJModel::VertexData> &verts,
 // Generate a flat quad (water planes, flat decor)
 static void addQuadPlane(std::vector<OBJModel::VertexData> &verts,
                          glm::vec3 center, float halfW, float halfZ,
-                         float biomeUV) {
+                         float biomeUV, float materialUV = 0.0f) {
   glm::vec3 n(0, 1, 0);
-  glm::vec2 uv(0.0f, biomeUV);
+  glm::vec2 uv(materialUV, biomeUV);
   glm::vec3 a(center.x - halfW, center.y, center.z - halfZ);
   glm::vec3 b(center.x + halfW, center.y, center.z - halfZ);
   glm::vec3 c(center.x + halfW, center.y, center.z + halfZ);
@@ -509,12 +536,12 @@ static void addQuadPlane(std::vector<OBJModel::VertexData> &verts,
 
 // Generate a box (for branches, cactus arms)
 static void addBox(std::vector<OBJModel::VertexData> &verts, glm::vec3 minC,
-                   glm::vec3 maxC, float biomeUV) {
+                   glm::vec3 maxC, float biomeUV, float materialUV = 0.0f) {
   glm::vec3 corners[8] = {{minC.x, minC.y, minC.z}, {maxC.x, minC.y, minC.z},
                           {maxC.x, maxC.y, minC.z}, {minC.x, maxC.y, minC.z},
                           {minC.x, minC.y, maxC.z}, {maxC.x, minC.y, maxC.z},
                           {maxC.x, maxC.y, maxC.z}, {minC.x, maxC.y, maxC.z}};
-  glm::vec2 uv(0.0f, biomeUV);
+  glm::vec2 uv(materialUV, biomeUV);
   auto face = [&](int a, int b, int c, int d, glm::vec3 n) {
     verts.push_back({corners[a], uv, n});
     verts.push_back({corners[b], uv, n});
@@ -531,9 +558,234 @@ static void addBox(std::vector<OBJModel::VertexData> &verts, glm::vec3 minC,
   face(4, 5, 1, 0, {0, -1, 0}); // bottom
 }
 
+static void addCylinderBetween(std::vector<OBJModel::VertexData> &verts,
+                               glm::vec3 a, glm::vec3 b, float radiusA,
+                               float radiusB, int segments, float biomeUV,
+                               float materialUV) {
+  glm::vec3 axis = b - a;
+  const float height = glm::length(axis);
+  if (height < 0.001f)
+    return;
+  axis /= height;
+  glm::vec3 tangent =
+      std::abs(axis.y) < 0.92f ? glm::vec3(0.0f, 1.0f, 0.0f)
+                               : glm::vec3(1.0f, 0.0f, 0.0f);
+  glm::vec3 right = glm::normalize(glm::cross(tangent, axis));
+  glm::vec3 forward = glm::normalize(glm::cross(axis, right));
+  glm::vec2 uv(materialUV, biomeUV);
+
+  for (int i = 0; i < segments; ++i) {
+    const float a0 = (float)i / segments * TWO_PI;
+    const float a1 = (float)(i + 1) / segments * TWO_PI;
+    const glm::vec3 r0 = right * std::cos(a0) + forward * std::sin(a0);
+    const glm::vec3 r1 = right * std::cos(a1) + forward * std::sin(a1);
+    const glm::vec3 p0 = a + r0 * radiusA;
+    const glm::vec3 p1 = a + r1 * radiusA;
+    const glm::vec3 q0 = b + r0 * radiusB;
+    const glm::vec3 q1 = b + r1 * radiusB;
+    const glm::vec3 n0 = glm::normalize(r0 + axis * ((radiusA - radiusB) / height));
+    const glm::vec3 n1 = glm::normalize(r1 + axis * ((radiusA - radiusB) / height));
+
+    verts.push_back({p0, uv, n0});
+    verts.push_back({q0, uv, n0});
+    verts.push_back({p1, uv, n1});
+    verts.push_back({p1, uv, n1});
+    verts.push_back({q0, uv, n0});
+    verts.push_back({q1, uv, n1});
+  }
+}
+
+static void addEllipsoid(std::vector<OBJModel::VertexData> &verts,
+                         glm::vec3 center, glm::vec3 radii, int rings,
+                         int sectors, float biomeUV, float materialUV,
+                         float yaw = 0.0f) {
+  const float cy = std::cos(yaw);
+  const float sy = std::sin(yaw);
+  auto rotateY = [&](glm::vec3 p) {
+    return glm::vec3(p.x * cy + p.z * sy, p.y, -p.x * sy + p.z * cy);
+  };
+  glm::vec2 uv(materialUV, biomeUV);
+
+  for (int r = 0; r < rings; ++r) {
+    const float phi0 = PI * (float)r / rings;
+    const float phi1 = PI * (float)(r + 1) / rings;
+    for (int s = 0; s < sectors; ++s) {
+      const float theta0 = TWO_PI * (float)s / sectors;
+      const float theta1 = TWO_PI * (float)(s + 1) / sectors;
+
+      auto point = [&](float phi, float theta) {
+        const float sp = std::sin(phi);
+        glm::vec3 dir(sp * std::cos(theta), std::cos(phi),
+                      sp * std::sin(theta));
+        return center + rotateY(dir * radii);
+      };
+      auto normal = [&](glm::vec3 p) {
+        glm::vec3 local = p - center;
+        return glm::normalize(glm::vec3(local.x / std::max(0.001f, radii.x),
+                                        local.y / std::max(0.001f, radii.y),
+                                        local.z / std::max(0.001f, radii.z)));
+      };
+
+      const glm::vec3 p00 = point(phi0, theta0);
+      const glm::vec3 p10 = point(phi0, theta1);
+      const glm::vec3 p01 = point(phi1, theta0);
+      const glm::vec3 p11 = point(phi1, theta1);
+      verts.push_back({p00, uv, normal(p00)});
+      verts.push_back({p01, uv, normal(p01)});
+      verts.push_back({p10, uv, normal(p10)});
+      verts.push_back({p10, uv, normal(p10)});
+      verts.push_back({p01, uv, normal(p01)});
+      verts.push_back({p11, uv, normal(p11)});
+    }
+  }
+}
+
+static void addPineTree(std::vector<OBJModel::VertexData> &verts) {
+  constexpr float bark = 2.05f;
+  constexpr float pineNeedles = 2.18f;
+  addCylinder(verts, {0.0f, 0.0f, 0.0f}, 0.28f, 0.18f, 5.6f, 9, 0.4f, bark);
+  addCylinderBetween(verts, {0.0f, 1.55f, 0.0f}, {1.05f, 2.10f, 0.20f}, 0.10f,
+                     0.035f, 6, 0.4f, bark);
+  addCylinderBetween(verts, {0.0f, 2.10f, 0.0f}, {-0.95f, 2.65f, -0.25f},
+                     0.09f, 0.03f, 6, 0.4f, bark);
+  addCylinderBetween(verts, {0.0f, 2.70f, 0.0f}, {0.72f, 3.25f, -0.55f},
+                     0.075f, 0.025f, 6, 0.4f, bark);
+  addCone(verts, {-0.08f, 1.15f, 0.05f}, 1.80f, 2.25f, 10, 0.4f,
+          pineNeedles);
+  addCone(verts, {0.14f, 2.10f, -0.10f}, 1.46f, 2.05f, 10, 0.4f,
+          pineNeedles);
+  addCone(verts, {-0.05f, 3.05f, 0.04f}, 1.08f, 1.75f, 10, 0.4f,
+          pineNeedles);
+  addCone(verts, {0.08f, 4.00f, -0.05f}, 0.68f, 1.40f, 9, 0.4f,
+          pineNeedles);
+}
+
+static void addOakTree(std::vector<OBJModel::VertexData> &verts) {
+  constexpr float bark = 2.05f;
+  constexpr float broadLeaf = 2.32f;
+  addCylinder(verts, {0.0f, 0.0f, 0.0f}, 0.36f, 0.25f, 3.45f, 9, 0.4f, bark);
+  addCylinderBetween(verts, {0.0f, 2.15f, 0.0f}, {1.18f, 3.20f, 0.20f}, 0.15f,
+                     0.06f, 7, 0.4f, bark);
+  addCylinderBetween(verts, {0.0f, 2.35f, 0.0f}, {-1.10f, 3.12f, -0.35f},
+                     0.14f, 0.055f, 7, 0.4f, bark);
+  addCylinderBetween(verts, {0.0f, 2.70f, 0.0f}, {0.30f, 3.82f, -1.05f},
+                     0.12f, 0.045f, 7, 0.4f, bark);
+  addEllipsoid(verts, {0.00f, 4.00f, 0.00f}, {1.60f, 1.22f, 1.45f}, 5, 8,
+               0.4f, broadLeaf, 0.30f);
+  addEllipsoid(verts, {1.02f, 3.65f, 0.10f}, {1.08f, 0.86f, 0.98f}, 4, 8,
+               0.4f, broadLeaf, -0.45f);
+  addEllipsoid(verts, {-0.92f, 3.60f, -0.28f}, {1.00f, 0.82f, 0.94f}, 4, 8,
+               0.4f, broadLeaf, 0.55f);
+  addEllipsoid(verts, {0.22f, 4.42f, -0.78f}, {0.98f, 0.78f, 0.88f}, 4, 8,
+               0.4f, broadLeaf, 1.10f);
+}
+
+static void addBirchTree(std::vector<OBJModel::VertexData> &verts) {
+  constexpr float birchBark = 2.48f;
+  constexpr float birchLeaf = 2.36f;
+  addCylinder(verts, {0.0f, 0.0f, 0.0f}, 0.18f, 0.10f, 5.25f, 8, 0.4f,
+              birchBark);
+  addCylinderBetween(verts, {0.0f, 2.15f, 0.0f}, {0.76f, 3.25f, 0.18f}, 0.07f,
+                     0.026f, 6, 0.4f, birchBark);
+  addCylinderBetween(verts, {0.0f, 3.00f, 0.0f}, {-0.62f, 4.05f, -0.25f},
+                     0.06f, 0.022f, 6, 0.4f, birchBark);
+  addEllipsoid(verts, {0.00f, 4.25f, 0.0f}, {0.86f, 1.25f, 0.76f}, 5, 7,
+               0.4f, birchLeaf, 0.15f);
+  addEllipsoid(verts, {0.58f, 3.75f, 0.05f}, {0.62f, 0.92f, 0.52f}, 4, 7,
+               0.4f, birchLeaf, -0.65f);
+  addEllipsoid(verts, {-0.44f, 4.75f, -0.18f}, {0.54f, 0.82f, 0.48f}, 4, 7,
+               0.4f, birchLeaf, 0.70f);
+}
+
+static void addDeadTree(std::vector<OBJModel::VertexData> &verts) {
+  constexpr float deadwood = 2.62f;
+  addCylinder(verts, {0.0f, 0.0f, 0.0f}, 0.24f, 0.13f, 3.9f, 7, 1.0f,
+              deadwood);
+  addCylinderBetween(verts, {0.0f, 1.65f, 0.0f}, {0.85f, 2.45f, -0.20f},
+                     0.09f, 0.025f, 5, 1.0f, deadwood);
+  addCylinderBetween(verts, {0.0f, 2.18f, 0.0f}, {-0.70f, 3.12f, 0.35f},
+                     0.08f, 0.020f, 5, 1.0f, deadwood);
+  addCylinderBetween(verts, {0.0f, 2.90f, 0.0f}, {0.24f, 3.85f, 0.18f},
+                     0.06f, 0.0f, 5, 1.0f, deadwood);
+}
+
 // ═══════════════════════════════════════════════════════════════
 // INITIALIZATION & LIFECYCLE
 // ═══════════════════════════════════════════════════════════════
+
+static void addGrassBlade(std::vector<OBJModel::VertexData> &verts,
+                          glm::vec3 root, float width, float height,
+                          float bend, float yaw, float materialUV) {
+  const float c = std::cos(yaw);
+  const float s = std::sin(yaw);
+  const glm::vec3 right(c, 0.0f, s);
+  const glm::vec3 forward(-s, 0.0f, c);
+  const glm::vec3 mid = root + glm::vec3(0.0f, height * 0.52f, 0.0f) +
+                        forward * (bend * 0.36f);
+  const glm::vec3 tip = root + glm::vec3(0.0f, height, 0.0f) +
+                        forward * bend;
+  const glm::vec3 baseL = root - right * (width * 0.5f);
+  const glm::vec3 baseR = root + right * (width * 0.5f);
+  const glm::vec3 midL = mid - right * (width * 0.24f);
+  const glm::vec3 midR = mid + right * (width * 0.24f);
+  const glm::vec3 normal = glm::normalize(glm::cross(midR - baseL, tip - baseL));
+  const glm::vec2 uv(materialUV, 0.2f);
+
+  verts.push_back({baseL, uv, normal});
+  verts.push_back({midL, uv, normal});
+  verts.push_back({baseR, uv, normal});
+  verts.push_back({baseR, uv, normal});
+  verts.push_back({midL, uv, normal});
+  verts.push_back({midR, uv, normal});
+  verts.push_back({midL, uv, normal});
+  verts.push_back({tip, uv, normal});
+  verts.push_back({midR, uv, normal});
+}
+
+static void addGrassCluster(std::vector<OBJModel::VertexData> &verts) {
+  constexpr float grassBlade = 2.72f;
+  constexpr int bladeCount = 12;
+  for (int i = 0; i < bladeCount; ++i) {
+    const float t = (float)i / (float)bladeCount;
+    const float yaw = t * TWO_PI + std::sin(t * 17.0f) * 0.55f;
+    const float ring = 0.05f + 0.24f * std::fmod(t * 3.17f, 1.0f);
+    const glm::vec3 root(std::cos(yaw) * ring, 0.0f, std::sin(yaw) * ring);
+    const float height = 0.62f + 0.44f * std::fmod(t * 5.71f + 0.18f, 1.0f);
+    const float width = 0.055f + 0.028f * std::fmod(t * 7.13f + 0.33f, 1.0f);
+    const float bend = 0.10f + 0.18f * std::fmod(t * 4.41f + 0.51f, 1.0f);
+    addGrassBlade(verts, root, width, height, bend, yaw, grassBlade);
+  }
+
+  addGrassBlade(verts, {0.06f, 0.0f, -0.05f}, 0.075f, 1.18f, 0.18f, 0.45f,
+                grassBlade);
+  addGrassBlade(verts, {-0.08f, 0.0f, 0.04f}, 0.065f, 1.02f, 0.22f, 2.65f,
+                grassBlade);
+}
+
+static void addFlower(std::vector<OBJModel::VertexData> &verts) {
+  constexpr float grassStem = 2.76f;
+  constexpr float flowerPetal = 2.84f;
+  addCylinder(verts, {0.0f, 0.0f, 0.0f}, 0.018f, 0.012f, 0.72f, 5, 0.2f,
+              grassStem);
+
+  const glm::vec3 center(0.0f, 0.76f, 0.0f);
+  for (int i = 0; i < 6; ++i) {
+    const float yaw = (float)i / 6.0f * TWO_PI;
+    const glm::vec3 dir(std::cos(yaw), 0.18f, std::sin(yaw));
+    const glm::vec3 side(-std::sin(yaw), 0.0f, std::cos(yaw));
+    const glm::vec3 tip = center + glm::normalize(dir) * 0.18f;
+    const glm::vec3 left = center + side * 0.045f;
+    const glm::vec3 right = center - side * 0.045f;
+    const glm::vec3 normal = glm::normalize(glm::cross(tip - left, right - left));
+    const glm::vec2 uv(flowerPetal, 0.2f);
+    verts.push_back({center, uv, normal});
+    verts.push_back({left, uv, normal});
+    verts.push_back({tip, uv, normal});
+    verts.push_back({center, uv, normal});
+    verts.push_back({tip, uv, normal});
+    verts.push_back({right, uv, normal});
+  }
+}
 
 TerrainSystem::~TerrainSystem() { shutdown(); }
 
@@ -1761,68 +2013,81 @@ void TerrainSystem::updateInteractiveTreeResidency(int cameraChunkX,
       continue;
     }
 
-    const std::string prefabName = "prefab_pine";
-    auto itMats = chunk.prefabInstanceMatrices.find(prefabName);
-    if (itMats == chunk.prefabInstanceMatrices.end())
-      continue;
-
-    auto &mats = itMats->second;
-    auto &chunkEntities = chunk.prefabInstanceEntities[prefabName];
-    auto &chunkGlobals = chunk.prefabInstanceGlobalIndices[prefabName];
-    if (chunkEntities.size() < mats.size())
-      chunkEntities.resize(mats.size(), 0);
-    if (chunkGlobals.size() < mats.size())
-      chunkGlobals.resize(mats.size(), INVALID_TREE_INSTANCE_INDEX);
-
     int interactiveCount = 0;
-    for (size_t i = 0; i < mats.size(); ++i) {
-      const uint32_t eid = chunkEntities[i];
-      if (eid == 0)
+    const char *treePrefabs[] = {"prefab_pine", "prefab_oak", "prefab_birch"};
+    for (const char *prefabNameC : treePrefabs) {
+      const std::string prefabName = prefabNameC;
+      auto itMats = chunk.prefabInstanceMatrices.find(prefabName);
+      if (itMats == chunk.prefabInstanceMatrices.end())
         continue;
-      if (!reg.has<TreeComponent>(eid) || reg.has<MeshComponent>(eid)) {
-        auto itMap = mPrefabInstanceEntities.find(prefabName);
-        if (itMap != mPrefabInstanceEntities.end() && i < chunkGlobals.size() &&
-            chunkGlobals[i] < itMap->second.size()) {
-          itMap->second[chunkGlobals[i]] = 0;
+
+      auto &mats = itMats->second;
+      auto &chunkEntities = chunk.prefabInstanceEntities[prefabName];
+      auto &chunkGlobals = chunk.prefabInstanceGlobalIndices[prefabName];
+      if (chunkEntities.size() < mats.size())
+        chunkEntities.resize(mats.size(), 0);
+      if (chunkGlobals.size() < mats.size())
+        chunkGlobals.resize(mats.size(), INVALID_TREE_INSTANCE_INDEX);
+
+      for (size_t i = 0; i < mats.size(); ++i) {
+        const uint32_t eid = chunkEntities[i];
+        if (eid == 0)
+          continue;
+        if (!reg.has<TreeComponent>(eid) || reg.has<MeshComponent>(eid)) {
+          auto itMap = mPrefabInstanceEntities.find(prefabName);
+          if (itMap != mPrefabInstanceEntities.end() &&
+              i < chunkGlobals.size() && chunkGlobals[i] < itMap->second.size()) {
+            itMap->second[chunkGlobals[i]] = 0;
+          }
+          chunkEntities[i] = 0;
+          continue;
         }
-        chunkEntities[i] = 0;
-        continue;
+        auto &tree = reg.get<TreeComponent>(eid);
+        if (chunkGlobals[i] != INVALID_TREE_INSTANCE_INDEX)
+          tree.instanceIndex = chunkGlobals[i];
+        tree.chunkInstanceSlot = static_cast<uint32_t>(i);
+        tree.chunkX = coord.x;
+        tree.chunkZ = coord.z;
+        interactiveCount++;
       }
-      auto &tree = reg.get<TreeComponent>(eid);
-      if (chunkGlobals[i] != INVALID_TREE_INSTANCE_INDEX)
-        tree.instanceIndex = chunkGlobals[i];
-      tree.chunkInstanceSlot = static_cast<uint32_t>(i);
-      tree.chunkX = coord.x;
-      tree.chunkZ = coord.z;
-      interactiveCount++;
     }
     chunk.treeCount = interactiveCount;
 
-    for (size_t i = 0; i < mats.size(); ++i) {
-      if (interactiveCount >= std::max(0, mSettings.maxInteractiveTreesPerChunk))
-        break;
-      if (chunkEntities[i] != 0)
+    for (const char *prefabNameC : treePrefabs) {
+      const std::string prefabName = prefabNameC;
+      auto itMats = chunk.prefabInstanceMatrices.find(prefabName);
+      if (itMats == chunk.prefabInstanceMatrices.end())
         continue;
+      auto &mats = itMats->second;
+      auto &chunkEntities = chunk.prefabInstanceEntities[prefabName];
+      auto &chunkGlobals = chunk.prefabInstanceGlobalIndices[prefabName];
+      for (size_t i = 0; i < mats.size(); ++i) {
+        if (interactiveCount >=
+            std::max(0, mSettings.maxInteractiveTreesPerChunk))
+          break;
+        if (chunkEntities[i] != 0)
+          continue;
 
-      const uint32_t globalIndex = chunkGlobals[i];
-      if (globalIndex == INVALID_TREE_INSTANCE_INDEX)
-        continue;
+        const uint32_t globalIndex = chunkGlobals[i];
+        if (globalIndex == INVALID_TREE_INSTANCE_INDEX)
+          continue;
 
-      const glm::vec3 pos = glm::vec3(mats[i][3]);
-      if (!shouldSpawnInteractiveTree(mSettings, cameraChunkX, cameraChunkZ,
-                                      coord.x, coord.z, pos, mTreeNoise,
-                                      interactiveCount)) {
-        continue;
+        const glm::vec3 pos = glm::vec3(mats[i][3]);
+        if (!shouldSpawnInteractiveTree(mSettings, cameraChunkX, cameraChunkZ,
+                                        coord.x, coord.z, pos, mTreeNoise,
+                                        interactiveCount)) {
+          continue;
+        }
+
+        glm::vec3 scale(glm::length(glm::vec3(mats[i][0])),
+                        glm::length(glm::vec3(mats[i][1])),
+                        glm::length(glm::vec3(mats[i][2])));
+        registerTreeInstance(prefabName, globalIndex, i, pos, scale, coord.x,
+                             coord.z, &chunk);
+        chunk.treeCount++;
+        mStats.totalTreeEntities++;
+        interactiveCount++;
       }
-
-      glm::vec3 scale(glm::length(glm::vec3(mats[i][0])),
-                      glm::length(glm::vec3(mats[i][1])),
-                      glm::length(glm::vec3(mats[i][2])));
-      registerTreeInstance(prefabName, globalIndex, i, pos, scale, coord.x,
-                           coord.z, &chunk);
-      chunk.treeCount++;
-      mStats.totalTreeEntities++;
-      interactiveCount++;
     }
   }
 }
@@ -2267,27 +2532,18 @@ void TerrainSystem::initPrefabs() {
 
   // Pine Fallback Process
   if (mPrefabs.find("prefab_pine") == mPrefabs.end()) {
-    addCylinder(verts, {0, 0, 0}, 0.2f, 0.1f, 4.0f, CYLINDER_SEGMENTS, 0.4f);
-    addCone(verts, {0, 2.5f, 0}, 1.5f, 1.5f, CONE_SEGMENTS, 0.4f);
-    addCone(verts, {0, 3.5f, 0}, 1.2f, 1.4f, CONE_SEGMENTS, 0.4f);
-    addCone(verts, {0, 4.5f, 0}, 0.9f, 1.3f, CONE_SEGMENTS, 0.4f);
+    addPineTree(verts);
     addPrefabFromVerts("prefab_pine", verts);
     verts.clear();
   }
 
   // Oak
-  addCylinder(verts, {0, 0, 0}, 0.25f, 0.2f, 3.0f, CYLINDER_SEGMENTS, 0.4f);
-  addSphere(verts, {0, 3.2f, 0}, 2.0f, SPHERE_RINGS, SPHERE_SECTORS, 0.4f);
-  addSphere(verts, {1.2f, 3.0f, 0}, 1.2f, SPHERE_RINGS, SPHERE_SECTORS, 0.4f);
-  addSphere(verts, {-1.0f, 3.0f, 0.8f}, 1.1f, SPHERE_RINGS, SPHERE_SECTORS,
-            0.4f);
+  addOakTree(verts);
   addPrefabFromVerts("prefab_oak", verts);
   verts.clear();
 
   // Birch
-  addCylinder(verts, {0, 0, 0}, 0.1f, 0.08f, 4.5f, CYLINDER_SEGMENTS, 0.4f);
-  addCone(verts, {0, 3.0f, 0}, 1.0f, 1.5f, CONE_SEGMENTS, 0.4f);
-  addCone(verts, {0, 4.0f, 0}, 0.8f, 1.2f, CONE_SEGMENTS, 0.4f);
+  addBirchTree(verts);
   addPrefabFromVerts("prefab_birch", verts);
   verts.clear();
 
@@ -2311,18 +2567,14 @@ void TerrainSystem::initPrefabs() {
 
   // Dead Tree — only if no custom dead tree was loaded
   if (mPrefabs.find("prefab_deadtree") == mPrefabs.end()) {
-    addCylinder(verts, {0, 0, 0}, 0.15f, 0.1f, 3.0f, CYLINDER_SEGMENTS, 1.0f);
-    addBox(verts, {0.0f, 1.5f, 0.1f}, {0.8f, 1.6f, 0.2f}, 1.0f);
-    addBox(verts, {-0.6f, 2.2f, -0.1f}, {0.0f, 2.3f, 0.0f}, 1.0f);
+    addDeadTree(verts);
     addPrefabFromVerts("prefab_deadtree", verts);
     verts.clear();
   }
 
   // Grass Cluster — only if no custom grass was loaded
   if (mPrefabs.find("prefab_grass") == mPrefabs.end()) {
-    addSphere(verts, {0, 0, 0}, 0.4f, SPHERE_RINGS, SPHERE_SECTORS, 0.2f);
-    addSphere(verts, {0.3f, 0, 0.3f}, 0.3f, SPHERE_RINGS, SPHERE_SECTORS, 0.2f);
-    addSphere(verts, {-0.3f, 0, 0}, 0.35f, SPHERE_RINGS, SPHERE_SECTORS, 0.2f);
+    addGrassCluster(verts);
     addPrefabFromVerts("prefab_grass", verts);
     verts.clear();
   }
@@ -2340,8 +2592,7 @@ void TerrainSystem::initPrefabs() {
 
   // Flower — only if no custom flower was loaded
   if (mPrefabs.find("prefab_flower") == mPrefabs.end()) {
-    addCylinder(verts, {0, 0, 0}, 0.02f, 0.02f, 0.8f, CYLINDER_SEGMENTS, 0.2f);
-    addSphere(verts, {0, 0.8f, 0}, 0.15f, SPHERE_RINGS, SPHERE_SECTORS, 0.2f);
+    addFlower(verts);
     addPrefabFromVerts("prefab_flower", verts);
     verts.clear();
   }
@@ -2389,13 +2640,8 @@ void TerrainSystem::spawnTreesForest(int cx, int cz, ChunkData &chunk) {
       if (groundY < mSettings.seaLevel)
         continue;
 
-      // Determine tree type from noise
-      // FORCE ALL TREES TO BE TALL PINES
-      TreeType type = TreeType::Pine;
-
-      std::string name = "tree_" + std::to_string(cx) + "_" +
-                         std::to_string(cz) + "_" + std::to_string(gx) + "_" +
-                         std::to_string(gz);
+      TreeType type = chooseForestTreeType(mTreeNoise, wx, wz);
+      const std::string prefabName = treePrefabName(type);
       float sizeVar = treeVal;
 
       // Random Y rotation for natural variety; occasional tilt for realism.
@@ -2412,34 +2658,34 @@ void TerrainSystem::spawnTreesForest(int cx, int cz, ChunkData &chunk) {
       }
       glm::vec3 treeRot(tiltX, rotY, tiltZ);
 
-      if (type == TreeType::Pine) {
-        size_t idx = addPrefabInstance("prefab_pine", {wx, groundY, wz},
-                                       glm::vec3(1.0f + sizeVar), treeRot,
-                                       chunk);
+      glm::vec3 treeScale(0.95f + sizeVar * 0.85f);
+      if (type == TreeType::Oak)
+        treeScale = glm::vec3(1.05f + sizeVar * 0.65f);
+      else if (type == TreeType::Birch)
+        treeScale = glm::vec3(0.85f + sizeVar * 0.55f,
+                              1.05f + sizeVar * 0.80f,
+                              0.85f + sizeVar * 0.55f);
+
+      size_t idx = addPrefabInstance(prefabName, {wx, groundY, wz}, treeScale,
+                                     treeRot, chunk);
+      if (isInteractiveTreePrefab(prefabName)) {
         if (idx != std::numeric_limits<size_t>::max() &&
             shouldSpawnInteractiveTree(mSettings, cameraChunkX, cameraChunkZ,
                                        cx, cz, glm::vec3(wx, groundY, wz),
                                        mTreeNoise, interactiveTreeCount)) {
-          const size_t chunkSlot = chunk.prefabInstanceMatrices["prefab_pine"]
+          const size_t chunkSlot = chunk.prefabInstanceMatrices[prefabName]
                                        .empty()
                                        ? 0
-                                       : chunk.prefabInstanceMatrices["prefab_pine"]
+                                       : chunk.prefabInstanceMatrices[prefabName]
                                                  .size() -
                                              1;
-          registerTreeInstance("prefab_pine", idx, chunkSlot,
-                               glm::vec3(wx, groundY, wz),
-                               glm::vec3(1.0f + sizeVar), cx, cz, &chunk);
+          registerTreeInstance(prefabName, idx, chunkSlot,
+                               glm::vec3(wx, groundY, wz), treeScale, cx, cz,
+                               &chunk);
           chunk.treeCount++;
           mStats.totalTreeEntities++;
           interactiveTreeCount++;
         }
-
-      } else if (type == TreeType::Oak) {
-        addPrefabInstance("prefab_oak", {wx, groundY, wz},
-                          glm::vec3(1.0f + sizeVar), treeRot, chunk);
-      } else {
-        addPrefabInstance("prefab_birch", {wx, groundY, wz},
-                          glm::vec3(1.0f + sizeVar), treeRot, chunk);
       }
     }
   }
@@ -2481,10 +2727,10 @@ void TerrainSystem::spawnDesertCacti(int cx, int cz, ChunkData &chunk) {
 
       // Dense grass clusters
       if (val > 0.4f && val < 0.85f) {
-        float scale = (0.5f + mDetailNoise.noise(wx * 5.0f, wz * 5.0f) * 0.8f) *
-                      3.0f; // SCALE UP 3x
+        float scale = 0.50f + mDetailNoise.noise(wx * 5.0f, wz * 5.0f) * 0.65f;
+        float rotY = mDetailNoise.noise(wx * 1.7f + 44.0f, wz * 1.9f) * TWO_PI;
         addPrefabInstance("prefab_grass", {wx, groundY, wz}, glm::vec3(scale),
-                          glm::vec3(0), chunk);
+                          glm::vec3(0.0f, rotY, 0.0f), chunk);
       }
       // Sparse flowers
       else if (val >= 0.85f) {
@@ -2745,20 +2991,24 @@ void TerrainSystem::spawnPlainsGrass(int cx, int cz, ChunkData &chunk) {
           (mDetailNoise.noise(wx * 1.1f + 120.0f, wz * 1.1f - 90.0f) * 0.5f +
            0.5f) *
               0.9f;
-      float bushR =
-          (0.15f + val * 0.3f) * 3.0f * grassScale * sizeJitter; // SCALE UP 3x
-      // addSphere(verts, {wx, groundY + bushR * 0.6f, wz}, bushR, 3, 4,
-      // biomeUV);
+      float grassPatchScale = (0.55f + val * 0.90f) * grassScale * sizeJitter;
+      float rotY =
+          mDetailNoise.noise(wx * 0.9f + 77.0f, wz * 0.9f - 13.0f) * TWO_PI;
       addPrefabInstance("prefab_grass", {wx, groundY, wz},
-                        glm::vec3(bushR * 2.0f), glm::vec3(0), chunk);
+                        glm::vec3(grassPatchScale),
+                        glm::vec3(0.0f, rotY, 0.0f), chunk);
 
       // Occasional tall flower (narrow cone)
       if (val > 0.15f) {
         float fScale = (0.8f + val * 0.5f) * grassScale * sizeJitter;
         float flowerX = wx + (val - 0.5f) * 0.3f;
         float flowerZ = wz + (val * 2.0f - 1.0f) * 0.2f;
+        float flowerRot =
+            mDetailNoise.noise(flowerX * 2.0f, flowerZ * 2.0f + 31.0f) *
+            TWO_PI;
         addPrefabInstance("prefab_flower", {flowerX, groundY, flowerZ},
-                          glm::vec3(fScale), glm::vec3(0), chunk);
+                          glm::vec3(fScale), glm::vec3(0.0f, flowerRot, 0.0f),
+                          chunk);
       }
 
       // Occasional low poly bush
@@ -2991,7 +3241,6 @@ void TerrainSystem::loadChunkAsync(int cx, int cz, int lod,
     if (settings.spawnVegetation && dom == BiomeType::Forest) {
       float spacing = 10.0f / std::max(0.05f, settings.treeDensity);
       int grid = std::max(1, (int)(ws / spacing));
-      auto &mats = pending->instanceMatrices["prefab_pine"];
       for (int gz = 0; gz < grid; ++gz)
         for (int gx = 0; gx < grid; ++gx) {
           float wx = ox + (gx + 0.5f) * spacing;
@@ -3007,7 +3256,15 @@ void TerrainSystem::loadChunkAsync(int cx, int cz, int lod,
           float groundY = sampleH(wx, wz);
           if (groundY < settings.seaLevel)
             continue;
-          float sv = 1.0f + tv;
+          TreeType type = chooseForestTreeType(treeNoise, wx, wz);
+          const char *prefabName = treePrefabName(type);
+          auto &mats = pending->instanceMatrices[prefabName];
+          glm::vec3 scale(0.95f + tv * 0.85f);
+          if (type == TreeType::Oak)
+            scale = glm::vec3(1.05f + tv * 0.65f);
+          else if (type == TreeType::Birch)
+            scale = glm::vec3(0.85f + tv * 0.55f, 1.05f + tv * 0.80f,
+                              0.85f + tv * 0.55f);
           float rotY = treeNoise.noise(wx * 1.1f, wz * 1.1f) * TWO_PI;
           float tiltMask =
               treeNoise.noise(wx * 0.9f + 11.0f, wz * 0.9f - 22.0f) * 0.5f +
@@ -3025,7 +3282,7 @@ void TerrainSystem::loadChunkAsync(int cx, int cz, int lod,
           m = glm::rotate(m, rotY, glm::vec3(0, 1, 0));
           m = glm::rotate(m, tiltX, glm::vec3(1, 0, 0));
           m = glm::rotate(m, tiltZ, glm::vec3(0, 0, 1));
-          m = glm::scale(m, glm::vec3(sv));
+          m = glm::scale(m, scale);
           mats.push_back(m);
         }
     }
@@ -3208,6 +3465,7 @@ void TerrainSystem::flushPendingChunks() {
     }
 
     // Apply pre-computed instance matrices to prefabs
+    int interactiveTreeCount = 0;
     for (auto &[prefabName, matrices] : pc.instanceMatrices) {
       auto itP = mPrefabs.find(prefabName);
       if (itP == mPrefabs.end())
@@ -3217,8 +3475,6 @@ void TerrainSystem::flushPendingChunks() {
       auto &inst =
           mScene->registry().get<InstancedMeshComponent>(itP->second.entity);
       const PrefabData &pd = itP->second;
-      int interactiveTreeCount = 0;
-
       for (auto &rawMat : matrices) {
         // Apply autoScale and baseRot from PrefabData
         glm::mat4 m = rawMat;
@@ -3235,7 +3491,7 @@ void TerrainSystem::flushPendingChunks() {
         cd.prefabInstanceGlobalIndices[prefabName].push_back(
             static_cast<uint32_t>(idx));
         cd.prefabInstanceEntities[prefabName].push_back(0);
-        if (prefabName == "prefab_pine") {
+        if (isInteractiveTreePrefab(prefabName)) {
           glm::vec3 pos = glm::vec3(m[3]);
           if (shouldSpawnInteractiveTree(mSettings, cameraChunkX, cameraChunkZ,
                                          pc.cx, pc.cz, pos, mTreeNoise,
@@ -3288,7 +3544,7 @@ void TerrainSystem::flushPendingChunks() {
           cd.prefabInstanceGlobalIndices[prefabName].push_back(
               static_cast<uint32_t>(idx));
           cd.prefabInstanceEntities[prefabName].push_back(0);
-          if (prefabName == "prefab_pine") {
+          if (isInteractiveTreePrefab(prefabName)) {
             glm::vec3 pos = glm::vec3(m[3]);
             if (shouldSpawnInteractiveTree(
                     mSettings, cameraChunkX, cameraChunkZ, pc.cx, pc.cz, pos,

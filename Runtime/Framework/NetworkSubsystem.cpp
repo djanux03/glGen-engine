@@ -1,5 +1,6 @@
 #include "NetworkSubsystem.h"
 #include "AppState.h"
+#include "EditorSubsystem.h"
 #include <iostream>
 #include <json.hpp>
 #include <string>
@@ -67,7 +68,7 @@ void NetworkSubsystem::handleResponse(const cpr::Response &r, AppState &state) {
     if (j.contains("spawn_drop") && j["spawn_drop"].get<bool>() == true) {
       if (j.contains("spawn_item")) {
         std::string item = j["spawn_item"].get<std::string>();
-        state.pending.pendingSpawnPaths.push_back(item);
+        state.editorSubsystem->pending().pendingSpawnPaths.push_back(item);
       }
     }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "IEngineSubsystem.h"
+#include "EditorState.h"
 #include <string>
 #include <vector>
 
@@ -22,6 +23,13 @@ public:
   void endFrame();
   void drawDockspace();
 
+  SelectionState &selection() { return mSelection; }
+  HistoryState &history() { return mHistory; }
+  PendingActions &pending() { return mPending; }
+
 private:
   AppState &mState;
+  SelectionState mSelection;
+  HistoryState mHistory;
+  PendingActions mPending;
 };

@@ -9,6 +9,7 @@
 #include "ECS/Registry.h"
 #include "Scene/Scene.h"
 #include "TerrainGpuRenderer.h"
+#include "TerrainBrushSettings.h"
 
 #include <cstddef>
 #include <functional>
@@ -117,7 +118,7 @@ struct TerrainSettings {
   float biomeScale = 0.004f; // biome region frequency
   float seaLevel = -2.0f;
   float rockDensity = 0.34f;                // mountain/tundra rock density
-  float grassDensity = 0.25f;               // plains grass cluster density
+  float grassDensity = 0.32f;               // plains grass cluster density
   float rockScale = 1.2f;                   // uniform rock size multiplier
   float grassScale = 1.0f;                  // uniform grass size multiplier
   bool spawnWater = true;                   // generate water planes in ocean
@@ -165,6 +166,10 @@ public:
   bool isEnabled() const { return mSettings.enabled; }
   const TerrainStats &stats() const { return mStats; }
   bool gpuTerrainActive() const;
+  
+  TerrainBrushSettings& brushSettings() { return mBrushSettings; }
+  const TerrainBrushSettings& brushSettings() const { return mBrushSettings; }
+  
   void renderGpuTerrain(Shader &shader, const glm::mat4 &viewProjection,
                         const glm::vec3 &cameraPos, bool shadowPass);
   // Move a prefab instance by delta (updates instanced mesh transform).
@@ -306,6 +311,7 @@ private:
   void updateCollisionForChunk(int cx, int cz, ChunkData &cd);
 
   TerrainSettings mSettings;
+  TerrainBrushSettings mBrushSettings;
   TerrainStats mStats;
   PerlinNoise mNoise{0};
   PerlinNoise mTempNoise{0};

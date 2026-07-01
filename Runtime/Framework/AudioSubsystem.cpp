@@ -82,8 +82,8 @@ void AudioSubsystem::shutdown() {
   mEngineStorage = nullptr;
   mInitialized = false;
   mAudioAvailable = false;
-  mState.audioBackendAvailable = false;
-  mState.audioStatus = "Audio offline";
+  mBackendAvailable = false;
+  mStatus = "Audio offline";
   mHasLastPlayerPos = false;
   mLastHorizontalSpeed = 0.0f;
   mFootstepTimer = 0.0f;
@@ -98,7 +98,7 @@ void AudioSubsystem::update(float dt, const glm::vec3 &listenerPos,
     return;
 
   auto *holder = static_cast<EngineHolder *>(mEngineStorage);
-  mState.audioBackendAvailable = true;
+  mBackendAvailable = true;
   ma_engine_listener_set_position(&holder->engine, 0, listenerPos.x,
                                   listenerPos.y, listenerPos.z);
   ma_engine_listener_set_direction(&holder->engine, 0, listenerForward.x,
@@ -114,19 +114,19 @@ void AudioSubsystem::update(float dt, const glm::vec3 &listenerPos,
 void AudioSubsystem::playTestFootstep() {
   if (!mAudioAvailable) {
     LOG_ERROR("Audio", "Audio backend unavailable for footstep test");
-    mState.audioBackendAvailable = false;
-    mState.audioStatus = "Audio backend unavailable";
+    mBackendAvailable = false;
+    mStatus = "Audio backend unavailable";
     return;
   }
   refreshFootstepClipPool_();
   const std::string resolvedPath = nextFootstepClip_();
   if (resolvedPath.empty() || !std::filesystem::exists(resolvedPath)) {
     LOG_ERROR("Audio", "Footstep test clip not found");
-    mState.audioStatus = "Footstep test file missing";
+    mStatus = "Footstep test file missing";
     return;
   }
   playFootstepOneShot_(resolvedPath);
-  mState.audioStatus = "Test playback triggered";
+  mStatus = "Test playback triggered";
   LOG_INFO("Audio", "Manual footstep test triggered: " + resolvedPath);
 }
 
@@ -141,8 +141,8 @@ bool AudioSubsystem::initEngine_() {
     LOG_WARN("Audio", "Audio device initialization failed; continuing without sound");
     mInitialized = true;
     mAudioAvailable = false;
-    mState.audioBackendAvailable = false;
-    mState.audioStatus =
+    mBackendAvailable = false;
+    mStatus =
         "Audio init failed (" + std::to_string((int)res) + ")";
     return true;
   }
@@ -157,8 +157,8 @@ bool AudioSubsystem::initEngine_() {
   }
   mInitialized = true;
   mAudioAvailable = true;
-  mState.audioBackendAvailable = true;
-  mState.audioStatus = "Audio initialized";
+  mBackendAvailable = true;
+  mStatus = "Audio initialized";
   LOG_INFO("Audio", "Audio subsystem initialized");
   return true;
 }
@@ -173,7 +173,7 @@ bool AudioSubsystem::loadSound_(ManagedSound &slot, const std::string &path,
     if (!slot.warnedMissing) {
       LOG_ERROR("Audio", "Sound file not found: " + path);
       slot.warnedMissing = true;
-      mState.audioStatus = "Missing audio file";
+      mStatus = "Missing audio file";
     }
     unloadSound_(slot);
     slot.warnedMissing = true;
@@ -189,14 +189,14 @@ bool AudioSubsystem::loadSound_(ManagedSound &slot, const std::string &path,
   std::ifstream file(resolvedPath, std::ios::binary | std::ios::ate);
   if (!file.is_open()) {
     LOG_ERROR("Audio", "Failed to open sound file: " + resolvedPath);
-    mState.audioStatus = "Failed to open audio";
+    mStatus = "Failed to open audio";
     return false;
   }
 
   const std::streamsize size = file.tellg();
   if (size <= 0) {
     LOG_ERROR("Audio", "Audio file is empty: " + resolvedPath);
-    mState.audioStatus = "Audio file is empty";
+    mStatus = "Audio file is empty";
     return false;
   }
 
@@ -205,7 +205,7 @@ bool AudioSubsystem::loadSound_(ManagedSound &slot, const std::string &path,
   if (!file.read(reinterpret_cast<char *>(slot.encodedData.data()), size)) {
     LOG_ERROR("Audio", "Failed to read sound file: " + resolvedPath);
     slot.encodedData.clear();
-    mState.audioStatus = "Failed to read audio";
+    mStatus = "Failed to read audio";
     return false;
   }
 
@@ -220,7 +220,7 @@ bool AudioSubsystem::loadSound_(ManagedSound &slot, const std::string &path,
     LOG_ERROR("Audio", "Failed to decode sound: " + resolvedPath +
                            " (" + std::to_string((int) res) + ")");
     slot.encodedData.clear();
-    mState.audioStatus =
+    mStatus =
         "Failed to decode audio (" + std::to_string((int) res) + "): " +
         resolvedPath;
     return false;
@@ -239,7 +239,7 @@ bool AudioSubsystem::loadSound_(ManagedSound &slot, const std::string &path,
       LOG_ERROR("Audio", "Failed to create sound: " + resolvedPath +
                              " (" + std::to_string((int)res) + ")");
       slot.warnedLoad = true;
-      mState.audioStatus =
+      mStatus =
           "Failed to create audio (" + std::to_string((int)res) + "): " +
           resolvedPath;
     }
@@ -255,7 +255,7 @@ bool AudioSubsystem::loadSound_(ManagedSound &slot, const std::string &path,
   slot.path = resolvedPath;
   slot.looped = looped;
   slot.startedLogged = false;
-  mState.audioStatus = "Loaded audio";
+  mStatus = "Loaded audio";
   LOG_INFO("Audio", "Loaded sound: " + resolvedPath);
   return true;
 }
@@ -315,7 +315,7 @@ std::string AudioSubsystem::resolvePath_(const std::string &path) const {
 }
 
 void AudioSubsystem::syncAmbient_() {
-  const auto &audio = mState.audio;
+  const auto &audio = mSettings;
   if (!audio.enabled || !audio.ambientEnabled || audio.ambientPath.empty()) {
     if (mAmbient->loaded)
       ma_sound_stop(&mAmbient->sound);
@@ -335,7 +335,7 @@ void AudioSubsystem::syncAmbient_() {
 }
 
 void AudioSubsystem::syncFootsteps_() {
-  const auto &audio = mState.audio;
+  const auto &audio = mSettings;
   if (!audio.enabled || !audio.footstepsEnabled) {
     mFootstepTimer = 0.0f;
     mFootstepWasMoving = false;
@@ -373,8 +373,8 @@ void AudioSubsystem::updateFootstepMotion_(float dt) {
       (glfwGetKey(mState.window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
        glfwGetKey(mState.window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
   const float cadence = running
-                            ? std::clamp(mState.audio.footstepRunCadence, 0.08f, 0.60f)
-                            : std::clamp(mState.audio.footstepWalkCadence, 0.10f, 0.80f);
+                            ? std::clamp(mSettings.footstepRunCadence, 0.08f, 0.60f)
+                            : std::clamp(mSettings.footstepWalkCadence, 0.10f, 0.80f);
   if (!mFootstepWasMoving) {
     mFootstepTimer = 0.0f;
   } else {
@@ -388,21 +388,21 @@ void AudioSubsystem::updateFootstepMotion_(float dt) {
 
   const std::string resolvedPath = nextFootstepClip_();
   if (resolvedPath.empty() || !std::filesystem::exists(resolvedPath)) {
-    mState.audioStatus = "Footstep file missing";
+    mStatus = "Footstep file missing";
     return;
   }
 
   playFootstepOneShot_(resolvedPath);
   mFootstepTimer = cadence;
   mFootstepWasMoving = true;
-  mState.audioStatus = "Footstep playback active";
+  mStatus = "Footstep playback active";
 }
 
 void AudioSubsystem::applyVolumes_() {
   if (!mAudioAvailable || !mEngineStorage)
     return;
 
-  const auto &audio = mState.audio;
+  const auto &audio = mSettings;
   const float master = (audio.enabled && !audio.mute)
                            ? std::clamp(audio.masterVolume, 0.0f, 1.5f)
                            : 0.0f;
@@ -429,7 +429,7 @@ void AudioSubsystem::refreshFootstepClipPool_() {
   if (!fs::exists(assetRoot) || !fs::is_directory(assetRoot))
     return;
 
-  const std::string ambientResolved = resolvePath_(mState.audio.ambientPath);
+  const std::string ambientResolved = resolvePath_(mSettings.ambientPath);
 
   for (const auto &entry : fs::directory_iterator(assetRoot)) {
     if (!entry.is_regular_file())
@@ -467,7 +467,7 @@ void AudioSubsystem::playFootstepOneShot_(const std::string &path) {
   if (res != MA_SUCCESS) {
     LOG_ERROR("Audio", "Footstep one-shot failed: " + path + " (" +
                            std::to_string((int)res) + ")");
-    mState.audioStatus =
+    mStatus =
         "Footstep one-shot failed (" + std::to_string((int)res) + ")";
   }
 }

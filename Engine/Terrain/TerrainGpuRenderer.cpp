@@ -209,7 +209,9 @@ bool TerrainGpuRenderer::buildGrid(int lod) {
   glGenBuffers(1, &mGridEbo[lod]);
   glGenBuffers(1, &mInstanceVbo[lod]);
 
-  GLStateCache::instance().bindVertexArray(mGridVao[lod]);
+  // Attribute setup must bind the VAO directly. Other renderer paths still use
+  // raw glBindVertexArray calls, so the cache can be stale during startup.
+  glBindVertexArray(mGridVao[lod]);
   glBindBuffer(GL_ARRAY_BUFFER, mGridVbo[lod]);
   glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(verts.size() * sizeof(GridVertex)),
                verts.data(), GL_STATIC_DRAW);
@@ -232,7 +234,7 @@ bool TerrainGpuRenderer::buildGrid(int lod) {
                         (void *)offsetof(TerrainGpuInstance, chunk1));
   glVertexAttribDivisor(8, 1);
 
-  GLStateCache::instance().bindVertexArray(0);
+  glBindVertexArray(0);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
 
   mIndexCount[lod] = (GLsizei)indices.size();

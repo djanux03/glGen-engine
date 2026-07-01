@@ -1,5 +1,6 @@
 #include "RenderLoopSubsystem.h"
 #include "AppState.h"
+#include "EditorSubsystem.h"
 #include "Texture.h"
 #include <algorithm>
 #include <array>
@@ -653,8 +654,8 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
                nightFactor * 0.55f);
 
   const bool torchLightActive =
-      mState.torchEnabled &&
-      mState.activeSlot == AppState::HotbarSlot::Torch &&
+      mState.gameplay.viewmodel.torchEnabled &&
+      mState.gameplay.activeSlot == GameplayState::HotbarSlot::Torch &&
       (mState.playState == AppState::PlayState::Playing || mState.uiMode);
   const glm::vec3 camRight =
       glm::normalize(glm::cross(cameraFront, cameraUp));
@@ -754,6 +755,44 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
   mState.sky.sunDiscSoftness = mState.skyUI.skySunDiscSoftness;
   mState.sky.sunHaloSize = mState.skyUI.skySunHaloSize;
   mState.sky.sunRaySharpness = mState.skyUI.skySunRaySharpness;
+  mState.sky.useBlackHole = false;
+  glm::vec3 blackHoleDir = glm::normalize(glm::vec3(-0.60f, 0.47f, -0.60f));
+  {
+    const float bhAz = glm::radians(mState.skyUI.blackHoleAzimuth);
+    const float bhEl = glm::radians(mState.skyUI.blackHoleElevation);
+    blackHoleDir = glm::normalize(glm::vec3(
+        std::cos(bhEl) * std::sin(bhAz), std::sin(bhEl),
+        std::cos(bhEl) * std::cos(bhAz)));
+    if (mState.skyUI.blackHoleWorldMode) {
+      const glm::vec3 toBlackHole =
+          mState.skyUI.blackHoleWorldPosition - cameraPos;
+      if (glm::dot(toBlackHole, toBlackHole) > 0.0001f)
+        blackHoleDir = glm::normalize(toBlackHole);
+    }
+    mState.sky.blackHoleDir = blackHoleDir;
+    mState.sky.blackHoleSizeDeg = mState.skyUI.blackHoleSizeDeg;
+  }
+  mState.sky.blackHoleDiskTiltDeg = mState.skyUI.blackHoleDiskTiltDeg;
+  mState.sky.blackHoleDiskInclinationDeg =
+      mState.skyUI.blackHoleDiskInclinationDeg;
+  mState.sky.blackHoleColor = mState.skyUI.blackHoleColor;
+  mState.sky.blackHoleRingIntensity = mState.skyUI.blackHoleRingIntensity;
+  mState.sky.blackHoleRingWidth = mState.skyUI.blackHoleRingWidth;
+  mState.sky.blackHoleDistortion = mState.skyUI.blackHoleDistortion;
+  mState.sky.blackHoleHaloIntensity = mState.skyUI.blackHoleHaloIntensity;
+  mState.sky.blackHoleDiskSpinSpeed = mState.skyUI.blackHoleDiskSpinSpeed;
+  mState.sky.blackHoleDiskTurbulence = mState.skyUI.blackHoleDiskTurbulence;
+  mState.sky.blackHoleChromaticAberration =
+      mState.skyUI.blackHoleChromaticAberration;
+  mState.sky.blackHoleEclipseStrength = mState.skyUI.blackHoleEclipseStrength;
+  mState.sky.blackHolePhotonRingIntensity =
+      mState.skyUI.blackHolePhotonRingIntensity;
+  mState.sky.blackHoleDopplerBoost = mState.skyUI.blackHoleDopplerBoost;
+  mState.sky.blackHoleJetIntensity = mState.skyUI.blackHoleJetIntensity;
+  mState.sky.blackHoleCoronaIntensity = mState.skyUI.blackHoleCoronaIntensity;
+  mState.sky.blackHoleStarLensIntensity =
+      mState.skyUI.blackHoleStarLensIntensity;
+  mState.sky.blackHoleShadowStrength = mState.skyUI.blackHoleShadowStrength;
   const float baseDisc = mState.skyUI.skySunDiscIntensity;
   const float baseHalo = mState.skyUI.skySunHaloIntensity;
   const float baseRays = mState.skyUI.skySunRaysIntensity;
@@ -768,8 +807,57 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
     mState.sky.sunHaloIntensity *= featureVisibility;
     mState.sky.sunRaysIntensity *= featureVisibility;
   }
-  mState.sky.draw(view, projection, skyExposure, skyGamma, mState.sun.sunDir,
-                  visualSunColor, mState.sun.sunSize, nowT);
+  bool blackHoleRendered = false;
+  if (mState.skyUI.useBlackHole && mState.blackHole.isReady()) {
+  BlackHoleSettings blackHoleSettings;
+  blackHoleSettings.enabled = true;
+  blackHoleSettings.direction = blackHoleDir;
+  blackHoleSettings.viewPitchDeg = mState.skyUI.blackHoleViewPitchDeg;
+  blackHoleSettings.eventHorizonSizeDeg = mState.skyUI.blackHoleSizeDeg;
+    if (mState.skyUI.blackHoleWorldMode) {
+      const float distance =
+          glm::length(mState.skyUI.blackHoleWorldPosition - cameraPos);
+      const float radius = std::max(0.01f, mState.skyUI.blackHoleWorldRadius);
+      const float angularDiameterDeg =
+          glm::degrees(2.0f * std::atan(radius / std::max(distance, 0.01f)));
+      blackHoleSettings.eventHorizonSizeDeg =
+          std::clamp(angularDiameterDeg, 0.10f, 20.0f);
+    }
+    blackHoleSettings.diskTiltDeg = mState.skyUI.blackHoleDiskTiltDeg;
+    blackHoleSettings.diskInclinationDeg =
+        mState.skyUI.blackHoleDiskInclinationDeg;
+    blackHoleSettings.innerDiskRadius =
+        mState.skyUI.blackHoleInnerDiskRadius;
+    blackHoleSettings.outerDiskRadius =
+        mState.skyUI.blackHoleOuterDiskRadius;
+    blackHoleSettings.diskTemperature =
+        mState.skyUI.blackHoleDiskTemperature;
+    blackHoleSettings.diskDensity = mState.skyUI.blackHoleDiskDensity;
+    blackHoleSettings.diskTurbulence =
+        mState.skyUI.blackHoleDiskTurbulence;
+    blackHoleSettings.diskSpinSpeed = mState.skyUI.blackHoleDiskSpinSpeed;
+    blackHoleSettings.diskFlowShear = mState.skyUI.blackHoleDiskFlowShear;
+    blackHoleSettings.dopplerStrength = mState.skyUI.blackHoleDopplerBoost;
+    blackHoleSettings.lensingStrength =
+        mState.skyUI.blackHoleLensingStrength;
+    blackHoleSettings.photonRingIntensity =
+        mState.skyUI.blackHolePhotonRingIntensity;
+    blackHoleSettings.ringWidth = mState.skyUI.blackHoleRingWidth;
+    blackHoleSettings.coronaIntensity = mState.skyUI.blackHoleCoronaIntensity;
+    blackHoleSettings.shadowStrength = mState.skyUI.blackHoleShadowStrength;
+    blackHoleSettings.backgroundStarIntensity =
+        mState.skyUI.blackHoleBackgroundStarIntensity;
+    blackHoleSettings.exposure = mState.skyUI.blackHoleExposure;
+    blackHoleSettings.diskColor = mState.skyUI.blackHoleColor;
+    blackHoleSettings.quality = static_cast<BlackHoleQuality>(
+        std::clamp(mState.skyUI.blackHoleQuality, 0, 2));
+    mState.blackHole.draw(view, projection, blackHoleSettings, nowT);
+    blackHoleRendered = true;
+  }
+  if (!blackHoleRendered) {
+    mState.sky.draw(view, projection, skyExposure, skyGamma, mState.sun.sunDir,
+                    visualSunColor, mState.sun.sunSize, nowT);
+  }
   mState.sky.sunDiscIntensity = baseDisc;
   mState.sky.sunHaloIntensity = baseHalo;
   mState.sky.sunRaysIntensity = baseRays;
@@ -1289,7 +1377,7 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
   const bool sceneGpuTimerActive = beginMainGpuTimer(MainGpuTimerScene);
   mState.renderSystem.update(
       mState.scene.registry(), mState.renderer.shader(), false,
-      mState.selection.selectedEntityId, false, false,
+      mState.editorSubsystem->selection().selectedEntityId, false, false,
       RenderSystem::TerrainFilter::ExcludeTerrain);
 
   if (fireflyFactor > 0.0f) {
@@ -1301,7 +1389,7 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
 
   mState.projectiles.draw(view, projection, cameraPos, 0.25f);
 
-  if (mState.selection.selectedEntityId != 0 && mState.outlineShader) {
+  if (mState.editorSubsystem->selection().selectedEntityId != 0 && mState.outlineShader) {
     glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
     glStencilMask(0x00);
 
@@ -1309,7 +1397,7 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
     mState.outlineShader->setMat4("view", view);
     mState.outlineShader->setMat4("projection", projection);
     mState.renderSystem.update(mState.scene.registry(), *mState.outlineShader,
-                               false, mState.selection.selectedEntityId, true,
+                               false, mState.editorSubsystem->selection().selectedEntityId, true,
                                false, RenderSystem::TerrainFilter::All);
 
     glStencilMask(0xFF);
@@ -1319,13 +1407,13 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
 
   // Viewmodel pass — screen-space, no camera correlation.
   const bool drawViewmodelAxe =
-      mState.axeEnabled &&
-      mState.activeSlot == AppState::HotbarSlot::Axe &&
-      mState.axeEntity != 0;
+      mState.gameplay.viewmodel.axeEnabled &&
+      mState.gameplay.activeSlot == GameplayState::HotbarSlot::Axe &&
+      mState.gameplay.axeEntity != 0;
   const bool drawViewmodelTorch =
-      mState.torchEnabled &&
-      mState.activeSlot == AppState::HotbarSlot::Torch &&
-      mState.torchEntity != 0;
+      mState.gameplay.viewmodel.torchEnabled &&
+      mState.gameplay.activeSlot == GameplayState::HotbarSlot::Torch &&
+      mState.gameplay.torchEntity != 0;
   if (drawViewmodelAxe || drawViewmodelTorch) {
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
@@ -1361,9 +1449,9 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
                                RenderSystem::TerrainFilter::All);
 
     if (drawViewmodelTorch &&
-        mState.scene.registry().has<TransformComponent>(mState.torchEntity)) {
+        mState.scene.registry().has<TransformComponent>(mState.gameplay.torchEntity)) {
       const auto &torchTr =
-          mState.scene.registry().get<TransformComponent>(mState.torchEntity);
+          mState.scene.registry().get<TransformComponent>(mState.gameplay.torchEntity);
       const glm::vec3 firePos = glm::vec3(
           torchTr.getMatrix() * glm::vec4(0.0f, 0.72f, 0.0f, 1.0f));
       FireFXParams savedParams = mState.fire.params();

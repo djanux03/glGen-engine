@@ -1,6 +1,6 @@
 # Engine CMakeLists.txt
 
-file(GLOB_RECURSE ENGINE_SOURCES 
+file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS
     "Core/*.cpp"
     "Rendering/*.cpp"
     "Input/*.cpp"

@@ -201,6 +201,7 @@ bool initRuntimeSystems(AppState &s) {
       s.projectConfig.shaderPath(s.projectConfig.hdrSkyVertexShader);
   const std::string hdrFS =
       s.projectConfig.shaderPath(s.projectConfig.hdrSkyFragmentShader);
+  const std::string blackHoleFS = s.projectConfig.shaderPath("black_hole.frag");
   const std::string fireVS =
       s.projectConfig.shaderPath(s.projectConfig.fireBillboardVertexShader);
   const std::string fireFS =
@@ -258,6 +259,10 @@ bool initRuntimeSystems(AppState &s) {
     return false;
   startupGlTrace("runtime init: sky.init");
 
+  if (!s.blackHole.init(hdrVS, blackHoleFS))
+    LOG_WARN("Runtime", "Failed to initialize BlackHoleRenderer; normal sky fallback will be used");
+  startupGlTrace("runtime init: blackHole.init");
+
   if (!s.fire.init(fireTex.c_str(), fireVS.c_str(), fireFS.c_str(),
                    smokeFS.c_str())) {
     return false;
@@ -299,21 +304,21 @@ bool initRuntimeSystems(AppState &s) {
   (void)s.assets.registerShader(s.outlineShader.get(), outlineVS, outlineFS);
 
   // ECS player
-  s.playerId = s.scene.registry().create();
+  s.gameplay.playerId = s.scene.registry().create();
   auto &reg = s.scene.registry();
-  reg.emplace<TransformComponent>(s.playerId);
-  reg.get<TransformComponent>(s.playerId).position =
+  reg.emplace<TransformComponent>(s.gameplay.playerId);
+  reg.get<TransformComponent>(s.gameplay.playerId).position =
       glm::vec3(0.0f, 0.0f, 3.0f);
-  reg.emplace<RigidbodyComponent>(s.playerId).type =
+  reg.emplace<RigidbodyComponent>(s.gameplay.playerId).type =
       RigidbodyComponent::Type::Kinematic;
-  reg.emplace<ColliderComponent>(s.playerId);
-  reg.emplace<CameraComponent>(s.playerId);
-  reg.emplace<NameComponent>(s.playerId, "Player");
-  reg.emplace<ScriptComponent>(s.playerId).scriptPath =
+  reg.emplace<ColliderComponent>(s.gameplay.playerId);
+  reg.emplace<CameraComponent>(s.gameplay.playerId);
+  reg.emplace<NameComponent>(s.gameplay.playerId, "Player");
+  reg.emplace<ScriptComponent>(s.gameplay.playerId).scriptPath =
       "scripts/fps_controller.lua";
-  reg.emplace<BoundsComponent>(s.playerId, BoundsComponent{1.0f});
-  reg.emplace<LifecycleComponent>(s.playerId);
-  reg.emplace<HierarchyComponent>(s.playerId);
+  reg.emplace<BoundsComponent>(s.gameplay.playerId, BoundsComponent{1.0f});
+  reg.emplace<LifecycleComponent>(s.gameplay.playerId);
+  reg.emplace<HierarchyComponent>(s.gameplay.playerId);
 
   s.hasFire = false;
   s.lastT = (float)glfwGetTime();
@@ -328,6 +333,7 @@ void shutdownRuntimeSystems(AppState &s) {
   s.fireflies.shutdown();
   s.cloud.shutdown();
   s.fire.shutdown();
+  s.blackHole.shutdown();
   s.sky.shutdown();
   s.renderer.shutdown();
   s.terrainFlatShader.reset();
@@ -388,7 +394,7 @@ void App::dropCallback(GLFWwindow *window, int pathCount, const char **paths) {
 
   for (int i = 0; i < pathCount; ++i) {
     if (paths[i] && paths[i][0] != '\0')
-      state->pending.pendingDropPaths.emplace_back(paths[i]);
+      state->editorSubsystem->pending().pendingDropPaths.emplace_back(paths[i]);
   }
 }
 

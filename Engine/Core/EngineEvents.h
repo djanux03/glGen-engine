@@ -6,6 +6,8 @@
 struct SaveConfigRequestedEvent {};
 struct LoadConfigRequestedEvent {};
 struct SaveProjectConfigRequestedEvent {};
+struct SaveProjectDefaultsRequestedEvent {};
+struct ResetProjectDefaultsRequestedEvent {};
 struct SaveSceneRequestedEvent {
   std::string path;
 };

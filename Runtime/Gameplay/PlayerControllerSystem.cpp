@@ -57,27 +57,27 @@ void PlayerControllerSystem::update(AppState &state, float dt) {
     return;
 
   Registry &reg = state.scene.registry();
-  if (state.playerId == 0 || !reg.has<CameraComponent>(state.playerId) ||
-      !reg.has<TransformComponent>(state.playerId) ||
-      !isAlive(reg, state.playerId)) {
-    state.playerId = findPlayerCamera(reg);
+  if (state.gameplay.playerId == 0 || !reg.has<CameraComponent>(state.gameplay.playerId) ||
+      !reg.has<TransformComponent>(state.gameplay.playerId) ||
+      !isAlive(reg, state.gameplay.playerId)) {
+    state.gameplay.playerId = findPlayerCamera(reg);
   }
 
-  if (state.playerId == 0 || !reg.has<TransformComponent>(state.playerId))
+  if (state.gameplay.playerId == 0 || !reg.has<TransformComponent>(state.gameplay.playerId))
     return;
 
-  if (mLastPlayerId != state.playerId) {
+  if (mLastPlayerId != state.gameplay.playerId) {
     mVerticalVelocity = 0.0f;
     mGrounded = false;
-    mLastPlayerId = state.playerId;
+    mLastPlayerId = state.gameplay.playerId;
   }
 
-  auto &tr = reg.get<TransformComponent>(state.playerId);
+  auto &tr = reg.get<TransformComponent>(state.gameplay.playerId);
 
   const float dx = static_cast<float>(Mouse::getDX());
   const float dy = static_cast<float>(Mouse::getDY());
-  state.debugMouseDX = dx;
-  state.debugMouseDY = dy;
+  state.gameplay.debug.debugMouseDX = dx;
+  state.gameplay.debug.debugMouseDY = dy;
 
   const float sensitivity = state.input.mouseSensitivity;
   tr.rotation.y -= dx * sensitivity;
@@ -88,8 +88,8 @@ void PlayerControllerSystem::update(AppState &state, float dt) {
   if (tr.rotation.y < -180.0f)
     tr.rotation.y += 360.0f;
 
-  state.debugYaw = tr.rotation.y;
-  state.debugPitch = tr.rotation.x;
+  state.gameplay.debug.debugYaw = tr.rotation.y;
+  state.gameplay.debug.debugPitch = tr.rotation.x;
 
   const glm::vec3 forward = cameraForwardFromRotation(tr.rotation);
   glm::vec3 flatForward(forward.x, 0.0f, forward.z);
@@ -114,8 +114,28 @@ void PlayerControllerSystem::update(AppState &state, float dt) {
   const bool sprint =
       Keyboard::key(GLFW_KEY_LEFT_SHIFT) || Keyboard::key(GLFW_KEY_RIGHT_SHIFT);
   const float baseSpeed = 50.0f;
-  const float speed = baseSpeed * (sprint ? state.input.runMult : 1.0f);
+  const float speed =
+      baseSpeed *
+      (!state.input.creativeFlight && sprint ? state.input.runMult : 1.0f);
   tr.position += wishMove * speed * dt;
+
+  if (state.input.creativeFlight) {
+    mVerticalVelocity = 0.0f;
+    mGrounded = false;
+    const float verticalInput = (Keyboard::key(GLFW_KEY_SPACE) ? 1.0f : 0.0f) -
+                                (sprint ? 1.0f : 0.0f);
+    tr.position.y += verticalInput * speed * dt;
+
+    if (reg.has<CameraComponent>(state.gameplay.playerId)) {
+      auto &cam = reg.get<CameraComponent>(state.gameplay.playerId);
+      cam.front = forward;
+      cam.right = right;
+      cam.up = glm::vec3(0.0f, 1.0f, 0.0f);
+      cam.yaw = tr.rotation.y;
+      cam.pitch = tr.rotation.x;
+    }
+    return;
+  }
 
   constexpr float kGroundClearance = 0.55f;
   constexpr float kGroundSnap = 1.2f;
@@ -127,7 +147,7 @@ void PlayerControllerSystem::update(AppState &state, float dt) {
   float groundY = terrainGroundY(state, tr.position);
 
   PhysicsRaycastResult groundHit = state.physicsSystem.raycast(
-      tr.position, glm::vec3(0.0f, -1.0f, 0.0f), 5.0f, state.playerId);
+      tr.position, glm::vec3(0.0f, -1.0f, 0.0f), 5.0f, state.gameplay.playerId);
   if (groundHit.hit)
     groundY = std::max(groundY, groundHit.position.y);
 
@@ -149,8 +169,8 @@ void PlayerControllerSystem::update(AppState &state, float dt) {
     tr.position.y += mVerticalVelocity * dt;
   }
 
-  if (reg.has<CameraComponent>(state.playerId)) {
-    auto &cam = reg.get<CameraComponent>(state.playerId);
+  if (reg.has<CameraComponent>(state.gameplay.playerId)) {
+    auto &cam = reg.get<CameraComponent>(state.gameplay.playerId);
     cam.front = forward;
     cam.right = right;
     cam.up = glm::vec3(0.0f, 1.0f, 0.0f);

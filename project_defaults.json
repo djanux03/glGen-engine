@@ -1,0 +1,365 @@
+{
+  "audioSettings": {
+    "ambientEnabled": true,
+    "ambientPath": "",
+    "ambientVolume": 0.6499999761581421,
+    "enabled": true,
+    "footstepPath": "",
+    "footstepRunCadence": 0.23999999463558197,
+    "footstepVolume": 0.6000000238418579,
+    "footstepWalkCadence": 0.3400000035762787,
+    "footstepsEnabled": true,
+    "masterVolume": 1.0,
+    "mute": false
+  },
+  "playPerfHud": {
+    "enabled": true,
+    "expanded": false,
+    "opacity": 0.3799999952316284
+  },
+  "postProcess": {
+    "autoExposureMax": 1.5499999523162842,
+    "autoExposureMin": 0.7200000286102295,
+    "autoExposureSpeed": 0.07999999821186066,
+    "autoExposureTarget": 0.4399999976158142,
+    "bloomIntensity": 0.8500000238418579,
+    "bloomScale": 0.550000011920929,
+    "bloomThreshold": 0.7200000286102295,
+    "blurIterations": 7,
+    "brightness": 1.0,
+    "distanceTintColor": [
+      0.6499999761581421,
+      0.75,
+      0.8999999761581421
+    ],
+    "distanceTintEnd": 220.0,
+    "distanceTintStart": 80.0,
+    "enableAutoExposure": true,
+    "enableColorGrade": false,
+    "enableDistanceTint": false,
+    "enableFXAA": true,
+    "enableOutline": false,
+    "enablePaletteQuantize": false,
+    "enableSSAO": true,
+    "enableTAA": true,
+    "enableVolumetricFog": true,
+    "fxaaReduceMin": 0.0078125,
+    "fxaaReduceMul": 0.125,
+    "fxaaSpanMax": 8.0,
+    "gradeContrast": 1.059999942779541,
+    "gradeGain": 1.0299999713897705,
+    "gradeGamma": 1.0,
+    "gradeLift": -0.014999999664723873,
+    "gradeSaturation": 1.0800000429153442,
+    "gradeTint": [
+      1.0299999713897705,
+      1.0,
+      0.9599999785423279
+    ],
+    "outlineColor": [
+      0.019999999552965164,
+      0.019999999552965164,
+      0.019999999552965164
+    ],
+    "outlineStrength": 0.800000011920929,
+    "outlineThickness": 1.0,
+    "outlineThreshold": 0.0020000000949949026,
+    "paletteSteps": 6,
+    "ssaoBias": 0.014999999664723873,
+    "ssaoFullResTerrain": true,
+    "ssaoIntensity": 1.25,
+    "ssaoPower": 1.350000023841858,
+    "ssaoQuality": 4,
+    "ssaoRadius": 0.8999999761581421,
+    "ssaoSamples": 48,
+    "ssaoScale": 1.0,
+    "ssaoScaleRadius": true,
+    "taaHistoryBlend": 0.8600000143051147,
+    "taaJitterScale": 1.0,
+    "taaMotionReset": 0.3499999940395355,
+    "volumetricFogDensity": 0.02199999988079071,
+    "volumetricLightDecay": 0.9599999785423279,
+    "volumetricLightExposure": 0.4000000059604645,
+    "volumetricLightWeight": 0.125,
+    "volumetricQuality": 3,
+    "volumetricSamples": 32,
+    "volumetricScale": 0.800000011920929
+  },
+  "renderSettings": {
+    "aerialPerspectiveDensity": 0.001449999981559813,
+    "aerialPerspectiveDesaturation": 0.3799999952316284,
+    "aerialPerspectiveEnabled": true,
+    "aerialPerspectiveHeightFalloff": 0.005499999970197678,
+    "aerialPerspectiveSkyBlend": 0.7599999904632568,
+    "aerialPerspectiveStart": 45.0,
+    "aerialPerspectiveSunGlow": 0.41999998688697815,
+    "ambientGroundColor": [
+      0.18000000715255737,
+      0.20999999344348907,
+      0.1599999964237213
+    ],
+    "ambientHemisphereEnabled": true,
+    "ambientHemisphereIntensity": 1.0499999523162842,
+    "ambientHorizonColor": [
+      0.5,
+      0.5799999833106995,
+      0.47999998927116394
+    ],
+    "ambientHorizonStrength": 0.44999998807907104,
+    "ambientRampBottom": [
+      0.20000000298023224,
+      0.25,
+      0.2800000011920929
+    ],
+    "ambientRampEnabled": false,
+    "ambientRampStrength": 0.6000000238418579,
+    "ambientRampTop": [
+      0.699999988079071,
+      0.8199999928474426,
+      0.949999988079071
+    ],
+    "ambientSkyColor": [
+      0.6200000047683716,
+      0.7400000095367432,
+      0.8799999952316284
+    ],
+    "ambientSkyInfluence": 0.6499999761581421,
+    "ambientTerrainBoost": 1.149999976158142,
+    "disableClouds": false,
+    "disableHDR": true,
+    "disableShadows": false,
+    "enableCascadedShadows": true,
+    "exposure": 1.1200000047683716,
+    "fogColor": [
+      0.5799999833106995,
+      0.6600000262260437,
+      0.7599999904632568
+    ],
+    "fogDensity": 0.00139999995008111,
+    "fogHeightFalloff": 0.017999999225139618,
+    "freezeTime": false,
+    "frozenTime": 335.9728088378906,
+    "frustumCulling": true,
+    "gamma": 2.200000047683716,
+    "mixVal": 0.5,
+    "rimColor": [
+      0.8999999761581421,
+      0.949999988079071,
+      1.0
+    ],
+    "rimEnabled": false,
+    "rimPower": 2.0,
+    "rimStrength": 0.6000000238418579,
+    "shadowBandEnabled": false,
+    "shadowBandSoftness": 0.20000000298023224,
+    "shadowBandSteps": 3,
+    "shadowCameraCulling": true,
+    "shadowCascadeAngleScale": 1.600000023841858,
+    "shadowCascadeCadence": 2,
+    "shadowCascadeCount": 4,
+    "shadowCascadeDistance": 760.0,
+    "shadowCascadeDistanceScale": 2.0,
+    "shadowCascadeLambda": 0.6800000071525574,
+    "shadowDepthBias": 0.00139999995008111,
+    "shadowFarPlane": 320.0,
+    "shadowMapResolution": 2048,
+    "shadowNormalBias": 0.029999999329447746,
+    "shadowSoftness": 1.0,
+    "shadowStaggeredUpdates": true,
+    "shadowStrength": 1.149999976158142,
+    "shadowUpdateAngle": 1.399999976158142,
+    "shadowUpdateDistance": 0.3499999940395355,
+    "shadowUpdateInterval": 1,
+    "showShadowCascades": false,
+    "toonEnabled": false,
+    "toonMin": 0.11999999731779099,
+    "toonSteps": 4,
+    "wireframe": false
+  },
+  "skySettings": {
+    "blackHoleAzimuth": 225.0,
+    "blackHoleBackgroundStarIntensity": 0.05000000074505806,
+    "blackHoleChromaticAberration": 0.07999999821186066,
+    "blackHoleColor": [
+      1.0,
+      0.5799999833106995,
+      0.18000000715255737
+    ],
+    "blackHoleCoronaIntensity": 0.20000000298023224,
+    "blackHoleDiskDensity": 2.8499999046325684,
+    "blackHoleDiskFlowShear": 0.019999999552965164,
+    "blackHoleDiskInclinationDeg": 84.19999694824219,
+    "blackHoleDiskSpinSpeed": 8.0,
+    "blackHoleDiskTemperature": 0.6299999952316284,
+    "blackHoleDiskTiltDeg": 2.0999999046325684,
+    "blackHoleDiskTurbulence": 0.6100000143051147,
+    "blackHoleDistortion": 0.6200000047683716,
+    "blackHoleDopplerBoost": 0.4000000059604645,
+    "blackHoleEclipseStrength": 0.4000000059604645,
+    "blackHoleElevation": 28.0,
+    "blackHoleExposure": 1.0,
+    "blackHoleHaloIntensity": 0.23999999463558197,
+    "blackHoleInnerDiskRadius": 1.2799999713897705,
+    "blackHoleJetIntensity": 0.0,
+    "blackHoleLensingStrength": 0.8999999761581421,
+    "blackHoleOuterDiskRadius": 7.440000057220459,
+    "blackHolePhotonRingIntensity": 0.0,
+    "blackHoleQuality": 2,
+    "blackHoleRingIntensity": 4.599999904632568,
+    "blackHoleRingWidth": 0.18000000715255737,
+    "blackHoleShadowStrength": 0.25999999046325684,
+    "blackHoleSizeDeg": 10.399999618530273,
+    "blackHoleStarLensIntensity": 0.699999988079071,
+    "blackHoleViewPitchDeg": -89.0,
+    "cycleSpeed": 0.019999999552965164,
+    "dayHorizon": [
+      0.05999999865889549,
+      0.03999999910593033,
+      0.10000000149011612
+    ],
+    "dayNightEnabled": false,
+    "dayTop": [
+      0.0,
+      0.0,
+      0.029999999329447746
+    ],
+    "firefliesEnabled": true,
+    "fireflyColor": [
+      0.8999999761581421,
+      1.0,
+      0.6499999761581421
+    ],
+    "fireflyCount": 120,
+    "fireflyHeightMax": 4.0,
+    "fireflyHeightMin": 0.6000000238418579,
+    "fireflyIntensity": 1.2000000476837158,
+    "fireflyRadius": 28.0,
+    "fireflySize": 6.0,
+    "minimalSky": false,
+    "nightHorizon": [
+      0.019999999552965164,
+      0.009999999776482582,
+      0.03999999910593033
+    ],
+    "nightTop": [
+      0.0,
+      0.0,
+      0.019999999552965164
+    ],
+    "skyAtmosphereStrength": 0.2800000011920929,
+    "skyBackdropBlend": 0.8500000238418579,
+    "skyFeatureVisibility": 0.07999999821186066,
+    "skyGradientPower": 1.149999976158142,
+    "skyHDRPath": "assets\\hdr\\hdr_1\\cloudy.hdr",
+    "skyHorizon": [
+      0.05999999865889549,
+      0.03999999910593033,
+      0.10000000149011612
+    ],
+    "skyHorizonGlow": 0.1599999964237213,
+    "skySunDiscIntensity": 14.0,
+    "skySunDiscSoftness": 0.00139999995008111,
+    "skySunHaloIntensity": 0.44999998807907104,
+    "skySunHaloSize": 0.18000000715255737,
+    "skySunRaySharpness": 12.0,
+    "skySunRaysIntensity": 0.11999999731779099,
+    "skyTop": [
+      0.0,
+      0.0,
+      0.029999999329447746
+    ],
+    "solidSky": true,
+    "sunDayColor": [
+      1.0,
+      0.949999988079071,
+      0.8500000238418579
+    ],
+    "sunDuskColor": [
+      1.0,
+      0.550000011920929,
+      0.25
+    ],
+    "sunNightColor": [
+      0.10000000149011612,
+      0.15000000596046448,
+      0.30000001192092896
+    ],
+    "timeOfDay": 0.3499999940395355,
+    "useBlackHole": true,
+    "visualSunColor": [
+      1.0,
+      0.8600000143051147,
+      0.5799999833106995
+    ],
+    "visualSunDayColor": [
+      1.0,
+      0.8799999952316284,
+      0.6200000047683716
+    ],
+    "visualSunDuskColor": [
+      1.0,
+      0.47999998927116394,
+      0.18000000715255737
+    ],
+    "visualSunNightColor": [
+      0.1599999964237213,
+      0.2199999988079071,
+      0.44999998807907104
+    ]
+  },
+  "sunSettings": {
+    "ambientStrength": 0.6700000166893005,
+    "glowStrength": 0.5419999957084656,
+    "lightIntensity": 1.8600000143051147,
+    "sunAzimuth": 180.0,
+    "sunColor": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "sunDir": [
+      -0.18814417719841003,
+      -0.9407208561897278,
+      -0.28221628069877625
+    ],
+    "sunElevation": 45.0,
+    "sunSize": 0.5799999833106995
+  },
+  "version": 1,
+  "viewmodelSettings": {
+    "activeSlot": 1,
+    "axeEnabled": false,
+    "axeOffset": [
+      0.05999999865889549,
+      -0.15000000596046448,
+      0.23999999463558197
+    ],
+    "axeRotation": [
+      117.5,
+      84.5,
+      2.0
+    ],
+    "axeScale": [
+      0.6600000262260437,
+      0.6600000262260437,
+      0.6600000262260437
+    ],
+    "torchEnabled": false,
+    "torchOffset": [
+      0.11999999731779099,
+      -0.30000001192092896,
+      0.4000000059604645
+    ],
+    "torchRotation": [
+      -20.0,
+      -20.0,
+      0.0
+    ],
+    "torchScale": [
+      0.05000000074505806,
+      0.5,
+      0.05000000074505806
+    ],
+    "usePlayerCameraInEdit": false
+  }
+}

@@ -25,28 +25,17 @@ struct VisibilityStats;
 struct TerrainSettings;
 class TerrainSystem;
 class EditorCamera;
+struct AudioSettings;
+struct TerrainBrushSettings;
+struct SelectionState;
+struct HistoryState;
+struct PendingActions;
+struct GameplayState;
 
 // ---------------------------------------------------------------------------
 // Selection state for outliner / gizmo
 // ---------------------------------------------------------------------------
-struct EditorSelectionState {
-  uint32_t &selectedEntityId;
-  std::vector<uint32_t> &selectedEntities;
-  uint32_t &lastClickedEntity;
-
-  bool &editObjPart;
-  std::string &selectedObjPartName;
-
-  bool &editColliderBounds;
-
-  int &gizmoOp;
-  int &gizmoMode;
-
-  bool &renaming;
-  char *renameBuf;
-  char *outlinerFilter;
-  float &focusDistance;
-};
+// Selection state is now passed via SelectionState directly
 
 // ---------------------------------------------------------------------------
 // EditorContext — single struct replaces the 14-parameter draw() signature.
@@ -62,6 +51,7 @@ struct EditorContext {
   float &jumpStrength;
   float &gravity;
   bool &freezePhysics;
+  bool &creativeFlight;
   float &mouseSensitivity;
   float &fov;
 
@@ -84,12 +74,7 @@ struct EditorContext {
   TerrainMaterialSettings &terrainMaterial;
   TerrainSystem &terrainSystem;
   EditorCamera &editorCamera;
-  bool &terrainBrushEnabled;
-  int &terrainBrushMode;
-  int &terrainBrushTarget;
-  float &terrainBrushRadius;
-  float &terrainBrushStrength;
-  int &terrainBrushScatterCount;
+  TerrainBrushSettings &terrainBrush;
 
   // Sky params stored in AppState
   bool &solidSky;
@@ -110,6 +95,40 @@ struct EditorContext {
   glm::vec3 &visualSunDayColor;
   glm::vec3 &visualSunDuskColor;
   glm::vec3 &visualSunNightColor;
+  bool &useBlackHole;
+  bool &blackHoleWorldMode;
+  float &blackHoleAzimuth;
+  float &blackHoleElevation;
+  glm::vec3 &blackHoleWorldPosition;
+  float &blackHoleWorldRadius;
+  float &blackHoleViewPitchDeg;
+  float &blackHoleSizeDeg;
+  float &blackHoleDiskTiltDeg;
+  float &blackHoleDiskInclinationDeg;
+  glm::vec3 &blackHoleColor;
+  float &blackHoleRingIntensity;
+  float &blackHoleRingWidth;
+  float &blackHoleDistortion;
+  float &blackHoleHaloIntensity;
+  float &blackHoleDiskSpinSpeed;
+  float &blackHoleDiskFlowShear;
+  float &blackHoleDiskTurbulence;
+  float &blackHoleChromaticAberration;
+  float &blackHoleEclipseStrength;
+  float &blackHolePhotonRingIntensity;
+  float &blackHoleDopplerBoost;
+  float &blackHoleJetIntensity;
+  float &blackHoleCoronaIntensity;
+  float &blackHoleStarLensIntensity;
+  float &blackHoleShadowStrength;
+  float &blackHoleInnerDiskRadius;
+  float &blackHoleOuterDiskRadius;
+  float &blackHoleDiskTemperature;
+  float &blackHoleDiskDensity;
+  float &blackHoleLensingStrength;
+  float &blackHoleBackgroundStarIntensity;
+  float &blackHoleExposure;
+  int &blackHoleQuality;
   float &skyAtmosphereStrength;
   float &skyGradientPower;
   float &skyHorizonGlow;
@@ -192,30 +211,10 @@ struct EditorContext {
   bool &disableClouds;
   bool &disableHDR;
   bool &freezeTime;
-  int &woodCount;
-  int &activeViewmodelSlot;
-  bool &axeEnabled;
-  glm::vec3 &axeOffset;
-  glm::vec3 &axeRotation;
-  glm::vec3 &axeScale;
-  bool &torchEnabled;
-  glm::vec3 &torchOffset;
-  glm::vec3 &torchRotation;
-  glm::vec3 &torchScale;
-  bool &usePlayerCameraInEdit;
+  GameplayState &gameplay;
 
-  // Audio
-  bool &audioEnabled;
-  bool &audioMute;
-  float &audioMasterVolume;
-  bool &ambientAudioEnabled;
-  std::string &ambientAudioPath;
-  float &ambientAudioVolume;
-  bool &footstepAudioEnabled;
-  std::string &footstepAudioPath;
-  float &footstepAudioVolume;
-  float &footstepWalkCadence;
-  float &footstepRunCadence;
+  // Audio (owned by AudioSubsystem)
+  AudioSettings &audio;
   bool &audioBackendAvailable;
   std::string &audioStatus;
 
@@ -235,8 +234,8 @@ struct EditorContext {
   bool &autoProcessImportQueue;
   bool &iconFontLoaded;
   const std::vector<std::string> *hotReloadMessages = nullptr;
-  const std::vector<std::string> *historyLabels = nullptr;
-  int historyIndex = -1;
+  HistoryState &history;
+  PendingActions &pending;
   const std::vector<FrameProfiler::Sample> *cpuSamples = nullptr;
   float gpuFrameMs = 0.0f;
   float gpuShadowMs = 0.0f;
@@ -248,7 +247,7 @@ struct EditorContext {
   const FramePerformanceSnapshot &performance;
 
   // Selection State
-  EditorSelectionState &selection;
+  SelectionState &selection;
 
   // Play state (reference into AppState)
   int &playState; // 0=Stopped, 1=Playing, 2=Paused
@@ -286,7 +285,7 @@ public:
   // Gizmo & Outliner (separate window)
   bool drawGizmo(bool uiMode, const glm::mat4 &view,
                  const glm::mat4 &projection, Scene &scene, SunFX &sun,
-                 EventBus &events, EditorSelectionState &sel,
+                 EventBus &events, SelectionState &sel,
                  glm::vec3 &cameraPos);
 
   // Toolbar state — accessible from outside for gizmo/wireframe sync

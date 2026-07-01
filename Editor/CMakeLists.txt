@@ -16,7 +16,7 @@ if(EDITOR_SOURCES)
     list(APPEND EDITOR_SOURCES "${CMAKE_SOURCE_DIR}/ThirdParty/tinyfiledialogs/tinyfiledialogs.c")
     
     add_library(Editor STATIC ${EDITOR_SOURCES})
-    target_include_directories(Editor PUBLIC . ../Engine "${CMAKE_SOURCE_DIR}/ThirdParty/tinyfiledialogs")
+    target_include_directories(Editor PUBLIC . ../Engine ../Runtime/Framework "${CMAKE_SOURCE_DIR}/ThirdParty/tinyfiledialogs")
     target_link_libraries(Editor PUBLIC Engine)
 else()
     add_library(Editor INTERFACE)

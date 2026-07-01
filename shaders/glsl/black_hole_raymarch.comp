@@ -1,0 +1,600 @@
+#version 430 core
+
+// Adapted for glGen from hydrogendeuteride/BlackHoleRayTracer (MIT License).
+// Original project: https://github.com/hydrogendeuteride/BlackHoleRayTracer
+// Copyright (c) 2024 hydrogendeuteride
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(rgba16f, binding = 0) uniform image2D uOutputImage;
+
+uniform vec2 uResolution;
+uniform float uTime;
+uniform mat4 uView;
+uniform vec3 uCameraPos;
+uniform mat4 uEngineInvProj;
+uniform mat4 uEngineInvView;
+uniform vec3 uCameraRight;
+uniform vec3 uCameraUp;
+uniform vec3 uCameraForward;
+uniform vec3 uSkyDirection;
+uniform vec3 uSkyRight;
+uniform vec3 uSkyUp;
+uniform float uAngularRadius;
+
+uniform int uIntegrationType;
+uniform bool uDisk;
+uniform bool uDopplerShift;
+uniform bool uGravitationalRedShift;
+uniform bool uBeaming;
+uniform bool uRealisticTemperature;
+uniform float uDiskInnerRadius;
+uniform float uDiskOuterRadius;
+uniform float uDiskTiltDeg;
+uniform float uDiskInclinationDeg;
+uniform float uDiskDensity;
+uniform float uDiskTurbulence;
+uniform float uDiskSpinSpeed;
+uniform float uDiskFlowShear;
+uniform float uDiskSpinPhase;
+uniform vec3 uDiskColor;
+uniform float uDopplerStrength;
+uniform float uLensingStrength;
+uniform float uPhotonRingIntensity;
+uniform float uRingWidth;
+uniform float uCoronaIntensity;
+uniform float uShadowStrength;
+uniform float uAccretionTemp;
+uniform float uExposure;
+uniform float uBackgroundStarIntensity;
+
+const float diskDensityV = 2.0;
+const float diskNoiseScale = 1.0;
+
+const float minDensity = 0.001;
+const int diskNoiseLOD = 4;
+const float steps = 0.01;
+const int iteration = 1024;
+const int maxTurns = 6;
+const float PI = 3.14159265;
+
+const float LightSpeed = 2.99792458e8;
+const float BoltzmannConstant = 1.3806504e-23;
+const float PlanckConstant = 6.62607015e-34;
+const int integrationNum = 80;
+
+const vec3 matchingFunctions[81] = vec3[](
+vec3(0.0014, 0.0000, 0.0065), vec3(0.0022, 0.0001, 0.0105), vec3(0.0042, 0.0001, 0.0201),
+vec3(0.0076, 0.0002, 0.0362), vec3(0.0143, 0.0004, 0.0679), vec3(0.0232, 0.0006, 0.1102),
+vec3(0.0435, 0.0012, 0.2074), vec3(0.0776, 0.0022, 0.3713), vec3(0.1344, 0.0040, 0.6456),
+vec3(0.2148, 0.0073, 1.0391), vec3(0.2839, 0.0116, 1.3856), vec3(0.3285, 0.0168, 1.6230),
+vec3(0.3483, 0.0230, 1.7471), vec3(0.3481, 0.0298, 1.7826), vec3(0.3362, 0.0380, 1.7721),
+vec3(0.3187, 0.0480, 1.7441), vec3(0.2908, 0.0600, 1.6692), vec3(0.2511, 0.0739, 1.5281),
+vec3(0.1954, 0.0910, 1.2876), vec3(0.1421, 0.1126, 1.0419), vec3(0.0956, 0.1390, 0.8130),
+vec3(0.0580, 0.1693, 0.6162), vec3(0.0320, 0.2080, 0.4652), vec3(0.0147, 0.2586, 0.3533),
+vec3(0.0049, 0.3230, 0.2720), vec3(0.0024, 0.4073, 0.2123), vec3(0.0093, 0.5030, 0.1582),
+vec3(0.0291, 0.6082, 0.1117), vec3(0.0633, 0.7100, 0.0782), vec3(0.1096, 0.7932, 0.0573),
+vec3(0.1655, 0.8620, 0.0422), vec3(0.2257, 0.9149, 0.0298), vec3(0.2904, 0.9540, 0.0203),
+vec3(0.3597, 0.9803, 0.0134), vec3(0.4334, 0.9950, 0.0087), vec3(0.5121, 1.0000, 0.0057),
+vec3(0.5945, 0.9950, 0.0039), vec3(0.6784, 0.9786, 0.0027), vec3(0.7621, 0.9520, 0.0021),
+vec3(0.8425, 0.9154, 0.0018), vec3(0.9163, 0.8700, 0.0017), vec3(0.9786, 0.8163, 0.0014),
+vec3(1.0263, 0.7570, 0.0011), vec3(1.0567, 0.6949, 0.0010), vec3(1.0622, 0.6310, 0.0008),
+vec3(1.0456, 0.5668, 0.0006), vec3(1.0026, 0.5030, 0.0003), vec3(0.9384, 0.4412, 0.0002),
+vec3(0.8544, 0.3810, 0.0002), vec3(0.7514, 0.3210, 0.0001), vec3(0.6424, 0.2650, 0.0000),
+vec3(0.5419, 0.2170, 0.0000), vec3(0.4479, 0.1750, 0.0000), vec3(0.3608, 0.1382, 0.0000),
+vec3(0.2835, 0.1070, 0.0000), vec3(0.2187, 0.0816, 0.0000), vec3(0.1649, 0.0610, 0.0000),
+vec3(0.1212, 0.0446, 0.0000), vec3(0.0874, 0.0320, 0.0000), vec3(0.0636, 0.0232, 0.0000),
+vec3(0.0468, 0.0170, 0.0000), vec3(0.0329, 0.0119, 0.0000), vec3(0.0227, 0.0082, 0.0000),
+vec3(0.0158, 0.0057, 0.0000), vec3(0.0114, 0.0041, 0.0000), vec3(0.0081, 0.0029, 0.0000),
+vec3(0.0058, 0.0021, 0.0000), vec3(0.0041, 0.0015, 0.0000), vec3(0.0029, 0.0010, 0.0000),
+vec3(0.0020, 0.0007, 0.0000), vec3(0.0014, 0.0005, 0.0000), vec3(0.0010, 0.0004, 0.0000),
+vec3(0.0007, 0.0002, 0.0000), vec3(0.0005, 0.0002, 0.0000), vec3(0.0003, 0.0001, 0.0000),
+vec3(0.0002, 0.0001, 0.0000), vec3(0.0002, 0.0001, 0.0000), vec3(0.0001, 0.0000, 0.0000),
+vec3(0.0001, 0.0000, 0.0000), vec3(0.0001, 0.0000, 0.0000), vec3(0.0000, 0.0000, 0.0000)
+);
+
+const mat3 rec2020Transform = mat3(
+1.7167, -0.6667, 0.0176,
+-0.3557, 1.6165, -0.0428,
+-0.2534, 0.0158, 0.9421
+);
+
+vec4 permute(vec4 x){ return mod(((x*34.0)+1.0)*x, 289.0); }
+vec4 taylorInvSqrt(vec4 r){ return 1.79284291400159 - 0.85373472095314 * r; }
+
+float snoise(vec3 v) {
+    const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+    const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+    vec3 i = floor(v + dot(v, C.yyy));
+    vec3 x0 = v - i + dot(i, C.xxx);
+    vec3 g = step(x0.yzx, x0.xyz);
+    vec3 l = 1.0 - g;
+    vec3 i1 = min(g.xyz, l.zxy);
+    vec3 i2 = max(g.xyz, l.zxy);
+    vec3 x1 = x0 - i1 + C.xxx;
+    vec3 x2 = x0 - i2 + C.yyy;
+    vec3 x3 = x0 - D.yyy;
+    i = mod(i, 289.0);
+    vec4 p = permute(permute(permute(i.z + vec4(0.0, i1.z, i2.z, 1.0))
+           + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+           + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+    float n_ = 1.0 / 7.0;
+    vec3 ns = n_ * D.wyz - D.xzx;
+    vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+    vec4 x_ = floor(j * ns.z);
+    vec4 y_ = floor(j - 7.0 * x_);
+    vec4 x = x_ * ns.x + ns.yyyy;
+    vec4 y = y_ * ns.x + ns.yyyy;
+    vec4 h = 1.0 - abs(x) - abs(y);
+    vec4 b0 = vec4(x.xy, y.xy);
+    vec4 b1 = vec4(x.zw, y.zw);
+    vec4 s0 = floor(b0) * 2.0 + 1.0;
+    vec4 s1 = floor(b1) * 2.0 + 1.0;
+    vec4 sh = -step(h, vec4(0.0));
+    vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+    vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+    vec3 p0 = vec3(a0.xy, h.x);
+    vec3 p1 = vec3(a0.zw, h.y);
+    vec3 p2 = vec3(a1.xy, h.z);
+    vec3 p3 = vec3(a1.zw, h.w);
+    vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+    vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+    m = m * m;
+    return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+}
+
+float hash13(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+
+vec3 proceduralSky(vec3 dir) {
+    dir = normalize(dir);
+    vec3 bandAxis = normalize(vec3(-0.18, 0.62, 0.77));
+    float band = exp(-pow(dot(dir, bandAxis), 2.0) * 10.0);
+    float lon = atan(dir.z, dir.x);
+    float lat = asin(clamp(dir.y, -1.0, 1.0));
+    vec3 cell = floor(vec3(lon * 220.0, lat * 220.0, lon * 31.0 + lat * 57.0));
+    float h = hash13(cell);
+    float star = smoothstep(0.9965, 1.0, h);
+    vec3 starColor = mix(vec3(0.62, 0.72, 1.0), vec3(1.0, 0.84, 0.58), hash13(cell + 9.1));
+    vec3 galaxy = vec3(0.018, 0.023, 0.065) + vec3(0.18, 0.15, 0.10) * band;
+    return (galaxy + starColor * star * (1.0 + h * 12.0)) * uBackgroundStarIntensity;
+}
+
+vec3 toSpherical(vec3 pos) {
+    float rho = length(pos);
+    float theta = atan(pos.z, pos.x);
+    float phi = asin(pos.y / max(rho, 1e-8));
+    return vec3(rho, theta, phi);
+}
+
+float diskInnerRadius() { return max(uDiskInnerRadius, 1.6); }
+float diskOuterRadius() { return max(uDiskOuterRadius, diskInnerRadius() + 0.75); }
+
+float diskHeightAt(float radius) {
+    float thickness = mix(0.055, 0.13, clamp(uDiskDensity / 3.0, 0.0, 1.0));
+    float flare = mix(0.9, 1.8, smoothstep(diskInnerRadius(), diskOuterRadius(), radius));
+    return thickness * flare;
+}
+
+mat3 diskBasis() {
+    float tilt = radians(uDiskTiltDeg);
+    float inclination = radians(clamp(uDiskInclinationDeg, 0.0, 88.0));
+    vec3 right = normalize(uCameraRight);
+    vec3 up = normalize(uCameraUp);
+    vec3 forward = normalize(uCameraForward);
+    vec3 lineOfNodes = normalize(cos(tilt) * right + sin(tilt) * up);
+    vec3 normal = normalize(cos(inclination) * forward +
+                            sin(inclination) * cross(lineOfNodes, forward));
+    vec3 tangent = normalize(lineOfNodes);
+    vec3 bitangent = normalize(cross(normal, tangent));
+    return mat3(tangent, normal, bitangent);
+}
+
+vec3 toDiskLocal(vec3 pos) { return transpose(diskBasis()) * pos; }
+
+void sph_yup(vec3 pos, out float r, out float theta, out float phi, out float sinTheta) {
+    r = length(pos);
+    float cy = clamp(pos.y / max(r, 1e-8), -1.0, 1.0);
+    theta = acos(cy);
+    sinTheta = sqrt(max(0.0, 1.0 - cy * cy));
+    phi = atan(pos.z, pos.x);
+}
+
+float calculateRealisticTemperature(vec3 pos, float baseTemp) {
+    float innerR = diskInnerRadius();
+    float r = max(length(pos.xz), innerR);
+    return baseTemp * pow(innerR / r, 0.75);
+}
+
+vec3 convertToRGB(float cX, float cY, float cZ, float normalized_cY) {
+    float denom = cX + cY + cZ;
+    float x = denom > 0.0 ? cX / denom : 0.0;
+    float y = denom > 0.0 ? cY / denom : 0.0;
+    float z = 1.0 - x - y;
+    vec3 outputColor = rec2020Transform * vec3(x / max(y, 1e-8), 1.0, z / max(y, 1e-8));
+    outputColor = max(outputColor, vec3(0.0));
+    float maxVal = max(max(outputColor.r, outputColor.g), outputColor.b);
+    if (maxVal > 1.0) outputColor /= maxVal;
+    return outputColor * normalized_cY;
+}
+
+vec3 getBlackbodyColor(float temperature, float redshiftFactor) {
+    float cX = 0.0, cY = 0.0, cZ = 0.0;
+    float wavelength = 380.0;
+    float adjustedTemperature = temperature / max(redshiftFactor, 1e-6);
+    for (int i = 0; i < integrationNum; i++) {
+        wavelength += 5.0;
+        float lambda = wavelength * 1e-9;
+        float intensity = ((2.0 * PlanckConstant * pow(LightSpeed, 2.0)) / pow(lambda, 5.0)) /
+            (exp((PlanckConstant * LightSpeed) / (lambda * BoltzmannConstant * adjustedTemperature)) - 1.0);
+        cX += intensity * matchingFunctions[i].x * 5.0;
+        cY += intensity * matchingFunctions[i].y * 5.0;
+        cZ += intensity * matchingFunctions[i].z * 5.0;
+    }
+    vec3 rgb = convertToRGB(cX, cY, cZ, 1.0);
+    float tK = clamp(adjustedTemperature, 1000.0, 30000.0);
+    return rgb * pow(tK / 6500.0, 4.0);
+}
+
+vec4 computePhotonFourMomentum(vec3 pos, vec3 dir, bool useGR) {
+    float r, theta, phi, sinTheta;
+    sph_yup(pos, r, theta, phi, sinTheta);
+    vec3 er = (r > 0.0) ? pos / r : vec3(0, 1, 0);
+    vec3 ephi = normalize(vec3(-sin(phi), 0.0, cos(phi)));
+    vec3 etheta = normalize(vec3(cos(theta)*cos(phi), -sin(theta), cos(theta)*sin(phi)));
+    vec3 d = normalize(dir);
+    float pr = dot(d, er);
+    float pth = dot(d, etheta) / max(r, 1e-8);
+    float pph = dot(d, ephi) / max(r * max(sinTheta, 1e-6), 1e-8);
+    float f = useGR ? (1.0 - 1.0 / max(r, 1.000001)) : 1.0;
+    float spatial = (pr*pr)/max(f, 1e-8) + (r*r)*(pth*pth) + (r*r)*(sinTheta*sinTheta)*(pph*pph);
+    float pt = sqrt(max(spatial / max(f, 1e-8), 0.0));
+    return vec4(pt, pr, pth, pph);
+}
+
+float lorentzDot(vec4 a, vec4 b, vec3 pos, bool useGR) {
+    float r, theta, phi, sinTheta;
+    sph_yup(pos, r, theta, phi, sinTheta);
+    float f = useGR ? (1.0 - 1.0 / max(r, 1.000001)) : 1.0;
+    return -f * a.x * b.x + (1.0 / max(f, 1e-8)) * a.y * b.y +
+           (r*r) * a.z * b.z + (r*r) * (sinTheta*sinTheta) * a.w * b.w;
+}
+
+vec4 uStatic(vec3 pos, bool useGR) {
+    float r = length(pos);
+    float f = useGR ? (1.0 - 1.0 / max(r, 1.000001)) : 1.0;
+    return vec4(inversesqrt(max(f, 1e-8)), 0.0, 0.0, 0.0);
+}
+
+vec4 uDiskOrbit(vec3 pos, bool useGR) {
+    float r = max(length(pos), 1.500001);
+    float ut = useGR ? inversesqrt(max(1.0 - 1.5 / r, 1e-8))
+                     : inversesqrt(max(1.0 - 0.5 / r, 1e-8));
+    float uphi = ut * sqrt(0.5 / (r*r*r));
+    return vec4(ut, 0.0, 0.0, uphi);
+}
+
+float gFactor(vec3 pos, vec3 dir, bool useGR, bool useDoppler) {
+    vec4 p = computePhotonFourMomentum(pos, dir, useGR);
+    vec4 u_em = useDoppler ? uDiskOrbit(pos, useGR) : uStatic(pos, useGR);
+    vec4 u_obs = uStatic(uCameraPos, useGR);
+    float w_em = -lorentzDot(p, u_em, pos, useGR);
+    float w_obs = -lorentzDot(p, u_obs, uCameraPos, useGR);
+    return w_obs / max(w_em, 1e-12);
+}
+
+float diskSpin01();
+float diskOrbitalOmega(float radius);
+float diskAdvectedPhi(float phi, float radius);
+
+float calculateDiskTurbulence(vec3 pos) {
+    float r = length(pos.xz);
+    float innerR = diskInnerRadius();
+    float outerR = diskOuterRadius();
+    float turbulence = 0.0;
+    float totalWeight = 0.0;
+    vec3 sphericalCoord = toSpherical(pos);
+    float spin = diskSpin01();
+    float flowShear = clamp(uDiskFlowShear, 0.0, 1.0);
+    float innerBias = 1.0 - smoothstep(innerR, outerR, r);
+    float edgeQuiet = 1.0 - smoothstep(innerR + (outerR - innerR) * 0.62,
+                                      outerR, r);
+    float timeOffset = uDiskSpinPhase * mix(0.0, 3.2, spin) *
+                       mix(1.0, mix(0.82, 1.28, innerBias), flowShear);
+    float amplitude = 1.0;
+    for (int i = 0; i < diskNoiseLOD; i++) {
+        float layerSpeed = mix(1.0, ((i % 2) == 0) ? 1.0 : -0.45, edgeQuiet);
+        float frequency = pow(2.0, float(i));
+        float radialfactor = mix(0.5, 2.0, smoothstep(outerR, innerR * 1.2, r));
+        vec3 turbCoord = vec3(
+            sphericalCoord.x * frequency * radialfactor,
+            (sphericalCoord.y + timeOffset * layerSpeed) * frequency,
+            sphericalCoord.z * frequency +
+                uDiskSpinPhase * 0.025 * spin * flowShear *
+                    (0.5 + frequency) * layerSpeed
+        );
+        float heightEffect =
+            1.0 - 0.5 * smoothstep(0.0, diskHeightAt(r), abs(pos.y));
+        float edgeWeight = mix(0.22, 1.0, edgeQuiet);
+        float weight = amplitude * heightEffect * edgeWeight;
+        turbulence += snoise(turbCoord * diskNoiseScale) * weight;
+        totalWeight += weight;
+        amplitude *= 0.5;
+    }
+    float base = turbulence / max(totalWeight, 1e-6) * 0.5 + 0.5;
+    return mix(0.5, base, clamp(uDiskTurbulence, 0.0, 1.0) * mix(0.35, 1.0, edgeQuiet));
+}
+
+float getTurbulenceIntensity(float radius) {
+    float innerR = diskInnerRadius();
+    float outerR = diskOuterRadius();
+    if (radius < innerR) return 0.3 * smoothstep(0.0, innerR, radius);
+    if (radius < innerR * 2.0) return 1.0;
+    return mix(1.0, 0.08, smoothstep(innerR * 2.0, outerR, radius));
+}
+
+float diskSpin01() {
+    return sqrt(clamp(uDiskSpinSpeed / 8.0, 0.0, 1.0));
+}
+
+float diskOrbitalOmega(float radius) {
+    return sqrt(0.5 / max(radius * radius * radius, 1e-6));
+}
+
+float diskAdvectedPhi(float phi, float radius) {
+    float spin = diskSpin01();
+    if (spin <= 0.0001) return phi;
+    float flowShear = clamp(uDiskFlowShear, 0.0, 1.0);
+    float innerR = diskInnerRadius();
+    float outerR = diskOuterRadius();
+    float innerBias = 1.0 - smoothstep(innerR, outerR, radius);
+    float rigidOrbit = uDiskSpinPhase * mix(0.0, 4.20, spin);
+    float innerShear = uDiskSpinPhase * mix(0.0, 0.95, spin) * innerBias *
+                       flowShear;
+    float keplerShear =
+        uDiskSpinPhase * mix(0.0, 0.18, spin) * flowShear *
+        (diskOrbitalOmega(radius) / max(diskOrbitalOmega(innerR), 1e-6) - 0.35);
+    float phase = rigidOrbit + innerShear + keplerShear;
+    return phi - phase;
+}
+
+float acceleration(float u) {
+    float lens = mix(0.75, 1.35, clamp(uLensingStrength / 1.5, 0.0, 1.0));
+    return -u * (1.0 - (1.5 * lens) * u);
+}
+
+void verlet(inout float u, inout float du, float dt) {
+    float ddu = acceleration(u);
+    float u_new = u + du * dt + 0.5 * ddu * dt * dt;
+    float ddu_new = acceleration(u_new);
+    du += 0.5 * (ddu + ddu_new) * dt;
+    u = u_new;
+}
+
+void rk4(inout float u, inout float du, float dt) {
+    float k1_u = du, k1_du = acceleration(u);
+    float k2_u = du + 0.5 * dt * k1_du, k2_du = acceleration(u + 0.5 * dt * k1_u);
+    float k3_u = du + 0.5 * dt * k2_du, k3_du = acceleration(u + 0.5 * dt * k2_u);
+    float k4_u = du + dt * k3_du, k4_du = acceleration(u + dt * k3_u);
+    u += (dt / 6.0) * (k1_u + 2.0 * k2_u + 2.0 * k3_u + k4_u);
+    du += (dt / 6.0) * (k1_du + 2.0 * k2_du + 2.0 * k3_du + k4_du);
+}
+
+void shadeDiskSurface(vec3 p, vec3 rayDir, float ds, inout vec4 color, inout float Tr) {
+    vec3 diskPos = toDiskLocal(p);
+    vec3 diskRay = normalize(toDiskLocal(normalize(rayDir)));
+    float innerR = diskInnerRadius();
+    float outerR = diskOuterRadius();
+    float r = length(diskPos.xz);
+    float innerMask = smoothstep(innerR, innerR * 1.15, r);
+    float outerMask = 1.0 - smoothstep(outerR * 0.98, outerR, r);
+    if (innerMask * outerMask <= 0.0) return;
+    float outerCalm = 1.0 - smoothstep(innerR + (outerR - innerR) * 0.58,
+                                      outerR, r);
+    float stripeFade = smoothstep(innerR, innerR + (outerR - innerR) * 0.16, r) *
+                       pow(clamp(outerCalm, 0.0, 1.0), 1.35);
+
+    float h = diskHeightAt(r);
+    if (abs(diskPos.y) > h * 3.0) return;
+    float vert = exp(-pow(abs(diskPos.y), diskDensityV) / max(2.0 * h * h, 1e-6));
+    float turb = calculateDiskTurbulence(diskPos);
+    float turbStrength = getTurbulenceIntensity(r);
+    float spin = diskSpin01();
+    float flowShear = clamp(uDiskFlowShear, 0.0, 1.0);
+    float phi = atan(diskPos.z, diskPos.x);
+    float phiAdv = diskAdvectedPhi(phi, r);
+    float innerBias = 1.0 - smoothstep(innerR, outerR, r);
+    float spiralPhase =
+        phiAdv * mix(2.8, 6.2, innerBias) +
+        r * mix(0.16, mix(0.58, 0.22, innerBias), flowShear) -
+        log(max(r / innerR, 1.001)) *
+            mix(0.35, mix(1.25, 3.2, innerBias), flowShear);
+    float spiral = 0.5 + 0.5 * sin(spiralPhase);
+    float trailingArm =
+        pow(clamp(spiral, 0.0, 1.0),
+            mix(1.45, 4.75, clamp(uDiskTurbulence, 0.0, 1.0)));
+    float shearNoise = snoise(vec3(phiAdv * 3.5 + r * 0.08, r * 0.42,
+                                   uDiskSpinPhase * 0.18 * max(spin, 0.001)));
+    float filamentPhase =
+        phiAdv * mix(9.0, 16.0, innerBias) +
+        r * mix(0.08, mix(0.42, 0.16, innerBias), flowShear);
+    float filament =
+        pow(clamp(0.5 + 0.5 * sin(filamentPhase + shearNoise * 1.8), 0.0, 1.0),
+            3.0);
+    trailingArm = mix(0.56, trailingArm, stripeFade);
+    filament = mix(0.55, filament, stripeFade);
+    float orbitClumps =
+        smoothstep(0.18, 0.88, trailingArm * 0.55 + filament * 0.30 +
+                                  shearNoise * 0.15 + 0.30);
+    float flowBoost = mix(0.90, 1.70, orbitClumps);
+    float hotspotPhaseA = phiAdv + r * mix(0.0, 0.05, flowShear);
+    float hotspotPhaseB =
+        phiAdv * 1.35 - r * mix(0.0, 0.04, flowShear) + 2.2;
+    float hotspotPhaseC =
+        phiAdv * 0.72 + r * mix(0.0, 0.03, flowShear) - 1.35;
+    float hotspotA = exp(-pow(atan(sin(hotspotPhaseA), cos(hotspotPhaseA)) /
+                               mix(0.55, 0.18, innerBias), 2.0));
+    float hotspotB = exp(-pow(atan(sin(hotspotPhaseB), cos(hotspotPhaseB)) /
+                               mix(0.80, 0.26, innerBias), 2.0));
+    float hotspotC = exp(-pow(atan(sin(hotspotPhaseC), cos(hotspotPhaseC)) /
+                               mix(0.95, 0.36, innerBias), 2.0));
+    float orbitHotspots = max(max(hotspotA, hotspotB * 0.75), hotspotC * 0.55);
+    float brightnessWedge = 0.5 + 0.5 * cos(phiAdv - 0.6 + innerBias * 0.8);
+    float lanePhaseA = phiAdv * mix(2.0, 4.5, innerBias) +
+                       r * mix(0.06, mix(0.52, 0.20, innerBias), flowShear);
+    float lanePhaseB = phiAdv * mix(6.0, 12.0, innerBias) -
+                       r * mix(0.03, mix(0.24, 0.08, innerBias), flowShear) +
+                       shearNoise * mix(0.45, 1.1, flowShear);
+    float broadLane = pow(clamp(0.5 + 0.5 * sin(lanePhaseA), 0.0, 1.0),
+                          mix(0.65, 1.75, innerBias));
+    float fineLane = pow(clamp(0.5 + 0.5 * sin(lanePhaseB), 0.0, 1.0), 3.2);
+    float flowLane = clamp(broadLane * 0.78 + fineLane * 0.34, 0.0, 1.0);
+    flowLane = mix(0.50, flowLane, stripeFade);
+    float laneShadow = pow(1.0 - flowLane, 2.0);
+    float orbitalContrast =
+        mix(1.0, 1.0 + orbitHotspots * 2.4 + brightnessWedge * 0.70,
+            spin * stripeFade);
+
+    float rPeak = innerR * 1.25;
+    float rWidth = (outerR - innerR) * 0.12;
+    float rho = exp(-0.5 * pow((r - rPeak) / max(rWidth, 1e-6), 2.0));
+    rho *= smoothstep(innerR, innerR * 1.05, r);
+    rho *= 1.0 - smoothstep(outerR * 0.98, outerR, r);
+    rho *= pow(innerR / max(r, innerR),
+               mix(0.22, 1.05, clamp(uDiskDensity / 3.0, 0.0, 1.0)));
+    rho *= mix(1.0, mix(0.32, 3.05, flowLane), spin * stripeFade);
+    rho *= mix(1.0, mix(0.72, 1.18, laneShadow), spin * 0.75 * stripeFade);
+    rho *= vert;
+    if (rho < minDensity) return;
+
+    float emissMod = clamp(mix(1.0, mix(0.72, 1.42, turb), turbStrength * stripeFade) *
+                           mix(0.82, 1.24, trailingArm) *
+                           mix(0.92, 1.22, filament) *
+                           mix(1.0, flowBoost, stripeFade) *
+                           mix(1.0, mix(0.58, 2.35, flowLane), spin * stripeFade) *
+                           orbitalContrast, 0.12, 7.0);
+    float T = uRealisticTemperature ? calculateRealisticTemperature(diskPos, uAccretionTemp)
+                                    : uAccretionTemp;
+    float gRaw = (uGravitationalRedShift || uDopplerShift) ?
+                 gFactor(p, diskRay, uGravitationalRedShift, uDopplerShift) : 1.0;
+    float g = mix(1.0, gRaw, clamp(uDopplerStrength / 2.0, 0.0, 1.0));
+    vec3 bb = getBlackbodyColor(T * g, 1.0) *
+              mix(vec3(1.0), max(uDiskColor, vec3(0.0)), 0.85);
+    float beamingStrength = mix(1.0, 3.0, clamp(uDopplerStrength / 2.0, 0.0, 1.0));
+    float I = uBeaming ? pow(max(g, 0.05), beamingStrength) : 1.0;
+
+    const float sigmaAbs = 18.0;
+    float sourceBoost = mix(4.0, 9.5, clamp(uDiskDensity / 3.0, 0.0, 1.0));
+    float tau = sigmaAbs * rho * clamp(ds, 0.0, 0.25);
+    float trans = exp(-tau);
+    vec3 S = bb * (sourceBoost * emissMod) * I;
+    color.rgb += Tr * (1.0 - trans) * S;
+    Tr *= trans;
+}
+
+vec4 rayMarch(vec3 pos, vec3 dir) {
+    vec4 color = vec4(0.0);
+    float Tr = 1.0;
+    float u = 1.0 / length(pos);
+    vec3 n = normalize(pos);
+    vec3 dirN = normalize(dir);
+    vec3 t = dirN - dot(dirN, n) * n;
+    float tLen = length(t);
+    if (tLen < 1e-6) {
+        vec3 a = (abs(n.y) < 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        t = normalize(cross(a, n));
+    } else {
+        t /= tLen;
+    }
+
+    float du = -dot(n, dirN) / max(dot(dirN, t), 1e-6) * u;
+    float phi = 0.0;
+    float maxPhi = float(maxTurns) * 2.0 * PI;
+
+    for (int i = 0; i < iteration; ++i) {
+        float stiff = max(1e-3, abs(1.0 - 1.5 * u));
+        float dt = clamp(steps / stiff, steps * 0.25, steps * 4.0);
+        if (uIntegrationType == 0) verlet(u, du, dt); else rk4(u, du, dt);
+        if (u < 0.0) break;
+        if (u >= 1.0) {
+            Tr = 0.0;
+            break;
+        }
+
+        phi += dt;
+        if (phi > maxPhi) break;
+        vec3 old = pos;
+        pos = (cos(phi) * n + sin(phi) * t) / u;
+        vec3 seg = pos - old;
+        vec3 mid = 0.5 * (old + pos);
+        if (u < 1.0 / 60.0) break;
+        vec3 diskMid = toDiskLocal(mid);
+        float diskR = length(diskMid.xz);
+        if (uDisk && diskR >= diskInnerRadius() && diskR <= diskOuterRadius() &&
+            abs(diskMid.y) <= diskHeightAt(diskR) * 3.0) {
+            shadeDiskSurface(mid, seg, length(seg), color, Tr);
+        }
+        if (Tr < 1e-3) break;
+    }
+
+    color.rgb += Tr * proceduralSky(normalize(dir));
+    return vec4(color.rgb, 1.0);
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    if (pixelCoord.x >= int(uResolution.x) || pixelCoord.y >= int(uResolution.y)) return;
+
+    vec2 screenUv = (vec2(pixelCoord) + 0.5) / uResolution;
+    vec2 ndc = screenUv * 2.0 - 1.0;
+    vec4 clip = vec4(ndc, 1.0, 1.0);
+    vec4 engineViewPos = uEngineInvProj * clip;
+    engineViewPos /= max(engineViewPos.w, 0.0001);
+    vec3 engineDir = normalize((uEngineInvView * vec4(normalize(engineViewPos.xyz), 0.0)).xyz);
+
+    float forward = dot(engineDir, normalize(uSkyDirection));
+    vec2 localAngle = vec2(dot(engineDir, normalize(uSkyRight)),
+                           dot(engineDir, normalize(uSkyUp))) /
+                      max(forward, 0.0001);
+    float lensStrength = mix(0.7, 1.45, clamp(uLensingStrength / 1.5, 0.0, 1.0));
+    float patchRadius = max(tan(uAngularRadius) * mix(3.6, 6.8, lensStrength), 0.05);
+    vec2 localUv = localAngle / patchRadius;
+    float patchR = length(localUv);
+
+    if (forward <= 0.0 || patchR > 1.35) {
+        vec3 sky = proceduralSky(engineDir);
+        imageStore(uOutputImage, pixelCoord, vec4(sky, 1.0));
+        return;
+    }
+
+    float edgeFade = 1.0 - smoothstep(1.08, 1.35, patchR);
+    vec2 uv = localUv * mix(1.25, 2.05, lensStrength);
+    vec3 dirCam = normalize(vec3(uv, -1.0));
+    mat4 invView = inverse(uView);
+    vec3 dirWorld = normalize((invView * vec4(dirCam, 0.0)).xyz);
+    vec3 posWorld = (invView * vec4(0, 0, 0, 1)).xyz;
+    vec4 fragColor = rayMarch(posWorld, dirWorld);
+    float shadowRadius = mix(0.12, 0.20, clamp(uAngularRadius / radians(10.0), 0.0, 1.0));
+    float ringWidth = mix(0.010, 0.060, clamp(uRingWidth, 0.02, 0.90));
+    float photonRing = exp(-pow((patchR - shadowRadius) / max(ringWidth, 1e-4), 2.0));
+    vec3 ringColor = mix(vec3(1.0, 0.96, 0.90), max(uDiskColor, vec3(0.0)), 0.55);
+    fragColor.rgb += ringColor * photonRing * (0.16 * uPhotonRingIntensity);
+
+    float coronaWidth = mix(0.05, 0.22, clamp(uCoronaIntensity / 2.0, 0.0, 1.0));
+    float corona = exp(-pow((patchR - (shadowRadius + ringWidth * 0.8)) / max(coronaWidth, 1e-4), 2.0));
+    fragColor.rgb += mix(vec3(0.48, 0.58, 0.95), ringColor, 0.5) *
+                     corona * (0.10 * uCoronaIntensity);
+
+    float shadowMask = 1.0 - smoothstep(shadowRadius * 0.72, shadowRadius * 1.02, patchR);
+    float discLuma = dot(fragColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float foregroundDiscProtect = smoothstep(0.10, 0.55, discLuma);
+    float effectiveShadow = shadowMask * (1.0 - 0.88 * foregroundDiscProtect);
+    fragColor.rgb *= 1.0 - effectiveShadow * (0.92 * clamp(uShadowStrength, 0.0, 1.0));
+
+    vec3 sky = proceduralSky(engineDir);
+    fragColor.rgb = mix(sky, fragColor.rgb, edgeFade);
+    imageStore(uOutputImage, pixelCoord, fragColor);
+}

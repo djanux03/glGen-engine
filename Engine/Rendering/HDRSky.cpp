@@ -124,6 +124,32 @@ void HDRSky::draw(const glm::mat4 &view, const glm::mat4 &projection,
   mShader->setFloat("uSunDiscSoftness", sunDiscSoftness);
   mShader->setFloat("uSunHaloSize", sunHaloSize);
   mShader->setFloat("uSunRaySharpness", sunRaySharpness);
+  mShader->setBool("uUseBlackHole", useBlackHole);
+  mShader->setVec3("uBlackHoleDir", blackHoleDir);
+  mShader->setFloat("uBlackHoleDiskTilt",
+                    glm::radians(glm::clamp(blackHoleDiskTiltDeg, -180.0f,
+                                            180.0f)));
+  mShader->setFloat(
+      "uBlackHoleDiskInclination",
+      glm::radians(glm::clamp(blackHoleDiskInclinationDeg, 0.0f, 88.0f)));
+  mShader->setVec3("uBlackHoleColor", blackHoleColor);
+  mShader->setFloat("uBlackHoleRingIntensity", blackHoleRingIntensity);
+  mShader->setFloat("uBlackHoleRingWidth", blackHoleRingWidth);
+  mShader->setFloat("uBlackHoleDistortion", blackHoleDistortion);
+  mShader->setFloat("uBlackHoleHaloIntensity", blackHoleHaloIntensity);
+  mShader->setFloat("uBlackHoleDiskSpinSpeed", blackHoleDiskSpinSpeed);
+  mShader->setFloat("uBlackHoleDiskTurbulence", blackHoleDiskTurbulence);
+  mShader->setFloat("uBlackHoleChromaticAberration",
+                    blackHoleChromaticAberration);
+  mShader->setFloat("uBlackHoleEclipseStrength", blackHoleEclipseStrength);
+  mShader->setFloat("uBlackHolePhotonRingIntensity",
+                    blackHolePhotonRingIntensity);
+  mShader->setFloat("uBlackHoleDopplerBoost", blackHoleDopplerBoost);
+  mShader->setFloat("uBlackHoleJetIntensity", blackHoleJetIntensity);
+  mShader->setFloat("uBlackHoleCoronaIntensity", blackHoleCoronaIntensity);
+  mShader->setFloat("uBlackHoleStarLensIntensity",
+                    blackHoleStarLensIntensity);
+  mShader->setFloat("uBlackHoleShadowStrength", blackHoleShadowStrength);
   mShader->setFloat("uSkyAtmosphereStrength", atmosphereStrength);
   mShader->setFloat("uSkyGradientPower", gradientPower);
   mShader->setFloat("uSkyHorizonGlow", horizonGlow);
@@ -142,10 +168,13 @@ void HDRSky::draw(const glm::mat4 &view, const glm::mat4 &projection,
 
   // Map sun size in degrees (0.2-1.0 recommended) to a dot threshold.
   // Threshold = cos(radiusRadians).
-  float safeSunSizeDeg = glm::clamp(sunSize, 0.05f, 3.0f);
+  float safeSunSizeDeg = glm::clamp(sunSize, 0.05f, 10.0f);
   float radiusRad = glm::radians(safeSunSizeDeg);
   float dotThreshold = std::cos(radiusRad);
   mShader->setFloat("uSunSize", dotThreshold);
+  float safeBlackHoleSizeDeg = glm::clamp(blackHoleSizeDeg, 0.10f, 20.0f);
+  float blackHoleRadiusRad = glm::radians(safeBlackHoleSizeDeg);
+  mShader->setFloat("uBlackHoleSize", std::cos(blackHoleRadiusRad));
 
   mShader->setMat3("uSkyRot", rotationMatrix());
 

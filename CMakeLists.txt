@@ -36,3 +36,9 @@ option(GLGEN_BUILD_VULKAN "Build the experimental Vulkan RHI + smoke test" OFF)
 if(GLGEN_BUILD_VULKAN)
   add_subdirectory(VulkanRHI)
 endif()
+
+# ── Tests (opt-in) ──────────────────────────────────────────────────────────
+option(GLGEN_BUILD_TESTS "Build the glGen test suite" OFF)
+if(GLGEN_BUILD_TESTS)
+  add_subdirectory(Tests)
+endif()

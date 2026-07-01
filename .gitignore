@@ -96,6 +96,14 @@ install_manifest.txt
 
 /build_log.txt
 
+/build.log
+
+/Build-tests/
+
+# Claude Code agent scaffolding (worktrees, local settings)
+
+.claude/
+
 
 
 # Editor specific

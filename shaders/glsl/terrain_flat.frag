@@ -57,6 +57,44 @@ uniform float uFireAmbient;
 uniform float uFireAmbientRadius;
 uniform float uTime;
 
+float rand(vec2 p) {
+    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    float a = rand(i);
+    float b = rand(i + vec2(1.0, 0.0));
+    float c = rand(i + vec2(0.0, 1.0));
+    float d = rand(i + vec2(1.0, 1.0));
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) +
+           (d - b) * u.x * u.y;
+}
+
+float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 5; ++i) {
+        v += a * noise(p);
+        p *= 2.0;
+        a *= 0.5;
+    }
+    return v;
+}
+
+float atmosphereFlow(vec3 worldPos, float dist) {
+    vec2 wind = normalize(vec2(0.82, 0.57));
+    vec2 p = worldPos.xz * 0.0018 + wind * uTime * 0.012;
+    float broad = fbm(p);
+    float bands = fbm(worldPos.xz * 0.006 + wind.yx * uTime * 0.020 +
+                      vec2(worldPos.y * 0.0015, -worldPos.y * 0.0009));
+    float distanceMask = smoothstep(35.0, 260.0, dist);
+    return mix(1.0, mix(0.78, 1.24, broad) * mix(0.88, 1.16, bands),
+               distanceMask);
+}
+
 int chooseShadowCascade(float viewDepth) {
     int cascadeIndex = max(uCascadeCount - 1, 0);
     for (int i = 0; i < 4; ++i) {
@@ -156,13 +194,15 @@ vec3 toSRGB(vec3 lin) { return pow(max(lin, vec3(0.0)), vec3(1.0 / 2.2)); }
 
 vec3 applyAerialPerspective(vec3 lit) {
     float dist = length(uCameraPos - FragPos);
+    float flow = atmosphereFlow(FragPos, dist);
     float heightDensity =
-        uFogDensity * exp(-max(FragPos.y, 0.0) * uFogHeightFalloff);
+        uFogDensity * flow * exp(-max(FragPos.y, 0.0) * uFogHeightFalloff);
     float legacyFog = 1.0 - exp(-pow(dist * heightDensity, 2.0));
     legacyFog = clamp(legacyFog, 0.0, 1.0);
 
     if (!uAerialPerspectiveEnabled) {
-        return mix(lit, uFogColor, legacyFog);
+        vec3 movingFogColor = uFogColor * mix(0.96, 1.05, flow);
+        return mix(lit, movingFogColor, legacyFog);
     }
 
     vec3 viewDir = dist > 0.001 ? normalize(FragPos - uCameraPos)
@@ -173,7 +213,7 @@ vec3 applyAerialPerspective(vec3 lit) {
         exp(-avgHeight * max(uAerialPerspectiveHeightFalloff, 0.0));
     float aerialFog = 1.0 - exp(-rayDistance *
                                 max(uAerialPerspectiveDensity, 0.0) *
-                                heightTerm);
+                                heightTerm * flow);
     aerialFog = clamp(aerialFog, 0.0, 1.0);
 
     float fogAmount = clamp(1.0 - (1.0 - legacyFog) * (1.0 - aerialFog),
@@ -182,13 +222,15 @@ vec3 applyAerialPerspective(vec3 lit) {
     float zenithMix = smoothstep(-0.15, 0.85, viewDir.y) * 0.75;
     vec3 skyTint = mix(uAerialHorizonColor, uAerialZenithColor, zenithMix);
     skyTint = mix(uFogColor, skyTint, clamp(uAerialPerspectiveSkyBlend, 0.0, 1.0));
+    skyTint *= mix(0.96, 1.06, flow);
 
     vec3 sunDir = normalize(-uLightDir);
     vec3 viewScatterDir = normalize(vec3(viewDir.x, viewDir.y * 0.35, viewDir.z));
     vec3 sunScatterDir = normalize(vec3(sunDir.x, sunDir.y * 0.35, sunDir.z));
     float sunForward = max(dot(viewScatterDir, sunScatterDir), 0.0);
     float sunScatter = pow(sunForward, 7.0) * horizonMask *
-                       clamp(uAerialPerspectiveSunGlow, 0.0, 2.0);
+                       clamp(uAerialPerspectiveSunGlow, 0.0, 2.0) *
+                       mix(0.85, 1.20, flow);
     vec3 atmosphereColor = skyTint + uSunColor * sunScatter;
 
     float luma = dot(lit, vec3(0.2126, 0.7152, 0.0722));

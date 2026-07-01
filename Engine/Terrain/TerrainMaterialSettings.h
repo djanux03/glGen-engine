@@ -6,10 +6,10 @@
 struct TerrainMaterialSettings {
   bool enableCustom = true;
 
-  float macroScale = 0.05f;
-  float detailScale = 1.0f;
-  float normalDetailScale = 1.9f;
-  float normalStrength = 0.85f;
+  float macroScale = 0.045f;
+  float detailScale = 1.22f;
+  float normalDetailScale = 2.15f;
+  float normalStrength = 0.95f;
 
   float cliffStart = 0.22f;
   float cliffEnd = 0.75f;
@@ -18,18 +18,18 @@ struct TerrainMaterialSettings {
   float lowStartHeight = -1.0f;
   float lowEndHeight = 4.0f;
 
-  float macroVariationStrength = 0.20f;
-  float cliffDesatStrength = 0.35f;
+  float macroVariationStrength = 0.28f;
+  float cliffDesatStrength = 0.28f;
 
-  glm::vec3 grassA = glm::vec3(0.17f, 0.39f, 0.12f);
-  glm::vec3 grassB = glm::vec3(0.30f, 0.56f, 0.18f);
-  glm::vec3 dirtA = glm::vec3(0.24f, 0.18f, 0.11f);
-  glm::vec3 dirtB = glm::vec3(0.36f, 0.26f, 0.14f);
-  glm::vec3 rockA = glm::vec3(0.31f, 0.31f, 0.32f);
-  glm::vec3 rockB = glm::vec3(0.46f, 0.43f, 0.39f);
-  glm::vec3 sandA = glm::vec3(0.63f, 0.55f, 0.35f);
-  glm::vec3 sandB = glm::vec3(0.85f, 0.76f, 0.54f);
-  glm::vec3 snowA = glm::vec3(0.78f, 0.83f, 0.90f);
+  glm::vec3 grassA = glm::vec3(0.12f, 0.31f, 0.10f);
+  glm::vec3 grassB = glm::vec3(0.34f, 0.58f, 0.20f);
+  glm::vec3 dirtA = glm::vec3(0.18f, 0.13f, 0.08f);
+  glm::vec3 dirtB = glm::vec3(0.40f, 0.28f, 0.15f);
+  glm::vec3 rockA = glm::vec3(0.24f, 0.25f, 0.26f);
+  glm::vec3 rockB = glm::vec3(0.52f, 0.49f, 0.43f);
+  glm::vec3 sandA = glm::vec3(0.58f, 0.49f, 0.29f);
+  glm::vec3 sandB = glm::vec3(0.88f, 0.78f, 0.52f);
+  glm::vec3 snowA = glm::vec3(0.72f, 0.78f, 0.86f);
   glm::vec3 snowB = glm::vec3(0.97f, 0.98f, 1.00f);
 
   float roughGrass = 0.84f;
@@ -86,6 +86,7 @@ struct TerrainMaterialSettings {
   float sunGlintBandWidth = 0.16f;
 
   // Stylized option: flatten green-biome terrain into a single green tint.
-  bool flatGreenEnabled = true;
+  // Keep this opt-in so new terrain uses the richer procedural material by default.
+  bool flatGreenEnabled = false;
   glm::vec3 flatGreenColor = glm::vec3(0.26f, 0.62f, 0.27f);
 };

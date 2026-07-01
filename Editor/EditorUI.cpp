@@ -20,6 +20,9 @@
 #include "Terrain/TerrainSystem.h"
 #include "Texture.h"
 #include "UFBXModel.h"
+#include "AudioSettings.h"
+#include "../Runtime/Framework/EditorState.h"
+#include "../Runtime/Framework/GameplayState.h"
 
 #include <imgui.h>
 
@@ -47,6 +50,67 @@ static auto buildTRS = [](const glm::vec3 &pos, const glm::vec3 &rotDeg,
   m = glm::scale(m, scale);
   return m;
 };
+
+static float normalizeAngleDeg(float angle) {
+  while (angle > 180.0f)
+    angle -= 360.0f;
+  while (angle < -180.0f)
+    angle += 360.0f;
+  return angle;
+}
+
+static void normalizeEulerDeg(glm::vec3 &euler) {
+  euler.x = normalizeAngleDeg(euler.x);
+  euler.y = normalizeAngleDeg(euler.y);
+  euler.z = normalizeAngleDeg(euler.z);
+}
+
+// Matches TransformComponent::getMatrix/buildTRS: T * Ry * Rx * Rz * S.
+// ImGuizmo's built-in Euler decomposition uses a different convention, which
+// makes entity rotations jump or drift after gizmo edits.
+static bool decomposeTRSYXZ(const glm::mat4 &m, glm::vec3 &pos,
+                            glm::vec3 &rotDeg, glm::vec3 &scale) {
+  constexpr float kEpsilon = 1e-5f;
+
+  pos = glm::vec3(m[3]);
+
+  glm::vec3 c0(m[0]);
+  glm::vec3 c1(m[1]);
+  glm::vec3 c2(m[2]);
+  scale = glm::vec3(glm::length(c0), glm::length(c1), glm::length(c2));
+
+  if (scale.x < kEpsilon || scale.y < kEpsilon || scale.z < kEpsilon)
+    return false;
+
+  glm::mat3 r;
+  r[0] = c0 / scale.x;
+  r[1] = c1 / scale.y;
+  r[2] = c2 / scale.z;
+
+  if (glm::determinant(r) < 0.0f) {
+    scale.x = -scale.x;
+    r[0] = -r[0];
+  }
+
+  const float pitch = std::asin(std::clamp(-r[2][1], -1.0f, 1.0f));
+  const float cosPitch = std::cos(pitch);
+
+  float yaw = 0.0f;
+  float roll = 0.0f;
+  if (std::abs(cosPitch) > kEpsilon) {
+    yaw = std::atan2(r[2][0], r[2][2]);
+    roll = std::atan2(r[0][1], r[1][1]);
+  } else {
+    // At the singularity yaw and roll are coupled. Preserve a stable result
+    // instead of letting the editor explode into large equivalent angles.
+    yaw = std::atan2(-r[0][2], r[0][0]);
+    roll = 0.0f;
+  }
+
+  rotDeg = glm::degrees(glm::vec3(pitch, yaw, roll));
+  normalizeEulerDeg(rotDeg);
+  return true;
+}
 
 static bool pathUsesLossyImage(const std::string &path) {
   if (path.empty())
@@ -221,6 +285,87 @@ static void drawGraphicsStatusRow(const char *label, bool active,
     ImGui::SameLine();
     ImGui::TextDisabled("- %s", detail);
   }
+}
+
+static BlackHolePresetDefaults captureBlackHoleDefaults(
+    const EditorContext &ctx) {
+  BlackHolePresetDefaults bh;
+  bh.valid = true;
+  bh.worldMode = ctx.blackHoleWorldMode;
+  bh.azimuth = ctx.blackHoleAzimuth;
+  bh.elevation = ctx.blackHoleElevation;
+  bh.worldPosition = {ctx.blackHoleWorldPosition.x, ctx.blackHoleWorldPosition.y,
+                      ctx.blackHoleWorldPosition.z};
+  bh.worldRadius = ctx.blackHoleWorldRadius;
+  bh.viewPitchDeg = ctx.blackHoleViewPitchDeg;
+  bh.sizeDeg = ctx.blackHoleSizeDeg;
+  bh.diskTiltDeg = ctx.blackHoleDiskTiltDeg;
+  bh.diskInclinationDeg = ctx.blackHoleDiskInclinationDeg;
+  bh.color = {ctx.blackHoleColor.r, ctx.blackHoleColor.g,
+              ctx.blackHoleColor.b};
+  bh.ringIntensity = ctx.blackHoleRingIntensity;
+  bh.ringWidth = ctx.blackHoleRingWidth;
+  bh.distortion = ctx.blackHoleDistortion;
+  bh.haloIntensity = ctx.blackHoleHaloIntensity;
+  bh.diskSpinSpeed = ctx.blackHoleDiskSpinSpeed;
+  bh.diskFlowShear = ctx.blackHoleDiskFlowShear;
+  bh.diskTurbulence = ctx.blackHoleDiskTurbulence;
+  bh.chromaticAberration = ctx.blackHoleChromaticAberration;
+  bh.eclipseStrength = ctx.blackHoleEclipseStrength;
+  bh.photonRingIntensity = ctx.blackHolePhotonRingIntensity;
+  bh.dopplerBoost = ctx.blackHoleDopplerBoost;
+  bh.jetIntensity = ctx.blackHoleJetIntensity;
+  bh.coronaIntensity = ctx.blackHoleCoronaIntensity;
+  bh.starLensIntensity = ctx.blackHoleStarLensIntensity;
+  bh.shadowStrength = ctx.blackHoleShadowStrength;
+  bh.innerDiskRadius = ctx.blackHoleInnerDiskRadius;
+  bh.outerDiskRadius = ctx.blackHoleOuterDiskRadius;
+  bh.diskTemperature = ctx.blackHoleDiskTemperature;
+  bh.diskDensity = ctx.blackHoleDiskDensity;
+  bh.lensingStrength = ctx.blackHoleLensingStrength;
+  bh.backgroundStarIntensity = ctx.blackHoleBackgroundStarIntensity;
+  bh.exposure = ctx.blackHoleExposure;
+  bh.quality = ctx.blackHoleQuality;
+  return bh;
+}
+
+static void applyBlackHoleDefaults(EditorContext &ctx,
+                                   const BlackHolePresetDefaults &bh) {
+  ctx.blackHoleAzimuth = bh.azimuth;
+  ctx.blackHoleElevation = bh.elevation;
+  ctx.blackHoleWorldMode = bh.worldMode;
+  ctx.blackHoleWorldPosition =
+      glm::vec3(bh.worldPosition[0], bh.worldPosition[1],
+                bh.worldPosition[2]);
+  ctx.blackHoleWorldRadius = bh.worldRadius;
+  ctx.blackHoleViewPitchDeg = bh.viewPitchDeg;
+  ctx.blackHoleSizeDeg = bh.sizeDeg;
+  ctx.blackHoleDiskTiltDeg = bh.diskTiltDeg;
+  ctx.blackHoleDiskInclinationDeg = bh.diskInclinationDeg;
+  ctx.blackHoleColor = glm::vec3(bh.color[0], bh.color[1], bh.color[2]);
+  ctx.blackHoleRingIntensity = bh.ringIntensity;
+  ctx.blackHoleRingWidth = bh.ringWidth;
+  ctx.blackHoleDistortion = bh.distortion;
+  ctx.blackHoleHaloIntensity = bh.haloIntensity;
+  ctx.blackHoleDiskSpinSpeed = bh.diskSpinSpeed;
+  ctx.blackHoleDiskFlowShear = bh.diskFlowShear;
+  ctx.blackHoleDiskTurbulence = bh.diskTurbulence;
+  ctx.blackHoleChromaticAberration = bh.chromaticAberration;
+  ctx.blackHoleEclipseStrength = bh.eclipseStrength;
+  ctx.blackHolePhotonRingIntensity = bh.photonRingIntensity;
+  ctx.blackHoleDopplerBoost = bh.dopplerBoost;
+  ctx.blackHoleJetIntensity = bh.jetIntensity;
+  ctx.blackHoleCoronaIntensity = bh.coronaIntensity;
+  ctx.blackHoleStarLensIntensity = bh.starLensIntensity;
+  ctx.blackHoleShadowStrength = bh.shadowStrength;
+  ctx.blackHoleInnerDiskRadius = bh.innerDiskRadius;
+  ctx.blackHoleOuterDiskRadius = bh.outerDiskRadius;
+  ctx.blackHoleDiskTemperature = bh.diskTemperature;
+  ctx.blackHoleDiskDensity = bh.diskDensity;
+  ctx.blackHoleLensingStrength = bh.lensingStrength;
+  ctx.blackHoleBackgroundStarIntensity = bh.backgroundStarIntensity;
+  ctx.blackHoleExposure = bh.exposure;
+  ctx.blackHoleQuality = bh.quality;
 }
 
 static void applyValheimAmbientPreset(EditorContext &ctx, int preset) {
@@ -811,6 +956,32 @@ void EditorUI::drawMainMenuBar(EditorContext &ctx) {
         ImGui::Separator();
         if (ImGui::MenuItem("Save Project Settings"))
           ctx.events.publish(SaveProjectConfigRequestedEvent{});
+        if (ImGui::MenuItem("Save Current Settings As Defaults")) {
+          ctx.projectConfig.blackHoleDefaults = captureBlackHoleDefaults(ctx);
+          ctx.events.publish(SaveProjectConfigRequestedEvent{});
+          ctx.events.publish(SaveProjectDefaultsRequestedEvent{});
+        }
+        if (ImGui::MenuItem("Reset Saved Settings Defaults")) {
+          ctx.projectConfig.blackHoleDefaults = BlackHolePresetDefaults{};
+          ctx.events.publish(SaveProjectConfigRequestedEvent{});
+          ctx.events.publish(ResetProjectDefaultsRequestedEvent{});
+        }
+        if (ImGui::MenuItem("Set Startup Scene...")) {
+          const char *path = tinyfd_openFileDialog(
+              "Set Startup Scene", "", 0, NULL, "JSON Scene File", 0);
+          if (path) {
+            ctx.projectConfig.startupScene = path;
+            ctx.events.publish(SaveProjectConfigRequestedEvent{});
+          }
+        }
+        if (!ctx.projectConfig.startupScene.empty()) {
+          ImGui::TextDisabled("Startup Scene:");
+          ImGui::TextWrapped("%s", ctx.projectConfig.startupScene.c_str());
+          if (ImGui::MenuItem("Clear Startup Scene")) {
+            ctx.projectConfig.startupScene.clear();
+            ctx.events.publish(SaveProjectConfigRequestedEvent{});
+          }
+        }
         if (ImGui::MenuItem("Save Layout"))
           ImGui::SaveIniSettingsToDisk("imgui.ini");
         if (ImGui::MenuItem("Load Layout"))
@@ -852,6 +1023,8 @@ void EditorUI::drawMainMenuBar(EditorContext &ctx) {
             ctx.events.publish(SpawnEntityRequestedEvent{"__primitive_cone"});
           ImGui::EndMenu();
         }
+        if (ImGui::MenuItem("Create Spaceship"))
+          ctx.events.publish(SpawnEntityRequestedEvent{"__spaceship"});
         ImGui::Separator();
         if (ImGui::MenuItem("Delete Selected", "Delete")) {
           if (ctx.selection.selectedEntityId != 0)
@@ -957,7 +1130,7 @@ void EditorUI::drawMainMenuBar(EditorContext &ctx) {
 
       if (isPlaying) {
         ImGui::SameLine();
-        ImGui::Text("Wood: %d", ctx.woodCount);
+        ImGui::Text("Wood: %d", ctx.gameplay.woodCount);
       }
     }
 
@@ -1352,44 +1525,50 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
       ImGui::DragFloat("Jump Force", &ctx.jumpStrength, 0.01f, 0.0f, 10.0f);
       ImGui::DragFloat("Gravity", &ctx.gravity, 0.001f, 0.0f, 1.0f);
       ImGui::Checkbox("Freeze Physics", &ctx.freezePhysics);
+      ImGui::Checkbox("Creative Flight", &ctx.creativeFlight);
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Play mode: disables player gravity. Space ascends, Shift "
+            "descends.");
+      }
       ImGui::SeparatorText("Viewmodel");
-      ImGui::SliderInt("Active Slot", &ctx.activeViewmodelSlot, 1, 2,
-                       ctx.activeViewmodelSlot == 1 ? "Axe" : "Torch");
-      ImGui::Checkbox("Enable Axe", &ctx.axeEnabled);
+      ImGui::SliderInt("Active Slot", reinterpret_cast<int*>(&ctx.gameplay.activeSlot), 1, 2,
+                       static_cast<int>(ctx.gameplay.activeSlot) == 1 ? "Axe" : "Torch");
+      ImGui::Checkbox("Enable Axe", &ctx.gameplay.viewmodel.axeEnabled);
       if (ImGui::Button("Reset Axe Defaults")) {
-        ctx.axeOffset = glm::vec3(0.25f, -0.2f, 0.45f);
-        ctx.axeRotation = glm::vec3(0.0f, 0.0f, 0.0f);
-        ctx.axeScale = glm::vec3(0.6f);
+        ctx.gameplay.viewmodel.axeOffset = glm::vec3(0.25f, -0.2f, 0.45f);
+        ctx.gameplay.viewmodel.axeRotation = glm::vec3(0.0f, 0.0f, 0.0f);
+        ctx.gameplay.viewmodel.axeScale = glm::vec3(0.6f);
       }
       ImGui::SameLine();
       if (ImGui::Button("Move Axe In Front")) {
-        ctx.axeOffset.z = std::max(0.2f, ctx.axeOffset.z);
+        ctx.gameplay.viewmodel.axeOffset.z = std::max(0.2f, ctx.gameplay.viewmodel.axeOffset.z);
       }
-      ImGui::DragFloat3("Axe Offset", &ctx.axeOffset.x, 0.01f, -2.0f, 2.0f);
-      ImGui::DragFloat3("Axe Rotation", &ctx.axeRotation.x, 0.5f, -180.0f,
+      ImGui::DragFloat3("Axe Offset", &ctx.gameplay.viewmodel.axeOffset.x, 0.01f, -2.0f, 2.0f);
+      ImGui::DragFloat3("Axe Rotation", &ctx.gameplay.viewmodel.axeRotation.x, 0.5f, -180.0f,
                         180.0f);
-      ImGui::DragFloat3("Axe Scale", &ctx.axeScale.x, 0.01f, 0.05f, 5.0f);
+      ImGui::DragFloat3("Axe Scale", &ctx.gameplay.viewmodel.axeScale.x, 0.01f, 0.05f, 5.0f);
       ImGui::Separator();
-      ImGui::Checkbox("Enable Torch", &ctx.torchEnabled);
+      ImGui::Checkbox("Enable Torch", &ctx.gameplay.viewmodel.torchEnabled);
       if (ImGui::Button("Reset Torch Defaults")) {
-        ctx.torchOffset = glm::vec3(0.18f, -0.24f, 0.36f);
-        ctx.torchRotation = glm::vec3(18.0f, 0.0f, -10.0f);
-        ctx.torchScale = glm::vec3(0.07f, 0.58f, 0.07f);
+        ctx.gameplay.viewmodel.torchOffset = glm::vec3(0.18f, -0.24f, 0.36f);
+        ctx.gameplay.viewmodel.torchRotation = glm::vec3(18.0f, 0.0f, -10.0f);
+        ctx.gameplay.viewmodel.torchScale = glm::vec3(0.07f, 0.58f, 0.07f);
       }
-      ImGui::DragFloat3("Torch Offset", &ctx.torchOffset.x, 0.01f, -2.0f, 2.0f);
-      ImGui::DragFloat3("Torch Rotation", &ctx.torchRotation.x, 0.5f, -180.0f,
+      ImGui::DragFloat3("Torch Offset", &ctx.gameplay.viewmodel.torchOffset.x, 0.01f, -2.0f, 2.0f);
+      ImGui::DragFloat3("Torch Rotation", &ctx.gameplay.viewmodel.torchRotation.x, 0.5f, -180.0f,
                         180.0f);
-      ImGui::DragFloat3("Torch Scale", &ctx.torchScale.x, 0.01f, 0.02f, 5.0f);
-      ImGui::Checkbox("Use Player Camera In Edit", &ctx.usePlayerCameraInEdit);
+      ImGui::DragFloat3("Torch Scale", &ctx.gameplay.viewmodel.torchScale.x, 0.01f, 0.02f, 5.0f);
+      ImGui::Checkbox("Use Player Camera In Edit", &ctx.gameplay.viewmodel.usePlayerCameraInEdit);
       ImGui::TextDisabled("Tip: Axe Offset Z < 0 puts it behind the camera.");
       ImGui::SeparatorText("System");
       ImGui::Checkbox("Hot Reload", &ctx.hotReloadEnabled);
       ImGui::Checkbox("Auto Import", &ctx.autoProcessImportQueue);
       ImGui::SeparatorText("Audio");
-      ImGui::Checkbox("Enable Audio", &ctx.audioEnabled);
+      ImGui::Checkbox("Enable Audio", &ctx.audio.enabled);
       ImGui::SameLine();
-      ImGui::Checkbox("Mute", &ctx.audioMute);
-      ImGui::SliderFloat("Master Volume", &ctx.audioMasterVolume, 0.0f, 1.5f,
+      ImGui::Checkbox("Mute", &ctx.audio.mute);
+      ImGui::SliderFloat("Master Volume", &ctx.audio.masterVolume, 0.0f, 1.5f,
                          "%.2f");
       ImGui::TextDisabled("Backend: %s",
                           ctx.audioBackendAvailable ? "Available" : "Unavailable");
@@ -1411,22 +1590,22 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
         }
       };
 
-      ImGui::Checkbox("Enable Ambient", &ctx.ambientAudioEnabled);
+      ImGui::Checkbox("Enable Ambient", &ctx.audio.ambientEnabled);
       drawAudioPathField("Ambient Track", "AudioAmbient",
-                         ctx.ambientAudioPath);
-      ImGui::SliderFloat("Ambient Volume", &ctx.ambientAudioVolume, 0.0f, 1.5f,
+                         ctx.audio.ambientPath);
+      ImGui::SliderFloat("Ambient Volume", &ctx.audio.ambientVolume, 0.0f, 1.5f,
                          "%.2f");
 
-      ImGui::Checkbox("Enable Footsteps", &ctx.footstepAudioEnabled);
+      ImGui::Checkbox("Enable Footsteps", &ctx.audio.footstepsEnabled);
       ImGui::TextDisabled("Footstep clips auto-discover from assets/*.ogg");
       if (ImGui::Button("Play Test Footstep")) {
         mPendingConsoleCommands.push_back("audio_test_footstep");
       }
-      ImGui::SliderFloat("Footstep Volume", &ctx.footstepAudioVolume, 0.0f,
+      ImGui::SliderFloat("Footstep Volume", &ctx.audio.footstepVolume, 0.0f,
                          1.5f, "%.2f");
-      ImGui::SliderFloat("Walk Cadence", &ctx.footstepWalkCadence, 0.10f, 0.80f,
+      ImGui::SliderFloat("Walk Cadence", &ctx.audio.footstepWalkCadence, 0.10f, 0.80f,
                          "%.2fs");
-      ImGui::SliderFloat("Run Cadence", &ctx.footstepRunCadence, 0.08f, 0.60f,
+      ImGui::SliderFloat("Run Cadence", &ctx.audio.footstepRunCadence, 0.08f, 0.60f,
                          "%.2fs");
     }
     if (worldSection == 1) {
@@ -1503,6 +1682,7 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
       ImGui::SeparatorText("Custom Sky Shape");
       if (ImGui::Button("Clear Noon Sky")) {
         ctx.disableHDR = true;
+        ctx.useBlackHole = false;
         ctx.skyHorizon[0] = 0.55f;
         ctx.skyHorizon[1] = 0.72f;
         ctx.skyHorizon[2] = 0.95f;
@@ -1528,6 +1708,7 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
       ImGui::SameLine();
       if (ImGui::Button("Golden Hour Sky")) {
         ctx.disableHDR = true;
+        ctx.useBlackHole = false;
         ctx.skyHorizon[0] = 0.98f;
         ctx.skyHorizon[1] = 0.50f;
         ctx.skyHorizon[2] = 0.24f;
@@ -1554,6 +1735,7 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
       ImGui::SameLine();
       if (ImGui::Button("Soft Fantasy Sky")) {
         ctx.disableHDR = true;
+        ctx.useBlackHole = false;
         ctx.skyHorizon[0] = 0.74f;
         ctx.skyHorizon[1] = 0.82f;
         ctx.skyHorizon[2] = 0.96f;
@@ -1576,27 +1758,140 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
         ctx.skySunRaysIntensity = 0.14f;
         ctx.skySunHaloSize = 0.30f;
       }
+      ImGui::SameLine();
+      if (ImGui::Button("Black Hole Sky")) {
+        ctx.disableHDR = true;
+        ctx.useBlackHole = true;
+        ctx.sky.skyCloudsEnabled = false;
+        ctx.skyHorizon[0] = 0.06f;
+        ctx.skyHorizon[1] = 0.04f;
+        ctx.skyHorizon[2] = 0.10f;
+        ctx.skyTop[0] = 0.00f;
+        ctx.skyTop[1] = 0.00f;
+        ctx.skyTop[2] = 0.03f;
+        ctx.dayHorizon[0] = ctx.skyHorizon[0];
+        ctx.dayHorizon[1] = ctx.skyHorizon[1];
+        ctx.dayHorizon[2] = ctx.skyHorizon[2];
+        ctx.dayTop[0] = ctx.skyTop[0];
+        ctx.dayTop[1] = ctx.skyTop[1];
+        ctx.dayTop[2] = ctx.skyTop[2];
+        ctx.nightHorizon[0] = 0.02f;
+        ctx.nightHorizon[1] = 0.01f;
+        ctx.nightHorizon[2] = 0.04f;
+        ctx.nightTop[0] = 0.00f;
+        ctx.nightTop[1] = 0.00f;
+        ctx.nightTop[2] = 0.02f;
+        const BlackHolePresetDefaults bhDefaults =
+            ctx.projectConfig.blackHoleDefaults.valid
+                ? ctx.projectConfig.blackHoleDefaults
+                : BlackHolePresetDefaults{};
+        applyBlackHoleDefaults(ctx, bhDefaults);
+        ctx.skyAtmosphereStrength = 0.04f;
+        ctx.skyGradientPower = 0.92f;
+        ctx.skyHorizonGlow = 0.02f;
+      }
       ImGui::SliderFloat("Atmosphere Blend", &ctx.skyAtmosphereStrength, 0.0f,
                          1.0f, "%.2f");
       ImGui::SliderFloat("Gradient Curve", &ctx.skyGradientPower, 0.25f, 4.0f,
                          "%.2f");
       ImGui::SliderFloat("Horizon Glow", &ctx.skyHorizonGlow, 0.0f, 2.0f,
                          "%.2f");
-      ImGui::SeparatorText("Visual Sun Style");
-      ImGui::SliderFloat("Sun Size (deg)", &ctx.sun.sunSize, 0.05f, 3.0f,
-                         "%.2f");
-      ImGui::SliderFloat("Disc Intensity", &ctx.skySunDiscIntensity, 0.0f,
-                         80.0f, "%.1f");
-      ImGui::SliderFloat("Disc Softness", &ctx.skySunDiscSoftness, 0.0001f,
-                         0.05f, "%.4f");
-      ImGui::SliderFloat("Halo Intensity", &ctx.skySunHaloIntensity, 0.0f,
-                         8.0f, "%.2f");
-      ImGui::SliderFloat("Halo Size", &ctx.skySunHaloSize, 0.0f, 1.0f,
-                         "%.2f");
-      ImGui::SliderFloat("Ray Intensity", &ctx.skySunRaysIntensity, 0.0f,
-                         4.0f, "%.2f");
-      ImGui::SliderFloat("Ray Sharpness", &ctx.skySunRaySharpness, 1.0f,
-                         40.0f, "%.1f");
+      ImGui::SeparatorText("Celestial Body");
+      int celestialBody = ctx.useBlackHole ? 1 : 0;
+      if (ImGui::Combo("Type", &celestialBody, "Sun\0Black Hole\0")) {
+        ctx.useBlackHole = (celestialBody == 1);
+      }
+      if (ctx.useBlackHole) {
+        ImGui::TextDisabled(
+            "Black hole position and size are independent from the lighting sun.");
+        int placementMode = ctx.blackHoleWorldMode ? 1 : 0;
+        if (ImGui::Combo("Placement", &placementMode,
+                         "Sky Direction\0World Entity\0")) {
+          ctx.blackHoleWorldMode = (placementMode == 1);
+        }
+        if (ctx.blackHoleWorldMode) {
+          ImGui::DragFloat3("World Position", &ctx.blackHoleWorldPosition.x,
+                            0.5f, -10000.0f, 10000.0f, "%.1f");
+          ImGui::SliderFloat("World Radius", &ctx.blackHoleWorldRadius, 0.5f,
+                             500.0f, "%.1f");
+          ImGui::TextDisabled(
+              "World Entity mode anchors the black hole to this world "
+              "position. Size changes with camera distance.");
+        } else {
+          ImGui::SliderFloat("Black Hole Azimuth", &ctx.blackHoleAzimuth, 0.0f,
+                             360.0f, "%.1f");
+          ImGui::SliderFloat("Black Hole Elevation", &ctx.blackHoleElevation,
+                             -90.0f, 90.0f, "%.1f");
+        }
+        ImGui::SliderFloat("View Pitch", &ctx.blackHoleViewPitchDeg, -89.0f,
+                           89.0f, "%.1f deg");
+        ImGui::SliderFloat("Event Horizon Size (deg)", &ctx.blackHoleSizeDeg,
+                           0.10f, 20.0f, "%.2f");
+        ImGui::SliderFloat("Disk Tilt", &ctx.blackHoleDiskTiltDeg, -180.0f,
+                           180.0f, "%.1f deg");
+        ImGui::SliderFloat("Disk Inclination",
+                           &ctx.blackHoleDiskInclinationDeg, 0.0f, 88.0f,
+                           "%.1f deg");
+        ImGui::ColorEdit3("Accretion Color", &ctx.blackHoleColor.x);
+        ImGui::SliderFloat("Inner Disk Radius",
+                           &ctx.blackHoleInnerDiskRadius, 0.85f, 4.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Outer Disk Radius",
+                           &ctx.blackHoleOuterDiskRadius, 2.5f, 16.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Disk Temperature",
+                           &ctx.blackHoleDiskTemperature, 0.15f, 3.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Disk Density", &ctx.blackHoleDiskDensity, 0.0f,
+                           3.0f, "%.2f");
+        ImGui::SliderFloat("Disk Spin", &ctx.blackHoleDiskSpinSpeed, 0.0f, 8.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Disk Flow / Shear",
+                           &ctx.blackHoleDiskFlowShear, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip(
+              "Lower values make strips rotate in place. Higher values add "
+              "more turbulent inward/outward accretion shear.");
+        }
+        ImGui::SliderFloat("Disk Turbulence", &ctx.blackHoleDiskTurbulence, 0.0f,
+                           1.0f, "%.2f");
+        ImGui::SliderFloat("Lensing Strength",
+                           &ctx.blackHoleLensingStrength, 0.0f, 1.5f,
+                           "%.2f");
+        ImGui::SliderFloat("Photon Ring", &ctx.blackHolePhotonRingIntensity,
+                           0.0f, 6.0f, "%.2f");
+        ImGui::SliderFloat("Doppler Boost", &ctx.blackHoleDopplerBoost, 0.0f,
+                           1.0f, "%.2f");
+        ImGui::SliderFloat("Background Stars",
+                           &ctx.blackHoleBackgroundStarIntensity, 0.0f, 4.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Black Hole Exposure", &ctx.blackHoleExposure,
+                           0.05f, 6.0f, "%.2f");
+        ImGui::SliderFloat("Corona", &ctx.blackHoleCoronaIntensity, 0.0f, 2.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Horizon Darkness", &ctx.blackHoleShadowStrength,
+                           0.0f, 1.0f, "%.2f");
+        ImGui::Combo("Quality", &ctx.blackHoleQuality,
+                     "Performance\0High\0Ultra\0");
+        ImGui::TextDisabled(
+            "Use File > Save Current Settings As Defaults to keep these values "
+            "across launches.");
+      } else {
+        ImGui::SliderFloat("Sun Size (deg)", &ctx.sun.sunSize, 0.05f, 3.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Disc Intensity", &ctx.skySunDiscIntensity, 0.0f,
+                           80.0f, "%.1f");
+        ImGui::SliderFloat("Disc Softness", &ctx.skySunDiscSoftness, 0.0001f,
+                           0.05f, "%.4f");
+        ImGui::SliderFloat("Halo Intensity", &ctx.skySunHaloIntensity, 0.0f,
+                           8.0f, "%.2f");
+        ImGui::SliderFloat("Halo Size", &ctx.skySunHaloSize, 0.0f, 1.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Ray Intensity", &ctx.skySunRaysIntensity, 0.0f,
+                           4.0f, "%.2f");
+        ImGui::SliderFloat("Ray Sharpness", &ctx.skySunRaySharpness, 1.0f,
+                           40.0f, "%.1f");
+      }
       ImGui::SeparatorText("Sky Presentation");
       ImGui::Checkbox("Minimal Sky", &ctx.minimalSky);
       if (ctx.minimalSky) {
@@ -2427,22 +2722,22 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
 
           ImGui::Separator();
           ImGui::Text("Brush Tools");
-          ImGui::Checkbox("Enable Brush", &ctx.terrainBrushEnabled);
-          if (ctx.terrainBrushEnabled) {
+          ImGui::Checkbox("Enable Brush", &ctx.terrainBrush.enabled);
+          if (ctx.terrainBrush.enabled) {
             const char *modes[] = {"Raise Height", "Lower Height",
                                    "Add Vegetation", "Remove Vegetation"};
-            ImGui::Combo("Brush Mode", &ctx.terrainBrushMode, modes,
+            ImGui::Combo("Brush Mode", &ctx.terrainBrush.mode, modes,
                          IM_ARRAYSIZE(modes));
-            ImGui::SliderFloat("Brush Radius", &ctx.terrainBrushRadius, 1.0f,
+            ImGui::SliderFloat("Brush Radius", &ctx.terrainBrush.radius, 1.0f,
                                30.0f, "%.1f");
             ImGui::SliderFloat("Brush Strength",
-                               &ctx.terrainBrushStrength, 0.1f, 20.0f, "%.2f");
-            if (ctx.terrainBrushMode >= 2) {
+                               &ctx.terrainBrush.strength, 0.1f, 20.0f, "%.2f");
+            if (ctx.terrainBrush.mode >= 2) {
               const char *targets[] = {"Tree", "Rock", "Grass"};
-              ImGui::Combo("Brush Target", &ctx.terrainBrushTarget, targets,
+              ImGui::Combo("Brush Target", &ctx.terrainBrush.target, targets,
                            IM_ARRAYSIZE(targets));
               ImGui::SliderInt("Scatter Count",
-                               &ctx.terrainBrushScatterCount, 1, 30);
+                               &ctx.terrainBrush.scatterCount, 1, 30);
             }
             ImGui::TextDisabled(
                 "Tip: Hold LMB on terrain to paint. Brush uses loaded chunks.");
@@ -2453,7 +2748,10 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
         ImGui::Checkbox("Enable Custom Material",
                         &ctx.terrainMaterial.enableCustom);
         if (ctx.terrainMaterial.enableCustom) {
-          if (ImGui::Button("Reset Material Defaults")) {
+          ImGui::TextDisabled(
+              "Default mode uses procedural biome material. Enable Flat Green "
+              "only for a stylized/simple preview.");
+          if (ImGui::Button("Reset Procedural Material Defaults")) {
             ctx.terrainMaterial = TerrainMaterialSettings{};
           }
           ImGui::SliderFloat("Macro Scale##TerrainMat",
@@ -2821,8 +3119,8 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
                                0.5f, "%.2f");
           }
 
-          ImGui::SeparatorText("Stylized");
-          ImGui::Checkbox("Flat Green Terrain##TerrainMat",
+          ImGui::SeparatorText("Stylized Override");
+          ImGui::Checkbox("Flat Green Terrain (Simple Preview)##TerrainMat",
                           &ctx.terrainMaterial.flatGreenEnabled);
           if (ctx.terrainMaterial.flatGreenEnabled &&
               ctx.terrainMaterial.useGroundTextures) {
@@ -3012,9 +3310,9 @@ void EditorUI::drawEnvironment(EditorContext &ctx) {
             } else if (mBrowsePath == "SkyHDR") {
               ctx.skyHDRPath = pathStr;
             } else if (mBrowsePath == "AudioAmbient") {
-              ctx.ambientAudioPath = pathStr;
+              ctx.audio.ambientPath = pathStr;
             } else if (mBrowsePath == "AudioFootsteps") {
-              ctx.footstepAudioPath = pathStr;
+              ctx.audio.footstepPath = pathStr;
             }
 
             if (!browsingTerrainTexture && !browsingAudio &&
@@ -3566,7 +3864,10 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
           if (open) {
             auto &tr = reg.get<TransformComponent>(selectedEntityId);
             edited |= DragFloat3Colored("Position", &tr.position.x, 0.1f);
-            edited |= DragFloat3Colored("Rotation", &tr.rotation.x, 0.5f);
+            if (DragFloat3Colored("Rotation", &tr.rotation.x, 0.5f)) {
+              normalizeEulerDeg(tr.rotation);
+              edited = true;
+            }
             edited |=
                 DragFloat3Colored("Scale", &tr.scale.x, 0.01f, 0.01f, 100.0f);
           }
@@ -3740,6 +4041,65 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
                 s.gizmoOp = ImGuizmo::SCALE;
                 s.gizmoMode = ImGuizmo::LOCAL;
               }
+            }
+          }
+        }
+      }
+
+      if (reg.has<SpaceshipComponent>(selectedEntityId)) {
+        bool open = false, wantRemove = false, wantReset = false;
+        ComponentHeader("Spaceship", &open, true, &wantRemove, &wantReset);
+        if (wantRemove) {
+          reg.removeComponent<SpaceshipComponent>(selectedEntityId);
+        } else {
+          if (wantReset) {
+            reg.get<SpaceshipComponent>(selectedEntityId) =
+                SpaceshipComponent{};
+            edited = true;
+          }
+          if (open) {
+            auto &ship = reg.get<SpaceshipComponent>(selectedEntityId);
+            edited |= ImGui::Checkbox("Enabled##Spaceship", &ship.enabled);
+            ImGui::SeparatorText("Mass / Thrust");
+            edited |= ImGui::DragFloat("Dry Mass (kg)", &ship.dryMassKg, 25.0f,
+                                       1.0f, 1000000.0f, "%.0f");
+            edited |= ImGui::DragFloat("Fuel Mass (kg)", &ship.fuelMassKg,
+                                       25.0f, 0.0f, 1000000.0f, "%.0f");
+            edited |= ImGui::DragFloat("Main Thrust (N)", &ship.mainThrustN,
+                                       250.0f, 0.0f, 5000000.0f, "%.0f");
+            edited |= ImGui::DragFloat("Boost Multiplier",
+                                       &ship.boostMultiplier, 0.05f, 1.0f,
+                                       10.0f, "%.2f");
+            edited |= ImGui::DragFloat("Max Speed", &ship.maxSpeed, 1.0f, 1.0f,
+                                       5000.0f, "%.1f");
+
+            ImGui::SeparatorText("Flight Feel");
+            edited |= ImGui::DragFloat("Turn Rate", &ship.turnRateDeg, 1.0f,
+                                       0.0f, 720.0f, "%.1f deg/s");
+            edited |= ImGui::DragFloat("Turn Responsiveness",
+                                       &ship.turnResponsiveness, 0.1f, 0.0f,
+                                       40.0f, "%.2f");
+            edited |= ImGui::DragFloat("Bank Angle", &ship.bankAngleDeg, 0.5f,
+                                       0.0f, 89.0f, "%.1f deg");
+            edited |= ImGui::DragFloat("Bank Responsiveness",
+                                       &ship.bankResponsiveness, 0.1f, 0.0f,
+                                       40.0f, "%.2f");
+            edited |= ImGui::DragFloat("Legacy Damping", &ship.damping, 0.001f,
+                                       0.0f, 0.999f, "%.3f");
+            edited |= ImGui::DragFloat("Idle Drag", &ship.idleDrag, 0.02f,
+                                       0.0f, 10.0f, "%.2f");
+            edited |= ImGui::DragFloat("Brake Drag", &ship.brakeDrag, 0.02f,
+                                       0.0f, 20.0f, "%.2f");
+
+            ImGui::SeparatorText("Runtime State");
+            ImGui::Text("Throttle: %.2f", ship.throttle);
+            ImGui::Text("Speed: %.2f", glm::length(ship.velocity));
+            ImGui::Text("Yaw Rate: %.2f deg/s", ship.angularVelocity.y);
+            if (ImGui::Button("Clear Velocity")) {
+              ship.velocity = glm::vec3(0.0f);
+              ship.angularVelocity = glm::vec3(0.0f);
+              ship.throttle = 0.0f;
+              edited = true;
             }
           }
         }
@@ -4065,6 +4425,17 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
             autoFitBoxColliderFromMesh(reg, selectedEntityId, col);
           }
         }
+        if (!reg.has<SpaceshipComponent>(selectedEntityId)) {
+          if (ImGui::MenuItem("Spaceship")) {
+            auto &ship = reg.emplace<SpaceshipComponent>(selectedEntityId);
+            ship.centerOfMass = glm::vec3(0.0f, -0.35f, 0.0f);
+            if (!reg.has<RigidbodyComponent>(selectedEntityId)) {
+              auto &rb = reg.emplace<RigidbodyComponent>(selectedEntityId);
+              rb.type = RigidbodyComponent::Type::Kinematic;
+              rb.mass = ship.dryMassKg + ship.fuelMassKg;
+            }
+          }
+        }
         if (!reg.has<DestructibleComponent>(selectedEntityId)) {
           if (ImGui::MenuItem("Destructible")) {
             reg.emplace<DestructibleComponent>(selectedEntityId);
@@ -4121,7 +4492,7 @@ bool EditorUI::drawInspector(EditorContext &ctx) {
 // =============================================================================
 bool EditorUI::drawGizmo(bool uiMode, const glm::mat4 &view,
                          const glm::mat4 &projection, Scene &scene, SunFX &sun,
-                         EventBus &events, EditorSelectionState &s,
+                         EventBus &events, SelectionState &s,
                          glm::vec3 &cameraPos) {
   bool edited = false;
   if (!uiMode)
@@ -4245,27 +4616,34 @@ bool EditorUI::drawGizmo(bool uiMode, const glm::mat4 &view,
                          (ImGuizmo::OPERATION)s.gizmoOp,
                          (ImGuizmo::MODE)s.gizmoMode, glm::value_ptr(model));
     if (ImGuizmo::IsUsing()) {
-      float t[3], r[3], sc[3];
-      ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), t, r, sc);
+      glm::vec3 t(0.0f), r(0.0f), sc(1.0f);
+      if (!decomposeTRSYXZ(model, t, r, sc)) {
+        float tf[3], rf[3], scf[3];
+        ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), tf, rf,
+                                              scf);
+        t = {tf[0], tf[1], tf[2]};
+        r = {rf[0], rf[1], rf[2]};
+        sc = {scf[0], scf[1], scf[2]};
+      }
 
       if (s.editColliderBounds &&
           reg.has<ColliderComponent>(s.selectedEntityId)) {
         auto &col = reg.get<ColliderComponent>(s.selectedEntityId);
         // We only use the scale for colliders
         if (col.shape == ColliderComponent::Shape::Box) {
-          col.dimensions = {sc[0], sc[1], sc[2]};
+          col.dimensions = sc;
         } else if (col.shape == ColliderComponent::Shape::Sphere) {
-          col.dimensions.x = sc[0];
+          col.dimensions.x = sc.x;
         } else if (col.shape == ColliderComponent::Shape::Capsule) {
-          col.dimensions.x = sc[0]; // radius
-          col.dimensions.y = sc[1]; // height
+          col.dimensions.x = sc.x; // radius
+          col.dimensions.y = sc.y; // height
         }
       } else {
-        tr.position = {t[0], t[1], t[2]};
+        tr.position = t;
         if (!viewModelSelected) {
-          tr.rotation = {r[0], r[1], r[2]};
+          tr.rotation = r;
         }
-        tr.scale = {sc[0], sc[1], sc[2]};
+        tr.scale = sc;
       }
       edited = true;
     }
@@ -4279,11 +4657,16 @@ bool EditorUI::drawGizmo(bool uiMode, const glm::mat4 &view,
                          (ImGuizmo::MODE)s.gizmoMode, glm::value_ptr(model));
     if (ImGuizmo::IsUsing()) {
       glm::mat4 newLocal = glm::inverse(M_entity) * model;
-      float t[3], r[3], sc[3];
-      ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(newLocal), t, r, sc);
-      modelPtr->setObjectLocalTRS(
-          s.selectedObjPartName, glm::vec3(t[0], t[1], t[2]),
-          glm::vec3(r[0], r[1], r[2]), glm::vec3(sc[0], sc[1], sc[2]));
+      glm::vec3 t(0.0f), r(0.0f), sc(1.0f);
+      if (!decomposeTRSYXZ(newLocal, t, r, sc)) {
+        float tf[3], rf[3], scf[3];
+        ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(newLocal), tf, rf,
+                                              scf);
+        t = {tf[0], tf[1], tf[2]};
+        r = {rf[0], rf[1], rf[2]};
+        sc = {scf[0], scf[1], scf[2]};
+      }
+      modelPtr->setObjectLocalTRS(s.selectedObjPartName, t, r, sc);
       edited = true;
     }
   }

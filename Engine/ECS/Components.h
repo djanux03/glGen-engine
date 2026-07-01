@@ -212,6 +212,30 @@ struct TreeComponent {
   int chunkZ = 0;
 };
 
+struct SpaceshipComponent {
+  bool enabled = true;
+  float dryMassKg = 8500.0f;
+  float fuelMassKg = 4200.0f;
+  float mainThrustN = 180000.0f;
+  float specificImpulseSec = 315.0f;
+  float attitudeThrustN = 8500.0f;
+  float dragAreaM2 = 18.0f;
+  float heatShieldRating = 1.0f;
+  float boostMultiplier = 2.5f;
+  float damping = 0.985f;
+  float maxSpeed = 160.0f;
+  float turnRateDeg = 95.0f;
+  float turnResponsiveness = 8.0f;
+  float bankAngleDeg = 28.0f;
+  float bankResponsiveness = 6.0f;
+  float idleDrag = 0.55f;
+  float brakeDrag = 1.25f;
+  glm::vec3 centerOfMass = {0.0f, 0.0f, 0.0f};
+  glm::vec3 velocity = {0.0f, 0.0f, 0.0f};
+  glm::vec3 angularVelocity = {0.0f, 0.0f, 0.0f};
+  float throttle = 0.0f;
+};
+
 struct LODComponent {
   float minDistance = 0.0f;
   float maxDistance = 10000.0f;

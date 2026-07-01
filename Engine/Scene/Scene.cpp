@@ -395,6 +395,35 @@ std::string Scene::serializeToString() const {
                              {"hideOriginal", d.hideOriginal}};
     }
 
+    if (reg.has<SpaceshipComponent>(e)) {
+      const auto &ship = reg.get<SpaceshipComponent>(e);
+      ent["spaceship"] = {
+          {"enabled", ship.enabled},
+          {"dryMassKg", ship.dryMassKg},
+          {"fuelMassKg", ship.fuelMassKg},
+          {"mainThrustN", ship.mainThrustN},
+          {"specificImpulseSec", ship.specificImpulseSec},
+          {"attitudeThrustN", ship.attitudeThrustN},
+          {"dragAreaM2", ship.dragAreaM2},
+          {"heatShieldRating", ship.heatShieldRating},
+          {"boostMultiplier", ship.boostMultiplier},
+          {"damping", ship.damping},
+          {"maxSpeed", ship.maxSpeed},
+          {"turnRateDeg", ship.turnRateDeg},
+          {"turnResponsiveness", ship.turnResponsiveness},
+          {"bankAngleDeg", ship.bankAngleDeg},
+          {"bankResponsiveness", ship.bankResponsiveness},
+          {"idleDrag", ship.idleDrag},
+          {"brakeDrag", ship.brakeDrag},
+          {"centerOfMass",
+           {ship.centerOfMass.x, ship.centerOfMass.y, ship.centerOfMass.z}},
+          {"velocity", {ship.velocity.x, ship.velocity.y, ship.velocity.z}},
+          {"angularVelocity",
+           {ship.angularVelocity.x, ship.angularVelocity.y,
+            ship.angularVelocity.z}},
+          {"throttle", ship.throttle}};
+    }
+
     if (reg.has<CameraComponent>(e)) {
       const auto &cam = reg.get<CameraComponent>(e);
       ent["camera"] = {{"fov", cam.fov},
@@ -602,6 +631,39 @@ bool Scene::loadFromString(const std::string &jsonText) {
       d.upwardImpulse = dj.value("upwardImpulse", 5.0f);
       d.hideOriginal = dj.value("hideOriginal", true);
       d.fractured = false;
+    }
+
+    if (ent.contains("spaceship")) {
+      auto &ship = mRegistry.emplace<SpaceshipComponent>(id);
+      const auto &sj = ent["spaceship"];
+      ship.enabled = sj.value("enabled", true);
+      ship.dryMassKg = sj.value("dryMassKg", 8500.0f);
+      ship.fuelMassKg = sj.value("fuelMassKg", 4200.0f);
+      ship.mainThrustN = sj.value("mainThrustN", 180000.0f);
+      ship.specificImpulseSec = sj.value("specificImpulseSec", 315.0f);
+      ship.attitudeThrustN = sj.value("attitudeThrustN", 8500.0f);
+      ship.dragAreaM2 = sj.value("dragAreaM2", 18.0f);
+      ship.heatShieldRating = sj.value("heatShieldRating", 1.0f);
+      ship.boostMultiplier = sj.value("boostMultiplier", 2.5f);
+      ship.damping = sj.value("damping", 0.985f);
+      ship.maxSpeed = sj.value("maxSpeed", 160.0f);
+      ship.turnRateDeg = sj.value("turnRateDeg", 95.0f);
+      ship.turnResponsiveness = sj.value("turnResponsiveness", 8.0f);
+      ship.bankAngleDeg = sj.value("bankAngleDeg", 28.0f);
+      ship.bankResponsiveness = sj.value("bankResponsiveness", 6.0f);
+      ship.idleDrag = sj.value("idleDrag", 0.55f);
+      ship.brakeDrag = sj.value("brakeDrag", 1.25f);
+      auto com = sj.value("centerOfMass", std::vector<float>{0.0f, 0.0f, 0.0f});
+      if (com.size() == 3)
+        ship.centerOfMass = {com[0], com[1], com[2]};
+      auto vel = sj.value("velocity", std::vector<float>{0.0f, 0.0f, 0.0f});
+      if (vel.size() == 3)
+        ship.velocity = {vel[0], vel[1], vel[2]};
+      auto av =
+          sj.value("angularVelocity", std::vector<float>{0.0f, 0.0f, 0.0f});
+      if (av.size() == 3)
+        ship.angularVelocity = {av[0], av[1], av[2]};
+      ship.throttle = sj.value("throttle", 0.0f);
     }
 
     if (ent.contains("camera")) {

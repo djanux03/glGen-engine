@@ -34,6 +34,7 @@
 #include <cctype>
 #include <algorithm>
 #include <fstream>
+#include <filesystem>
 #include <sstream>
 #include <iomanip>
 #include <string>
@@ -48,6 +49,7 @@ void saveConfig(const AppState &s, const char *filename) {}
 void loadConfig(AppState &s, const char *filename) {}
 constexpr float kTerrainEdgeMargin = 0.2f;
 constexpr float kTerrainMinClearance = 0.15f;
+constexpr const char *kProjectDefaultsPath = "project_defaults.json";
 
 bool raycastTerrain(const TerrainSystem &ts, const Ray &ray, float maxDist,
                     glm::vec3 &outHit) {
@@ -358,7 +360,7 @@ bool executeConsoleCommand(AppState &s, const std::string &line) {
       LOG_WARN("Console", "Usage: spawn <path>");
       return false;
     }
-    s.pending.pendingSpawnPaths.push_back(args[1]);
+    s.editorSubsystem->pending().pendingSpawnPaths.push_back(args[1]);
     return true;
   }
 
@@ -440,17 +442,17 @@ bool executeConsoleCommand(AppState &s, const std::string &line) {
       LOG_WARN("Console", "Usage: teleport <x> <y> <z>");
       return false;
     }
-    if (s.playerId == 0 ||
-        !s.scene.registry().has<TransformComponent>(s.playerId)) {
+    if (s.gameplay.playerId == 0 ||
+        !s.scene.registry().has<TransformComponent>(s.gameplay.playerId)) {
       LOG_WARN("Console", "No player entity to teleport.");
       return false;
     }
     glm::vec3 pos(std::stof(args[1]), std::stof(args[2]),
                   std::stof(args[3]));
-    auto &tr = s.scene.registry().get<TransformComponent>(s.playerId);
+    auto &tr = s.scene.registry().get<TransformComponent>(s.gameplay.playerId);
     tr.position = pos;
-    if (s.scene.registry().has<RigidbodyComponent>(s.playerId)) {
-      auto &rb = s.scene.registry().get<RigidbodyComponent>(s.playerId);
+    if (s.scene.registry().has<RigidbodyComponent>(s.gameplay.playerId)) {
+      auto &rb = s.scene.registry().get<RigidbodyComponent>(s.gameplay.playerId);
       rb.lastPosition = pos;
     }
     return true;
@@ -467,7 +469,7 @@ bool executeConsoleCommand(AppState &s, const std::string &line) {
     return false;
   }
   if (cmd == "audio_test_footstep") {
-    s.pending.requestTestFootstepAudio = true;
+    s.editorSubsystem->pending().requestTestFootstepAudio = true;
     return false;
   }
   if (cmd == "pause") {
@@ -542,6 +544,41 @@ json serializeSkySettings(const SkySettings &s) {
   j["visualSunDayColor"] = vec3ToJson(s.visualSunDayColor);
   j["visualSunDuskColor"] = vec3ToJson(s.visualSunDuskColor);
   j["visualSunNightColor"] = vec3ToJson(s.visualSunNightColor);
+  j["useBlackHole"] = s.useBlackHole;
+  j["blackHoleWorldMode"] = s.blackHoleWorldMode;
+  j["blackHoleAzimuth"] = s.blackHoleAzimuth;
+  j["blackHoleElevation"] = s.blackHoleElevation;
+  j["blackHoleWorldPosition"] = vec3ToJson(s.blackHoleWorldPosition);
+  j["blackHoleWorldRadius"] = s.blackHoleWorldRadius;
+  j["blackHoleViewPitchDeg"] = s.blackHoleViewPitchDeg;
+  j["blackHoleSizeDeg"] = s.blackHoleSizeDeg;
+  j["blackHoleDiskTiltDeg"] = s.blackHoleDiskTiltDeg;
+  j["blackHoleDiskInclinationDeg"] = s.blackHoleDiskInclinationDeg;
+  j["blackHoleColor"] = vec3ToJson(s.blackHoleColor);
+  j["blackHoleRingIntensity"] = s.blackHoleRingIntensity;
+  j["blackHoleRingWidth"] = s.blackHoleRingWidth;
+  j["blackHoleDistortion"] = s.blackHoleDistortion;
+  j["blackHoleHaloIntensity"] = s.blackHoleHaloIntensity;
+  j["blackHoleDiskSpinSpeed"] = s.blackHoleDiskSpinSpeed;
+  j["blackHoleDiskFlowShear"] = s.blackHoleDiskFlowShear;
+  j["blackHoleDiskTurbulence"] = s.blackHoleDiskTurbulence;
+  j["blackHoleChromaticAberration"] = s.blackHoleChromaticAberration;
+  j["blackHoleEclipseStrength"] = s.blackHoleEclipseStrength;
+  j["blackHolePhotonRingIntensity"] = s.blackHolePhotonRingIntensity;
+  j["blackHoleDopplerBoost"] = s.blackHoleDopplerBoost;
+  j["blackHoleJetIntensity"] = s.blackHoleJetIntensity;
+  j["blackHoleCoronaIntensity"] = s.blackHoleCoronaIntensity;
+  j["blackHoleStarLensIntensity"] = s.blackHoleStarLensIntensity;
+  j["blackHoleShadowStrength"] = s.blackHoleShadowStrength;
+  j["blackHoleInnerDiskRadius"] = s.blackHoleInnerDiskRadius;
+  j["blackHoleOuterDiskRadius"] = s.blackHoleOuterDiskRadius;
+  j["blackHoleDiskTemperature"] = s.blackHoleDiskTemperature;
+  j["blackHoleDiskDensity"] = s.blackHoleDiskDensity;
+  j["blackHoleLensingStrength"] = s.blackHoleLensingStrength;
+  j["blackHoleBackgroundStarIntensity"] =
+      s.blackHoleBackgroundStarIntensity;
+  j["blackHoleExposure"] = s.blackHoleExposure;
+  j["blackHoleQuality"] = s.blackHoleQuality;
   j["skyAtmosphereStrength"] = s.skyAtmosphereStrength;
   j["skyGradientPower"] = s.skyGradientPower;
   j["skyHorizonGlow"] = s.skyHorizonGlow;
@@ -619,6 +656,101 @@ void applySkySettings(const json &j, SkySettings &s) {
   loadVec3(j, "visualSunDayColor", s.visualSunDayColor);
   loadVec3(j, "visualSunDuskColor", s.visualSunDuskColor);
   loadVec3(j, "visualSunNightColor", s.visualSunNightColor);
+  if (j.contains("useBlackHole"))
+    s.useBlackHole = j["useBlackHole"].get<bool>();
+  if (j.contains("blackHoleWorldMode"))
+    s.blackHoleWorldMode = j["blackHoleWorldMode"].get<bool>();
+  if (j.contains("blackHoleAzimuth"))
+    s.blackHoleAzimuth =
+        std::clamp(j["blackHoleAzimuth"].get<float>(), 0.0f, 360.0f);
+  if (j.contains("blackHoleElevation"))
+    s.blackHoleElevation =
+        std::clamp(j["blackHoleElevation"].get<float>(), -90.0f, 90.0f);
+  loadVec3(j, "blackHoleWorldPosition", s.blackHoleWorldPosition);
+  if (j.contains("blackHoleWorldRadius"))
+    s.blackHoleWorldRadius =
+        std::clamp(j["blackHoleWorldRadius"].get<float>(), 0.5f, 10000.0f);
+  if (j.contains("blackHoleViewPitchDeg"))
+    s.blackHoleViewPitchDeg =
+        std::clamp(j["blackHoleViewPitchDeg"].get<float>(), -89.0f, 89.0f);
+  if (j.contains("blackHoleSizeDeg"))
+    s.blackHoleSizeDeg =
+        std::clamp(j["blackHoleSizeDeg"].get<float>(), 0.10f, 20.0f);
+  if (j.contains("blackHoleDiskTiltDeg"))
+    s.blackHoleDiskTiltDeg =
+        std::clamp(j["blackHoleDiskTiltDeg"].get<float>(), -180.0f, 180.0f);
+  if (j.contains("blackHoleDiskInclinationDeg"))
+    s.blackHoleDiskInclinationDeg = std::clamp(
+        j["blackHoleDiskInclinationDeg"].get<float>(), 0.0f, 88.0f);
+  loadVec3(j, "blackHoleColor", s.blackHoleColor);
+  if (j.contains("blackHoleRingIntensity"))
+    s.blackHoleRingIntensity =
+        std::clamp(j["blackHoleRingIntensity"].get<float>(), 0.0f, 12.0f);
+  if (j.contains("blackHoleRingWidth"))
+    s.blackHoleRingWidth =
+        std::clamp(j["blackHoleRingWidth"].get<float>(), 0.02f, 0.90f);
+  if (j.contains("blackHoleDistortion"))
+    s.blackHoleDistortion =
+        std::clamp(j["blackHoleDistortion"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("blackHoleHaloIntensity"))
+    s.blackHoleHaloIntensity =
+        std::clamp(j["blackHoleHaloIntensity"].get<float>(), 0.0f, 4.0f);
+  if (j.contains("blackHoleDiskSpinSpeed"))
+    s.blackHoleDiskSpinSpeed =
+        std::clamp(j["blackHoleDiskSpinSpeed"].get<float>(), 0.0f, 8.0f);
+  if (j.contains("blackHoleDiskFlowShear"))
+    s.blackHoleDiskFlowShear =
+        std::clamp(j["blackHoleDiskFlowShear"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("blackHoleDiskTurbulence"))
+    s.blackHoleDiskTurbulence =
+        std::clamp(j["blackHoleDiskTurbulence"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("blackHoleChromaticAberration"))
+    s.blackHoleChromaticAberration = std::clamp(
+        j["blackHoleChromaticAberration"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("blackHoleEclipseStrength"))
+    s.blackHoleEclipseStrength =
+        std::clamp(j["blackHoleEclipseStrength"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("blackHolePhotonRingIntensity"))
+    s.blackHolePhotonRingIntensity = std::clamp(
+        j["blackHolePhotonRingIntensity"].get<float>(), 0.0f, 6.0f);
+  if (j.contains("blackHoleDopplerBoost"))
+    s.blackHoleDopplerBoost =
+        std::clamp(j["blackHoleDopplerBoost"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("blackHoleJetIntensity"))
+    s.blackHoleJetIntensity =
+        std::clamp(j["blackHoleJetIntensity"].get<float>(), 0.0f, 4.0f);
+  if (j.contains("blackHoleCoronaIntensity"))
+    s.blackHoleCoronaIntensity =
+        std::clamp(j["blackHoleCoronaIntensity"].get<float>(), 0.0f, 6.0f);
+  if (j.contains("blackHoleStarLensIntensity"))
+    s.blackHoleStarLensIntensity = std::clamp(
+        j["blackHoleStarLensIntensity"].get<float>(), 0.0f, 4.0f);
+  if (j.contains("blackHoleShadowStrength"))
+    s.blackHoleShadowStrength =
+        std::clamp(j["blackHoleShadowStrength"].get<float>(), 0.0f, 1.0f);
+  if (j.contains("blackHoleInnerDiskRadius"))
+    s.blackHoleInnerDiskRadius =
+        std::clamp(j["blackHoleInnerDiskRadius"].get<float>(), 0.85f, 4.0f);
+  if (j.contains("blackHoleOuterDiskRadius"))
+    s.blackHoleOuterDiskRadius =
+        std::clamp(j["blackHoleOuterDiskRadius"].get<float>(), 2.5f, 16.0f);
+  if (j.contains("blackHoleDiskTemperature"))
+    s.blackHoleDiskTemperature =
+        std::clamp(j["blackHoleDiskTemperature"].get<float>(), 0.15f, 3.0f);
+  if (j.contains("blackHoleDiskDensity"))
+    s.blackHoleDiskDensity =
+        std::clamp(j["blackHoleDiskDensity"].get<float>(), 0.0f, 3.0f);
+  if (j.contains("blackHoleLensingStrength"))
+    s.blackHoleLensingStrength =
+        std::clamp(j["blackHoleLensingStrength"].get<float>(), 0.0f, 1.5f);
+  if (j.contains("blackHoleBackgroundStarIntensity"))
+    s.blackHoleBackgroundStarIntensity = std::clamp(
+        j["blackHoleBackgroundStarIntensity"].get<float>(), 0.0f, 4.0f);
+  if (j.contains("blackHoleExposure"))
+    s.blackHoleExposure =
+        std::clamp(j["blackHoleExposure"].get<float>(), 0.05f, 6.0f);
+  if (j.contains("blackHoleQuality"))
+    s.blackHoleQuality = std::clamp(j["blackHoleQuality"].get<int>(), 0, 2);
   if (j.contains("skyAtmosphereStrength"))
     s.skyAtmosphereStrength =
         std::clamp(j["skyAtmosphereStrength"].get<float>(), 0.0f, 1.0f);
@@ -1655,6 +1787,116 @@ void applyPostProcess(const json &j, PostProcessor &s) {
     s.autoExposureTarget = j["autoExposureTarget"].get<float>();
 }
 
+json serializeProjectDefaults(const AppState &s) {
+  json root;
+  root["version"] = 1;
+  root["renderSettings"] = serializeRenderSettings(s.render);
+  root["audioSettings"] = serializeAudioSettings(s.audioSubsystem->settings());
+  root["playPerfHud"] = serializePlayPerfHudSettings(s.playPerfHud);
+  root["sunSettings"] = serializeSunSettings(s.sun);
+  root["skySettings"] = serializeSkySettings(s.skyUI);
+  root["postProcess"] = serializePostProcess(s.postProcessor);
+  root["inputSettings"] = json{{"walkStep", s.input.walkStep},
+                               {"runMult", s.input.runMult},
+                               {"jumpStrength", s.input.jumpStrength},
+                               {"gravity", s.input.gravity},
+                               {"freezePhysics", s.input.freezePhysics},
+                               {"creativeFlight", s.input.creativeFlight},
+                               {"mouseSensitivity", s.input.mouseSensitivity},
+                               {"fov", s.input.fov}};
+  root["viewmodelSettings"] = json{
+      {"axeEnabled", s.gameplay.viewmodel.axeEnabled},
+      {"axeOffset", vec3ToJson(s.gameplay.viewmodel.axeOffset)},
+      {"axeRotation", vec3ToJson(s.gameplay.viewmodel.axeRotation)},
+      {"axeScale", vec3ToJson(s.gameplay.viewmodel.axeScale)},
+      {"torchEnabled", s.gameplay.viewmodel.torchEnabled},
+      {"torchOffset", vec3ToJson(s.gameplay.viewmodel.torchOffset)},
+      {"torchRotation", vec3ToJson(s.gameplay.viewmodel.torchRotation)},
+      {"torchScale", vec3ToJson(s.gameplay.viewmodel.torchScale)},
+      {"usePlayerCameraInEdit", s.gameplay.viewmodel.usePlayerCameraInEdit},
+      {"activeSlot", s.gameplay.activeSlot == GameplayState::HotbarSlot::Torch ? 2 : 1}};
+  return root;
+}
+
+void applyProjectDefaults(const json &root, AppState &s) {
+  if (root.contains("renderSettings"))
+    applyRenderSettings(root["renderSettings"], s.render);
+  if (root.contains("audioSettings"))
+    applyAudioSettings(root["audioSettings"], s.audioSubsystem->settings());
+  if (root.contains("playPerfHud"))
+    applyPlayPerfHudSettings(root["playPerfHud"], s.playPerfHud);
+  if (root.contains("sunSettings"))
+    applySunSettings(root["sunSettings"], s.sun);
+  if (root.contains("skySettings"))
+    applySkySettings(root["skySettings"], s.skyUI);
+  if (root.contains("postProcess"))
+    applyPostProcess(root["postProcess"], s.postProcessor);
+  if (root.contains("inputSettings") && root["inputSettings"].is_object()) {
+    const json &input = root["inputSettings"];
+    if (input.contains("walkStep"))
+      s.input.walkStep = input["walkStep"].get<float>();
+    if (input.contains("runMult"))
+      s.input.runMult = input["runMult"].get<float>();
+    if (input.contains("jumpStrength"))
+      s.input.jumpStrength = input["jumpStrength"].get<float>();
+    if (input.contains("gravity"))
+      s.input.gravity = input["gravity"].get<float>();
+    if (input.contains("freezePhysics"))
+      s.input.freezePhysics = input["freezePhysics"].get<bool>();
+    if (input.contains("creativeFlight"))
+      s.input.creativeFlight = input["creativeFlight"].get<bool>();
+    if (input.contains("mouseSensitivity"))
+      s.input.mouseSensitivity = input["mouseSensitivity"].get<float>();
+    if (input.contains("fov"))
+      s.input.fov = input["fov"].get<float>();
+  }
+  if (root.contains("viewmodelSettings") &&
+      root["viewmodelSettings"].is_object()) {
+    const json &vm = root["viewmodelSettings"];
+    if (vm.contains("axeEnabled"))
+      s.gameplay.viewmodel.axeEnabled = vm["axeEnabled"].get<bool>();
+    loadVec3(vm, "axeOffset", s.gameplay.viewmodel.axeOffset);
+    loadVec3(vm, "axeRotation", s.gameplay.viewmodel.axeRotation);
+    loadVec3(vm, "axeScale", s.gameplay.viewmodel.axeScale);
+    if (vm.contains("torchEnabled"))
+      s.gameplay.viewmodel.torchEnabled = vm["torchEnabled"].get<bool>();
+    loadVec3(vm, "torchOffset", s.gameplay.viewmodel.torchOffset);
+    loadVec3(vm, "torchRotation", s.gameplay.viewmodel.torchRotation);
+    loadVec3(vm, "torchScale", s.gameplay.viewmodel.torchScale);
+    if (vm.contains("usePlayerCameraInEdit"))
+      s.gameplay.viewmodel.usePlayerCameraInEdit = vm["usePlayerCameraInEdit"].get<bool>();
+    if (vm.contains("activeSlot")) {
+      s.gameplay.activeSlot = vm["activeSlot"].get<int>() == 2
+                         ? GameplayState::HotbarSlot::Torch
+                         : GameplayState::HotbarSlot::Axe;
+    }
+  }
+}
+
+bool loadProjectDefaults(AppState &s) {
+  std::ifstream in(kProjectDefaultsPath);
+  if (!in.is_open())
+    return false;
+
+  json root = json::parse(in, nullptr, false);
+  if (root.is_discarded()) {
+    LOG_WARN("Runtime", "Failed to parse project_defaults.json");
+    return false;
+  }
+
+  applyProjectDefaults(root, s);
+  LOG_INFO("Runtime", "Loaded project defaults from project_defaults.json");
+  return true;
+}
+
+bool saveProjectDefaults(const AppState &s) {
+  std::ofstream out(kProjectDefaultsPath);
+  if (!out.is_open())
+    return false;
+  out << serializeProjectDefaults(s).dump(2);
+  return true;
+}
+
 bool isEntityAlive(Registry &reg, EntityId e) {
   if (!reg.has<LifecycleComponent>(e))
     return true;
@@ -1768,50 +2010,72 @@ bool damageDestructibleHit(AppState &state, Registry &reg,
 bool CoreAppLayer::initialize() {
   mState.events.subscribe<SaveConfigRequestedEvent>(
       [this](const SaveConfigRequestedEvent &) {
-        mState.pending.requestSaveConfig = true;
+        mState.editorSubsystem->pending().requestSaveConfig = true;
       });
   mState.events.subscribe<LoadConfigRequestedEvent>(
       [this](const LoadConfigRequestedEvent &) {
-        mState.pending.requestLoadConfig = true;
+        mState.editorSubsystem->pending().requestLoadConfig = true;
       });
   mState.events.subscribe<SaveProjectConfigRequestedEvent>(
       [this](const SaveProjectConfigRequestedEvent &) {
-        mState.pending.requestSaveProjectConfig = true;
+        mState.editorSubsystem->pending().requestSaveProjectConfig = true;
+      });
+  mState.events.subscribe<SaveProjectDefaultsRequestedEvent>(
+      [this](const SaveProjectDefaultsRequestedEvent &) {
+        mState.editorSubsystem->pending().requestSaveProjectDefaults = true;
+      });
+  mState.events.subscribe<ResetProjectDefaultsRequestedEvent>(
+      [this](const ResetProjectDefaultsRequestedEvent &) {
+        mState.editorSubsystem->pending().requestResetProjectDefaults = true;
       });
   mState.events.subscribe<SpawnEntityRequestedEvent>(
       [this](const SpawnEntityRequestedEvent &e) {
-        mState.pending.pendingSpawnPaths.push_back(e.path);
+        mState.editorSubsystem->pending().pendingSpawnPaths.push_back(e.path);
       });
   mState.events.subscribe<CreateEmptyEntityRequestedEvent>(
       [this](const CreateEmptyEntityRequestedEvent &e) {
-        mState.pending.pendingEmptyEntityNames.push_back(e.name);
+        mState.editorSubsystem->pending().pendingEmptyEntityNames.push_back(e.name);
       });
   mState.events.subscribe<DeleteEntityRequestedEvent>(
       [this](const DeleteEntityRequestedEvent &e) {
-        mState.pending.pendingDeleteEntityIds.push_back(e.entityId);
+        mState.editorSubsystem->pending().pendingDeleteEntityIds.push_back(e.entityId);
       });
   mState.events.subscribe<SaveSceneRequestedEvent>(
       [this](const SaveSceneRequestedEvent &e) {
-        mState.pending.pendingSceneSavePath = e.path;
+        mState.editorSubsystem->pending().pendingSceneSavePath = e.path;
       });
   mState.events.subscribe<LoadSceneRequestedEvent>(
       [this](const LoadSceneRequestedEvent &e) {
-        mState.pending.pendingSceneLoadPath = e.path;
+        mState.editorSubsystem->pending().pendingSceneLoadPath = e.path;
       });
   mState.events.subscribe<UndoRequestedEvent>(
       [this](const UndoRequestedEvent &) {
-        mState.history.requestUndo = true;
+        mState.editorSubsystem->history().requestUndo = true;
       });
   mState.events.subscribe<RedoRequestedEvent>(
       [this](const RedoRequestedEvent &) {
-        mState.history.requestRedo = true;
+        mState.editorSubsystem->history().requestRedo = true;
       });
   mState.events.subscribe<SceneHistoryJumpRequestedEvent>(
       [this](const SceneHistoryJumpRequestedEvent &e) {
-        mState.history.requestHistoryJump = e.index;
+        mState.editorSubsystem->history().requestHistoryJump = e.index;
       });
 
+  loadProjectDefaults(mState);
+
   commitHistorySnapshot("Initial");
+
+  if (!mState.projectConfig.startupScene.empty()) {
+    const std::string startupScenePath =
+        mState.projectConfig.projectPath(mState.projectConfig.startupScene);
+    if (std::filesystem::exists(startupScenePath)) {
+      mState.editorSubsystem->pending().pendingSceneLoadPath = startupScenePath;
+      LOG_INFO("Runtime", "Queued startup scene: " + startupScenePath);
+    } else {
+      LOG_WARN("Runtime",
+               "Startup scene not found: " + startupScenePath);
+    }
+  }
 
   return true;
 }
@@ -1819,20 +2083,20 @@ bool CoreAppLayer::initialize() {
 void CoreAppLayer::shutdown() {}
 
 void CoreAppLayer::applyHistorySnapshot(int idx) {
-  if (idx < 0 || idx >= (int)mState.history.historySnapshots.size())
+  if (idx < 0 || idx >= (int)mState.editorSubsystem->history().historySnapshots.size())
     return;
-  if (!mState.scene.loadFromString(mState.history.historySnapshots[idx]))
+  if (!mState.scene.loadFromString(mState.editorSubsystem->history().historySnapshots[idx]))
     return;
-  mState.history.historyCursor = idx;
-  mState.selection.selectedEntityId = 0;
-  mState.selection.selectedEntities.clear();
-  mState.selection.lastClickedEntity = 0;
-  mState.playerId = 0;
+  mState.editorSubsystem->history().historyCursor = idx;
+  mState.editorSubsystem->selection().selectedEntityId = 0;
+  mState.editorSubsystem->selection().selectedEntities.clear();
+  mState.editorSubsystem->selection().lastClickedEntity = 0;
+  mState.gameplay.playerId = 0;
   for (auto e : mState.scene.registry().view<CameraComponent>()) {
     if (!mState.scene.registry().has<LifecycleComponent>(e) ||
         mState.scene.registry().get<LifecycleComponent>(e).state ==
             EntityLifecycleState::Alive) {
-      mState.playerId = e;
+      mState.gameplay.playerId = e;
       break;
     }
   }
@@ -1840,40 +2104,40 @@ void CoreAppLayer::applyHistorySnapshot(int idx) {
 
 void CoreAppLayer::commitHistorySnapshot(const std::string &label) {
   const std::string snap = mState.scene.serializeToString();
-  if (mState.history.historyCursor >= 0 &&
-      mState.history.historyCursor <
-          (int)mState.history.historySnapshots.size() &&
-      mState.history.historySnapshots[mState.history.historyCursor] == snap)
+  if (mState.editorSubsystem->history().historyCursor >= 0 &&
+      mState.editorSubsystem->history().historyCursor <
+          (int)mState.editorSubsystem->history().historySnapshots.size() &&
+      mState.editorSubsystem->history().historySnapshots[mState.editorSubsystem->history().historyCursor] == snap)
     return;
 
-  if (mState.history.historyCursor + 1 <
-      (int)mState.history.historySnapshots.size()) {
-    mState.history.historySnapshots.erase(
-        mState.history.historySnapshots.begin() + mState.history.historyCursor +
+  if (mState.editorSubsystem->history().historyCursor + 1 <
+      (int)mState.editorSubsystem->history().historySnapshots.size()) {
+    mState.editorSubsystem->history().historySnapshots.erase(
+        mState.editorSubsystem->history().historySnapshots.begin() + mState.editorSubsystem->history().historyCursor +
             1,
-        mState.history.historySnapshots.end());
-    mState.history.historyLabels.erase(mState.history.historyLabels.begin() +
-                                           mState.history.historyCursor + 1,
-                                       mState.history.historyLabels.end());
+        mState.editorSubsystem->history().historySnapshots.end());
+    mState.editorSubsystem->history().historyLabels.erase(mState.editorSubsystem->history().historyLabels.begin() +
+                                           mState.editorSubsystem->history().historyCursor + 1,
+                                       mState.editorSubsystem->history().historyLabels.end());
   }
 
-  mState.history.historySnapshots.push_back(snap);
-  mState.history.historyLabels.push_back(label);
-  mState.history.historyCursor =
-      (int)mState.history.historySnapshots.size() - 1;
+  mState.editorSubsystem->history().historySnapshots.push_back(snap);
+  mState.editorSubsystem->history().historyLabels.push_back(label);
+  mState.editorSubsystem->history().historyCursor =
+      (int)mState.editorSubsystem->history().historySnapshots.size() - 1;
 
   const int maxHistory = 128;
-  if ((int)mState.history.historySnapshots.size() > maxHistory) {
-    const int trim = (int)mState.history.historySnapshots.size() - maxHistory;
-    mState.history.historySnapshots.erase(
-        mState.history.historySnapshots.begin(),
-        mState.history.historySnapshots.begin() + trim);
-    mState.history.historyLabels.erase(mState.history.historyLabels.begin(),
-                                       mState.history.historyLabels.begin() +
+  if ((int)mState.editorSubsystem->history().historySnapshots.size() > maxHistory) {
+    const int trim = (int)mState.editorSubsystem->history().historySnapshots.size() - maxHistory;
+    mState.editorSubsystem->history().historySnapshots.erase(
+        mState.editorSubsystem->history().historySnapshots.begin(),
+        mState.editorSubsystem->history().historySnapshots.begin() + trim);
+    mState.editorSubsystem->history().historyLabels.erase(mState.editorSubsystem->history().historyLabels.begin(),
+                                       mState.editorSubsystem->history().historyLabels.begin() +
                                            trim);
-    mState.history.historyCursor -= trim;
-    if (mState.history.historyCursor < 0)
-      mState.history.historyCursor = 0;
+    mState.editorSubsystem->history().historyCursor -= trim;
+    if (mState.editorSubsystem->history().historyCursor < 0)
+      mState.editorSubsystem->history().historyCursor = 0;
   }
 }
 
@@ -1902,18 +2166,7 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.skyUI.timeOfDay += 1.0f;
   }
 
-  EditorSelectionState selState = {mState.selection.selectedEntityId,
-                                   mState.selection.selectedEntities,
-                                   mState.selection.lastClickedEntity,
-                                   mState.selection.editObjPart,
-                                   mState.selection.selectedObjPartName,
-                                   mState.selection.editColliderBounds,
-                                   (int &)mState.selection.gizmoOp,
-                                   (int &)mState.selection.gizmoMode,
-                                   mState.selection.renaming,
-                                   mState.selection.renameBuf,
-                                   mState.selection.outlinerFilter,
-                                   mState.selection.focusDistance};
+  auto& selState = mState.editorSubsystem->selection();
 
   EditorContext ctx{
       mState.uiMode,
@@ -1922,6 +2175,7 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.input.jumpStrength,
       mState.input.gravity,
       mState.input.freezePhysics,
+      mState.input.creativeFlight,
       mState.input.mouseSensitivity,
       mState.input.fov,
       mState.sun,
@@ -1940,12 +2194,7 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.terrainMaterial,
       mState.terrainSystem,
       mState.editorCamera,
-      mState.terrainBrush.enabled,
-      mState.terrainBrush.mode,
-      mState.terrainBrush.target,
-      mState.terrainBrush.radius,
-      mState.terrainBrush.strength,
-      mState.terrainBrush.scatterCount,
+      mState.terrainSystem.brushSettings(),
       mState.skyUI.solidSky,
       mState.skyUI.skyHDRPath,
       mState.skyUI.skyHorizon,
@@ -1964,6 +2213,40 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.skyUI.visualSunDayColor,
       mState.skyUI.visualSunDuskColor,
       mState.skyUI.visualSunNightColor,
+      mState.skyUI.useBlackHole,
+      mState.skyUI.blackHoleWorldMode,
+      mState.skyUI.blackHoleAzimuth,
+      mState.skyUI.blackHoleElevation,
+      mState.skyUI.blackHoleWorldPosition,
+      mState.skyUI.blackHoleWorldRadius,
+      mState.skyUI.blackHoleViewPitchDeg,
+      mState.skyUI.blackHoleSizeDeg,
+      mState.skyUI.blackHoleDiskTiltDeg,
+      mState.skyUI.blackHoleDiskInclinationDeg,
+      mState.skyUI.blackHoleColor,
+      mState.skyUI.blackHoleRingIntensity,
+      mState.skyUI.blackHoleRingWidth,
+      mState.skyUI.blackHoleDistortion,
+      mState.skyUI.blackHoleHaloIntensity,
+      mState.skyUI.blackHoleDiskSpinSpeed,
+      mState.skyUI.blackHoleDiskFlowShear,
+      mState.skyUI.blackHoleDiskTurbulence,
+      mState.skyUI.blackHoleChromaticAberration,
+      mState.skyUI.blackHoleEclipseStrength,
+      mState.skyUI.blackHolePhotonRingIntensity,
+      mState.skyUI.blackHoleDopplerBoost,
+      mState.skyUI.blackHoleJetIntensity,
+      mState.skyUI.blackHoleCoronaIntensity,
+      mState.skyUI.blackHoleStarLensIntensity,
+      mState.skyUI.blackHoleShadowStrength,
+      mState.skyUI.blackHoleInnerDiskRadius,
+      mState.skyUI.blackHoleOuterDiskRadius,
+      mState.skyUI.blackHoleDiskTemperature,
+      mState.skyUI.blackHoleDiskDensity,
+      mState.skyUI.blackHoleLensingStrength,
+      mState.skyUI.blackHoleBackgroundStarIntensity,
+      mState.skyUI.blackHoleExposure,
+      mState.skyUI.blackHoleQuality,
       mState.skyUI.skyAtmosphereStrength,
       mState.skyUI.skyGradientPower,
       mState.skyUI.skyHorizonGlow,
@@ -2042,30 +2325,10 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.render.disableClouds,
       mState.render.disableHDR,
       mState.render.freezeTime,
-      mState.woodCount,
-      (int &)mState.activeSlot,
-      mState.axeEnabled,
-      mState.axeOffset,
-      mState.axeRotation,
-      mState.axeScale,
-      mState.torchEnabled,
-      mState.torchOffset,
-      mState.torchRotation,
-      mState.torchScale,
-      mState.usePlayerCameraInEdit,
-      mState.audio.enabled,
-      mState.audio.mute,
-      mState.audio.masterVolume,
-      mState.audio.ambientEnabled,
-      mState.audio.ambientPath,
-      mState.audio.ambientVolume,
-      mState.audio.footstepsEnabled,
-      mState.audio.footstepPath,
-      mState.audio.footstepVolume,
-      mState.audio.footstepWalkCadence,
-      mState.audio.footstepRunCadence,
-      mState.audioBackendAvailable,
-      mState.audioStatus,
+      mState.gameplay,
+      mState.audioSubsystem->settings(),
+      mState.audioSubsystem->backendAvailable(),
+      mState.audioSubsystem->status(),
       dt,
       (int)mState.scene.registry().view<TransformComponent>().size(),
       (int)(mState.projectiles.count()),
@@ -2081,8 +2344,8 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.autoProcessImportQueue,
       mState.iconFontLoaded,
       &mState.hotReloadMessages,
-      &mState.history.historyLabels,
-      mState.history.historyCursor,
+      mState.editorSubsystem->history(),
+      mState.editorSubsystem->pending(),
       &mState.profiler.samples(),
       mState.gpuFrameMs,
       mState.gpuShadowMs,
@@ -2102,7 +2365,7 @@ void CoreAppLayer::update(float dt, float nowT) {
   }
   if (!uiOut.consoleCommands.empty()) {
     for (auto &cmd : uiOut.consoleCommands) {
-      mState.pending.pendingConsoleCommands.push_back(cmd);
+      mState.editorSubsystem->pending().pendingConsoleCommands.push_back(cmd);
     }
   }
   if (Keyboard::keyWentDown(GLFW_KEY_GRAVE_ACCENT)) {
@@ -2121,13 +2384,13 @@ void CoreAppLayer::update(float dt, float nowT) {
   }
   if (!uiOut.wantCaptureKeyboard) {
     if (Keyboard::keyWentDown(GLFW_KEY_1))
-      mState.activeSlot = AppState::HotbarSlot::Axe;
+      mState.gameplay.activeSlot = GameplayState::HotbarSlot::Axe;
     if (Keyboard::keyWentDown(GLFW_KEY_2))
-      mState.activeSlot = AppState::HotbarSlot::Torch;
+      mState.gameplay.activeSlot = GameplayState::HotbarSlot::Torch;
   }
   if (uiOut.sceneModified) {
-    mState.history.pendingHistoryCommit = true;
-    mState.history.pendingHistoryLabel = "Edit Scene";
+    mState.editorSubsystem->history().pendingHistoryCommit = true;
+    mState.editorSubsystem->history().pendingHistoryLabel = "Edit Scene";
   }
   // Debug overlay for mouse/camera in play mode
   if (mState.playState == AppState::PlayState::Playing) {
@@ -2139,28 +2402,28 @@ void CoreAppLayer::update(float dt, float nowT) {
                      ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoFocusOnAppearing |
                      ImGuiWindowFlags_NoNav);
-    ImGui::Text("dx: %.2f  dy: %.2f", mState.debugMouseDX,
-                mState.debugMouseDY);
-    ImGui::Text("yaw: %.2f  pitch: %.2f", mState.debugYaw,
-                mState.debugPitch);
-    ImGui::Text("front: %.2f %.2f %.2f", mState.debugCamFront.x,
-                mState.debugCamFront.y, mState.debugCamFront.z);
-    ImGui::Text("up: %.2f %.2f %.2f", mState.debugCamUp.x, mState.debugCamUp.y,
-                mState.debugCamUp.z);
+    ImGui::Text("dx: %.2f  dy: %.2f", mState.gameplay.debug.debugMouseDX,
+                mState.gameplay.debug.debugMouseDY);
+    ImGui::Text("yaw: %.2f  pitch: %.2f", mState.gameplay.debug.debugYaw,
+                mState.gameplay.debug.debugPitch);
+    ImGui::Text("front: %.2f %.2f %.2f", mState.gameplay.debug.debugCamFront.x,
+                mState.gameplay.debug.debugCamFront.y, mState.gameplay.debug.debugCamFront.z);
+    ImGui::Text("up: %.2f %.2f %.2f", mState.gameplay.debug.debugCamUp.x, mState.gameplay.debug.debugCamUp.y,
+                mState.gameplay.debug.debugCamUp.z);
     ImGui::Text("gameplay: %s  id: %u  dist: %.2f",
-                mState.debugGameplayHitKind.empty()
+                mState.gameplay.debug.debugGameplayHitKind.empty()
                     ? "Idle"
-                    : mState.debugGameplayHitKind.c_str(),
-                mState.debugGameplayHitId, mState.debugGameplayHitDist);
-    if (!mState.debugGameplayHitName.empty())
-      ImGui::Text("hitName: %s", mState.debugGameplayHitName.c_str());
-    if (!mState.debugGameplayMissReason.empty())
-      ImGui::Text("miss: %s", mState.debugGameplayMissReason.c_str());
-    ImGui::Text("grabbed: %u", mState.grabbedEntityId);
-    if (!mState.debugGrabPrefab.empty())
+                    : mState.gameplay.debug.debugGameplayHitKind.c_str(),
+                mState.gameplay.debug.debugGameplayHitId, mState.gameplay.debug.debugGameplayHitDist);
+    if (!mState.gameplay.debug.debugGameplayHitName.empty())
+      ImGui::Text("hitName: %s", mState.gameplay.debug.debugGameplayHitName.c_str());
+    if (!mState.gameplay.debug.debugGameplayMissReason.empty())
+      ImGui::Text("miss: %s", mState.gameplay.debug.debugGameplayMissReason.c_str());
+    ImGui::Text("grabbed: %u", mState.gameplay.grab.grabbedEntityId);
+    if (!mState.gameplay.debug.debugGrabPrefab.empty())
       ImGui::Text("prefab: %s  idx: %d  moved: %s",
-                  mState.debugGrabPrefab.c_str(), mState.debugGrabInstance,
-                  mState.debugGrabMoved ? "yes" : "no");
+                  mState.gameplay.debug.debugGrabPrefab.c_str(), mState.gameplay.debug.debugGrabInstance,
+                  mState.gameplay.debug.debugGrabMoved ? "yes" : "no");
     ImGui::End();
   }
   drawPlayPerformanceHud(mState);
@@ -2176,24 +2439,24 @@ void CoreAppLayer::update(float dt, float nowT) {
   if (mState.playState == AppState::PlayState::Playing &&
       lastPlayState != AppState::PlayState::Playing) {
     auto &reg = mState.scene.registry();
-    if (mState.playerId == 0 || !reg.has<CameraComponent>(mState.playerId)) {
-      mState.playerId = 0;
+    if (mState.gameplay.playerId == 0 || !reg.has<CameraComponent>(mState.gameplay.playerId)) {
+      mState.gameplay.playerId = 0;
       for (auto e : reg.view<CameraComponent>()) {
         if (!reg.has<LifecycleComponent>(e) ||
             reg.get<LifecycleComponent>(e).state ==
                 EntityLifecycleState::Alive) {
-          mState.playerId = e;
+          mState.gameplay.playerId = e;
           break;
         }
       }
     }
-    if (mState.playerId != 0 && reg.has<TransformComponent>(mState.playerId)) {
-      auto &tr = reg.get<TransformComponent>(mState.playerId);
+    if (mState.gameplay.playerId != 0 && reg.has<TransformComponent>(mState.gameplay.playerId)) {
+      auto &tr = reg.get<TransformComponent>(mState.gameplay.playerId);
       tr.position = mState.editorCamera.getPosition();
       tr.rotation =
           glm::vec3(mState.editorCamera.pitch, mState.editorCamera.yaw, 0.0f);
-      if (mState.terrainSystem.isEnabled())
-        clampEntityToTerrain(mState, reg, mState.playerId);
+      if (mState.terrainSystem.isEnabled() && !mState.input.creativeFlight)
+        clampEntityToTerrain(mState, reg, mState.gameplay.playerId);
     }
 
     usingRawMouse = glfwRawMouseMotionSupported();
@@ -2209,10 +2472,10 @@ void CoreAppLayer::update(float dt, float nowT) {
     double mx, my;
     glfwGetCursorPos(mState.window, &mx, &my);
     Mouse::resetPosition(mx, my);
-    mState.woodCount = 0;
+    mState.gameplay.woodCount = 0;
     // Lock player rotation only during play to avoid physics overwrites.
-    if (mState.playerId != 0 && reg.has<RigidbodyComponent>(mState.playerId)) {
-      reg.get<RigidbodyComponent>(mState.playerId).lockRotation = true;
+    if (mState.gameplay.playerId != 0 && reg.has<RigidbodyComponent>(mState.gameplay.playerId)) {
+      reg.get<RigidbodyComponent>(mState.gameplay.playerId).lockRotation = true;
     }
     mState.playerController.reset();
     mState.playerInteraction.reset();
@@ -2224,8 +2487,8 @@ void CoreAppLayer::update(float dt, float nowT) {
     Mouse::setManualMode(false);
     Mouse::resetDeltas();
     auto &reg = mState.scene.registry();
-    if (mState.playerId != 0 && reg.has<RigidbodyComponent>(mState.playerId)) {
-      reg.get<RigidbodyComponent>(mState.playerId).lockRotation = false;
+    if (mState.gameplay.playerId != 0 && reg.has<RigidbodyComponent>(mState.gameplay.playerId)) {
+      reg.get<RigidbodyComponent>(mState.gameplay.playerId).lockRotation = false;
     }
     mState.playerController.reset();
     mState.playerInteraction.reset();
@@ -2236,28 +2499,47 @@ void CoreAppLayer::update(float dt, float nowT) {
   bool sceneMutatedByCommands = false;
   {
     ScopedCpuTimer timer(mState.profiler, "Commands/Scene");
-    if (!mState.pending.pendingConsoleCommands.empty()) {
-      for (const auto &cmd : mState.pending.pendingConsoleCommands) {
+    if (!mState.editorSubsystem->pending().pendingConsoleCommands.empty()) {
+      for (const auto &cmd : mState.editorSubsystem->pending().pendingConsoleCommands) {
         if (executeConsoleCommand(mState, cmd))
           sceneMutatedByCommands = true;
       }
-      mState.pending.pendingConsoleCommands.clear();
+      mState.editorSubsystem->pending().pendingConsoleCommands.clear();
     }
-    if (mState.pending.requestSaveConfig) {
+    if (mState.editorSubsystem->pending().requestSaveConfig) {
       saveConfig(mState, "editor_state.bin");
-      mState.pending.requestSaveConfig = false;
+      mState.editorSubsystem->pending().requestSaveConfig = false;
     }
-    if (mState.pending.requestLoadConfig) {
+    if (mState.editorSubsystem->pending().requestLoadConfig) {
       loadConfig(mState, "editor_state.bin");
-      mState.pending.requestLoadConfig = false;
+      mState.editorSubsystem->pending().requestLoadConfig = false;
     }
-    if (mState.pending.requestSaveProjectConfig) {
+    if (mState.editorSubsystem->pending().requestSaveProjectConfig) {
       if (!mState.projectConfig.saveToFile("project_config.json")) {
         LOG_ERROR("Runtime", "Failed to save project_config.json");
       }
-      mState.pending.requestSaveProjectConfig = false;
+      mState.editorSubsystem->pending().requestSaveProjectConfig = false;
     }
-    if (!mState.pending.pendingSceneSavePath.empty()) {
+    if (mState.editorSubsystem->pending().requestSaveProjectDefaults) {
+      if (!saveProjectDefaults(mState)) {
+        LOG_ERROR("Runtime", "Failed to save project_defaults.json");
+      } else {
+        LOG_INFO("Runtime", "Saved project defaults to project_defaults.json");
+      }
+      mState.editorSubsystem->pending().requestSaveProjectDefaults = false;
+    }
+    if (mState.editorSubsystem->pending().requestResetProjectDefaults) {
+      std::error_code ec;
+      std::filesystem::remove(kProjectDefaultsPath, ec);
+      if (ec) {
+        LOG_ERROR("Runtime",
+                  "Failed to remove project_defaults.json: " + ec.message());
+      } else {
+        LOG_INFO("Runtime", "Reset project defaults");
+      }
+      mState.editorSubsystem->pending().requestResetProjectDefaults = false;
+    }
+    if (!mState.editorSubsystem->pending().pendingSceneSavePath.empty()) {
       json root = json::parse(mState.scene.serializeToString(), nullptr, false);
       if (root.is_discarded())
         root = json::object();
@@ -2266,30 +2548,30 @@ void CoreAppLayer::update(float dt, float nowT) {
       root["terrainSettings"] = serializeTerrainSettings(mState.terrainSettings);
       root["terrainMaterial"] = serializeTerrainMaterial(mState.terrainMaterial);
       root["renderSettings"] = serializeRenderSettings(mState.render);
-      root["audioSettings"] = serializeAudioSettings(mState.audio);
+      root["audioSettings"] = serializeAudioSettings(mState.audioSubsystem->settings());
       root["playPerfHud"] = serializePlayPerfHudSettings(mState.playPerfHud);
       root["sunSettings"] = serializeSunSettings(mState.sun);
       root["skySettings"] = serializeSkySettings(mState.skyUI);
       root["postProcess"] = serializePostProcess(mState.postProcessor);
 
-      std::ofstream out(mState.pending.pendingSceneSavePath);
+      std::ofstream out(mState.editorSubsystem->pending().pendingSceneSavePath);
       if (!out.is_open()) {
         LOG_ERROR(
             "Runtime",
-            "Failed to save scene: " + mState.pending.pendingSceneSavePath);
+            "Failed to save scene: " + mState.editorSubsystem->pending().pendingSceneSavePath);
       } else {
         out << root.dump(2);
       }
-      mState.pending.pendingSceneSavePath.clear();
+      mState.editorSubsystem->pending().pendingSceneSavePath.clear();
     }
-    if (!mState.pending.pendingSceneLoadPath.empty()) {
-      std::ifstream in(mState.pending.pendingSceneLoadPath);
+    if (!mState.editorSubsystem->pending().pendingSceneLoadPath.empty()) {
+      std::ifstream in(mState.editorSubsystem->pending().pendingSceneLoadPath);
       json root = json::parse(in, nullptr, false);
       if (root.is_discarded()) {
         LOG_ERROR(
             "Runtime",
-            "Failed to load scene: " + mState.pending.pendingSceneLoadPath);
-        mState.pending.pendingSceneLoadPath.clear();
+            "Failed to load scene: " + mState.editorSubsystem->pending().pendingSceneLoadPath);
+        mState.editorSubsystem->pending().pendingSceneLoadPath.clear();
         return;
       }
 
@@ -2298,7 +2580,7 @@ void CoreAppLayer::update(float dt, float nowT) {
       if (!mState.scene.loadFromString(root.dump()))
         LOG_ERROR(
             "Runtime",
-            "Failed to load scene: " + mState.pending.pendingSceneLoadPath);
+            "Failed to load scene: " + mState.editorSubsystem->pending().pendingSceneLoadPath);
       else {
         if (root.contains("terrainSettings"))
           applyTerrainSettings(root["terrainSettings"], mState.terrainSettings);
@@ -2307,7 +2589,7 @@ void CoreAppLayer::update(float dt, float nowT) {
         if (root.contains("renderSettings"))
           applyRenderSettings(root["renderSettings"], mState.render);
         if (root.contains("audioSettings"))
-          applyAudioSettings(root["audioSettings"], mState.audio);
+          applyAudioSettings(root["audioSettings"], mState.audioSubsystem->settings());
         if (root.contains("playPerfHud"))
           applyPlayPerfHudSettings(root["playPerfHud"], mState.playPerfHud);
         if (root.contains("sunSettings"))
@@ -2322,35 +2604,35 @@ void CoreAppLayer::update(float dt, float nowT) {
                                     &mState.assets);
         }
 
-        mState.history.pendingHistoryCommit = true;
-        mState.history.pendingHistoryLabel = "Load Scene";
+        mState.editorSubsystem->history().pendingHistoryCommit = true;
+        mState.editorSubsystem->history().pendingHistoryLabel = "Load Scene";
         sceneMutatedByCommands = true;
-        mState.playerId = 0;
+        mState.gameplay.playerId = 0;
         for (auto e : mState.scene.registry().view<CameraComponent>()) {
           if (!mState.scene.registry().has<LifecycleComponent>(e) ||
               mState.scene.registry().get<LifecycleComponent>(e).state ==
                   EntityLifecycleState::Alive) {
-            mState.playerId = e;
+            mState.gameplay.playerId = e;
             break;
           }
         }
       }
-      mState.pending.pendingSceneLoadPath.clear();
+      mState.editorSubsystem->pending().pendingSceneLoadPath.clear();
     }
 
-    if (mState.history.requestHistoryJump >= 0) {
-      applyHistorySnapshot(mState.history.requestHistoryJump);
-      mState.history.requestHistoryJump = -1;
+    if (mState.editorSubsystem->history().requestHistoryJump >= 0) {
+      applyHistorySnapshot(mState.editorSubsystem->history().requestHistoryJump);
+      mState.editorSubsystem->history().requestHistoryJump = -1;
       sceneMutatedByCommands = true;
-    } else if (mState.history.requestUndo) {
-      applyHistorySnapshot(mState.history.historyCursor - 1);
+    } else if (mState.editorSubsystem->history().requestUndo) {
+      applyHistorySnapshot(mState.editorSubsystem->history().historyCursor - 1);
       sceneMutatedByCommands = true;
-    } else if (mState.history.requestRedo) {
-      applyHistorySnapshot(mState.history.historyCursor + 1);
+    } else if (mState.editorSubsystem->history().requestRedo) {
+      applyHistorySnapshot(mState.editorSubsystem->history().historyCursor + 1);
       sceneMutatedByCommands = true;
     }
-    mState.history.requestUndo = false;
-    mState.history.requestRedo = false;
+    mState.editorSubsystem->history().requestUndo = false;
+    mState.editorSubsystem->history().requestRedo = false;
 
     if (mState.autoProcessImportQueue)
       mState.assets.processImportQueue();
@@ -2361,31 +2643,71 @@ void CoreAppLayer::update(float dt, float nowT) {
     }
 
     for (const std::string &emptyName :
-         mState.pending.pendingEmptyEntityNames) {
+         mState.editorSubsystem->pending().pendingEmptyEntityNames) {
       (void)mState.scene.createEmptyEntity(emptyName.empty() ? "Empty"
                                                              : emptyName);
-      mState.history.pendingHistoryCommit = true;
-      mState.history.pendingHistoryLabel = "Create Entity";
+      mState.editorSubsystem->history().pendingHistoryCommit = true;
+      mState.editorSubsystem->history().pendingHistoryLabel = "Create Entity";
       sceneMutatedByCommands = true;
     }
-    mState.pending.pendingEmptyEntityNames.clear();
+    mState.editorSubsystem->pending().pendingEmptyEntityNames.clear();
 
-    for (uint32_t entityId : mState.pending.pendingDeleteEntityIds) {
+    for (uint32_t entityId : mState.editorSubsystem->pending().pendingDeleteEntityIds) {
       if (entityId != 0) {
         mState.scene.deleteEntity(entityId);
-        mState.history.pendingHistoryCommit = true;
-        mState.history.pendingHistoryLabel = "Delete Entity";
+        mState.editorSubsystem->history().pendingHistoryCommit = true;
+        mState.editorSubsystem->history().pendingHistoryLabel = "Delete Entity";
         sceneMutatedByCommands = true;
       }
     }
-    mState.pending.pendingDeleteEntityIds.clear();
+    mState.editorSubsystem->pending().pendingDeleteEntityIds.clear();
 
-    for (const std::string &path : mState.pending.pendingSpawnPaths) {
+    for (const std::string &path : mState.editorSubsystem->pending().pendingSpawnPaths) {
       uint32_t spawnedId = 0;
 
       // Intercept procedural primitives (__primitive_cube, etc.)
       const std::string prefix = "__primitive_";
-      if (path.substr(0, prefix.size()) == prefix) {
+      if (path == "__spaceship") {
+        spawnedId = mState.scene.spawnPrimitive("cone");
+        if (spawnedId != 0) {
+          auto &reg = mState.scene.registry();
+          auto &tr = reg.get<TransformComponent>(spawnedId);
+          tr.position = mState.editorCamera.getPosition() +
+                        mState.editorCamera.getForwardVector() * 12.0f;
+          tr.rotation = glm::vec3(90.0f, mState.editorCamera.yaw, 0.0f);
+          tr.scale = glm::vec3(1.8f, 4.8f, 1.8f);
+
+          if (reg.has<NameComponent>(spawnedId))
+            reg.get<NameComponent>(spawnedId).name = "Spaceship";
+          else
+            reg.emplace<NameComponent>(spawnedId, "Spaceship");
+
+          auto &ship = reg.emplace<SpaceshipComponent>(spawnedId);
+          ship.centerOfMass = glm::vec3(0.0f, -0.35f, 0.0f);
+          ship.maxSpeed = 190.0f;
+          ship.turnRateDeg = 105.0f;
+          ship.bankAngleDeg = 32.0f;
+          ship.idleDrag = 0.42f;
+          ship.brakeDrag = 1.55f;
+
+          auto &col = reg.emplace<ColliderComponent>(spawnedId);
+          col.shape = ColliderComponent::Shape::Capsule;
+          col.dimensions = glm::vec3(0.9f, 5.6f, 0.9f);
+
+          auto &rb = reg.emplace<RigidbodyComponent>(spawnedId);
+          rb.type = RigidbodyComponent::Type::Kinematic;
+          rb.mass = ship.dryMassKg + ship.fuelMassKg;
+          rb.friction = 0.6f;
+          rb.restitution = 0.05f;
+
+          auto &mat = reg.emplace<MaterialOverrideComponent>(spawnedId);
+          mat.material.baseColor = glm::vec4(0.55f, 0.58f, 0.62f, 1.0f);
+          mat.material.roughness = 0.34f;
+          mat.material.metallic = 0.82f;
+          mat.material.ao = 1.0f;
+          mat.material.id = "__spaceship_default";
+        }
+      } else if (path.substr(0, prefix.size()) == prefix) {
         std::string shape = path.substr(prefix.size());
         spawnedId = mState.scene.spawnPrimitive(shape);
       } else {
@@ -2395,25 +2717,25 @@ void CoreAppLayer::update(float dt, float nowT) {
       if (spawnedId == 0) {
         LOG_ERROR("Runtime", "Failed to spawn: " + path);
       } else {
-        mState.history.pendingHistoryCommit = true;
-        mState.history.pendingHistoryLabel = "Spawn Asset";
+        mState.editorSubsystem->history().pendingHistoryCommit = true;
+        mState.editorSubsystem->history().pendingHistoryLabel = "Spawn Asset";
         sceneMutatedByCommands = true;
       }
     }
-    mState.pending.pendingSpawnPaths.clear();
+    mState.editorSubsystem->pending().pendingSpawnPaths.clear();
 
-    if (!mState.pending.pendingDropPaths.empty()) {
-      for (const std::string &path : mState.pending.pendingDropPaths) {
+    if (!mState.editorSubsystem->pending().pendingDropPaths.empty()) {
+      for (const std::string &path : mState.editorSubsystem->pending().pendingDropPaths) {
         const uint32_t spawnedId = mState.scene.spawnFromFile(path);
         if (spawnedId == 0)
           LOG_ERROR("Runtime", "Failed to load dropped model: " + path);
         else {
-          mState.history.pendingHistoryCommit = true;
-          mState.history.pendingHistoryLabel = "Spawn Asset";
+          mState.editorSubsystem->history().pendingHistoryCommit = true;
+          mState.editorSubsystem->history().pendingHistoryLabel = "Spawn Asset";
           sceneMutatedByCommands = true;
         }
       }
-      mState.pending.pendingDropPaths.clear();
+      mState.editorSubsystem->pending().pendingDropPaths.clear();
     }
 
     {
@@ -2428,8 +2750,8 @@ void CoreAppLayer::update(float dt, float nowT) {
     const size_t entityCountAfterFlush =
         mState.scene.registry().view<TransformComponent>().size();
     if (entityCountAfterFlush != entityCountBeforeFlush) {
-      mState.history.pendingHistoryCommit = true;
-      mState.history.pendingHistoryLabel = "Destroy Entity";
+      mState.editorSubsystem->history().pendingHistoryCommit = true;
+      mState.editorSubsystem->history().pendingHistoryLabel = "Destroy Entity";
       sceneMutatedByCommands = true;
     }
 
@@ -2465,6 +2787,10 @@ void CoreAppLayer::update(float dt, float nowT) {
       mState.playerController.update(mState, dt);
     }
     {
+      ScopedCpuTimer timer(mState.profiler, "Spaceship Controls");
+      mState.spaceshipControl.update(mState, dt);
+    }
+    {
       ScopedCpuTimer timer(mState.profiler, "Scripts");
       mState.scriptSystem.update(mState.scene.registry(), dt);
     }
@@ -2487,7 +2813,7 @@ void CoreAppLayer::update(float dt, float nowT) {
       ScopedCpuTimer timer(mState.profiler, "Terrain Clamp");
       auto &reg = mState.scene.registry();
       for (auto e : reg.viewAll<TransformComponent, ScriptComponent>()) {
-        if (e != mState.playerId)
+        if (e != mState.gameplay.playerId)
           clampEntityToTerrain(mState, reg, e);
       }
     }
@@ -2513,21 +2839,21 @@ void CoreAppLayer::update(float dt, float nowT) {
     // Apply mouselook or drag-grab (play mode) directly in C++.
     {
       auto &reg = mState.scene.registry();
-      if (mState.playerId == 0 || !reg.has<CameraComponent>(mState.playerId)) {
-        mState.playerId = 0;
+      if (mState.gameplay.playerId == 0 || !reg.has<CameraComponent>(mState.gameplay.playerId)) {
+        mState.gameplay.playerId = 0;
         for (auto e : reg.view<CameraComponent>()) {
           if (!reg.has<LifecycleComponent>(e) ||
               reg.get<LifecycleComponent>(e).state ==
                   EntityLifecycleState::Alive) {
-            mState.playerId = e;
+            mState.gameplay.playerId = e;
             break;
           }
         }
       }
       const float dx = (float)Mouse::getDX();
       const float dy = (float)Mouse::getDY();
-      mState.debugMouseDX = dx;
-      mState.debugMouseDY = dy;
+      mState.gameplay.debug.debugMouseDX = dx;
+      mState.gameplay.debug.debugMouseDY = dy;
       const bool primaryDown = Mouse::button(GLFW_MOUSE_BUTTON_LEFT);
       const bool primaryPressed = Mouse::buttonWentDown(GLFW_MOUSE_BUTTON_LEFT);
       const bool grabModifier =
@@ -2537,19 +2863,19 @@ void CoreAppLayer::update(float dt, float nowT) {
       // Mouse1 is now the laser. Keep physics grab available with Shift+Mouse1.
       if (primaryPressed &&
           grabModifier &&
-          mState.grabbedEntityId == 0 &&
-          mState.playerId != 0 &&
-          reg.has<TransformComponent>(mState.playerId)) {
-        const auto &camTr = reg.get<TransformComponent>(mState.playerId);
+          mState.gameplay.grab.grabbedEntityId == 0 &&
+          mState.gameplay.playerId != 0 &&
+          reg.has<TransformComponent>(mState.gameplay.playerId)) {
+        const auto &camTr = reg.get<TransformComponent>(mState.gameplay.playerId);
         const glm::vec3 camPos = camTr.position;
         const glm::vec3 camFront = playCameraForward(camTr.rotation);
         PhysicsRaycastResult hit = mState.physicsSystem.raycast(
-            camPos, camFront, 20.0f, mState.playerId);
-        mState.debugGrabHitId = hit.entityId;
-        mState.debugGrabHitDist = hit.distance;
-        mState.debugGrabHitName.clear();
+            camPos, camFront, 20.0f, mState.gameplay.playerId);
+        mState.gameplay.debug.debugGrabHitId = hit.entityId;
+        mState.gameplay.debug.debugGrabHitDist = hit.distance;
+        mState.gameplay.debug.debugGrabHitName.clear();
         if (hit.entityId != 0 && reg.has<NameComponent>(hit.entityId)) {
-          mState.debugGrabHitName =
+          mState.gameplay.debug.debugGrabHitName =
               reg.get<NameComponent>(hit.entityId).name;
         }
         if (hit.hit && hit.entityId != 0) {
@@ -2560,40 +2886,40 @@ void CoreAppLayer::update(float dt, float nowT) {
               if (mc.isTerrain || mc.isViewModel)
                 canGrab = false;
             }
-            if (hit.entityId == mState.playerId)
+            if (hit.entityId == mState.gameplay.playerId)
               canGrab = false;
             if (canGrab) {
-              mState.grabbedEntityId = hit.entityId;
-              mState.grabbedDistance = std::max(1.0f, hit.distance);
-              mState.grabbedHadRigidbody = false;
-              mState.grabbedPrevBodyType = 0;
-              mState.grabbedIsTreeInstance = false;
-              mState.grabbedPrefab.clear();
-              mState.grabbedInstanceIndex = 0;
-              mState.grabbedBaseMatrix = glm::mat4(1.0f);
+              mState.gameplay.grab.grabbedEntityId = hit.entityId;
+              mState.gameplay.grab.grabbedDistance = std::max(1.0f, hit.distance);
+              mState.gameplay.grab.grabbedHadRigidbody = false;
+              mState.gameplay.grab.grabbedPrevBodyType = 0;
+              mState.gameplay.grab.grabbedIsTreeInstance = false;
+              mState.gameplay.grab.grabbedPrefab.clear();
+              mState.gameplay.grab.grabbedInstanceIndex = 0;
+              mState.gameplay.grab.grabbedBaseMatrix = glm::mat4(1.0f);
               if (reg.has<RigidbodyComponent>(hit.entityId)) {
                 auto &rb = reg.get<RigidbodyComponent>(hit.entityId);
-                mState.grabbedHadRigidbody = true;
-                mState.grabbedPrevBodyType = (int)rb.type;
+                mState.gameplay.grab.grabbedHadRigidbody = true;
+                mState.gameplay.grab.grabbedPrevBodyType = (int)rb.type;
                 if (rb.type == RigidbodyComponent::Type::Static)
                   rb.type = RigidbodyComponent::Type::Kinematic;
               }
               if (reg.has<TreeComponent>(hit.entityId)) {
                 auto &tree = reg.get<TreeComponent>(hit.entityId);
-                mState.grabbedIsTreeInstance = true;
-                mState.grabbedPrefab = tree.prefabName;
-                mState.grabbedInstanceIndex = tree.instanceIndex;
+                mState.gameplay.grab.grabbedIsTreeInstance = true;
+                mState.gameplay.grab.grabbedPrefab = tree.prefabName;
+                mState.gameplay.grab.grabbedInstanceIndex = tree.instanceIndex;
                 glm::mat4 instM;
                 if (mState.terrainSystem.getPrefabInstanceMatrix(
                         tree.prefabName, tree.instanceIndex, instM)) {
-                  mState.grabbedBaseMatrix = instM;
+                  mState.gameplay.grab.grabbedBaseMatrix = instM;
                   glm::vec3 basePos = glm::vec3(instM[3]);
-                  mState.grabbedOffset = basePos - camPos;
+                  mState.gameplay.grab.grabbedOffset = basePos - camPos;
                 } else {
-                  mState.grabbedOffset = camPos + camFront * mState.grabbedDistance - camPos;
+                  mState.gameplay.grab.grabbedOffset = camPos + camFront * mState.gameplay.grab.grabbedDistance - camPos;
                 }
               } else {
-                mState.grabbedOffset = camPos + camFront * mState.grabbedDistance - camPos;
+                mState.gameplay.grab.grabbedOffset = camPos + camFront * mState.gameplay.grab.grabbedDistance - camPos;
               }
             }
           }
@@ -2601,12 +2927,12 @@ void CoreAppLayer::update(float dt, float nowT) {
       }
 
       const bool dragging =
-          (mState.grabbedEntityId != 0 &&
+          (mState.gameplay.grab.grabbedEntityId != 0 &&
            primaryDown);
 
       // Normal mouselook always active.
-      if (mState.playerId != 0 && reg.has<TransformComponent>(mState.playerId)) {
-        auto &tr = reg.get<TransformComponent>(mState.playerId);
+      if (mState.gameplay.playerId != 0 && reg.has<TransformComponent>(mState.gameplay.playerId)) {
+        auto &tr = reg.get<TransformComponent>(mState.gameplay.playerId);
         const float sens = mState.input.mouseSensitivity;
         tr.rotation.y -= dx * sens;
         tr.rotation.x += dy * sens;
@@ -2618,18 +2944,18 @@ void CoreAppLayer::update(float dt, float nowT) {
           tr.rotation.y -= 360.0f;
         if (tr.rotation.y < -180.0f)
           tr.rotation.y += 360.0f;
-        mState.debugYaw = tr.rotation.y;
-        mState.debugPitch = tr.rotation.x;
+        mState.gameplay.debug.debugYaw = tr.rotation.y;
+        mState.gameplay.debug.debugPitch = tr.rotation.x;
       }
 
       const bool wantsLaser =
           primaryPressed && !grabModifier &&
-          mState.activeSlot == AppState::HotbarSlot::Axe &&
-          mState.axeEnabled && mState.grabbedEntityId == 0 &&
-          mState.playerId != 0 &&
-          reg.has<TransformComponent>(mState.playerId);
+          mState.gameplay.activeSlot == GameplayState::HotbarSlot::Axe &&
+          mState.gameplay.viewmodel.axeEnabled && mState.gameplay.grab.grabbedEntityId == 0 &&
+          mState.gameplay.playerId != 0 &&
+          reg.has<TransformComponent>(mState.gameplay.playerId);
       if (wantsLaser) {
-        const auto &camTr = reg.get<TransformComponent>(mState.playerId);
+        const auto &camTr = reg.get<TransformComponent>(mState.gameplay.playerId);
         const glm::vec3 front = playCameraForward(camTr.rotation);
         const float maxDistance = 240.0f;
         const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
@@ -2639,21 +2965,21 @@ void CoreAppLayer::update(float dt, float nowT) {
         right = glm::normalize(right);
         const glm::vec3 up = glm::normalize(glm::cross(right, front));
         const glm::vec3 start =
-            camTr.position + right * mState.axeOffset.x +
-            up * mState.axeOffset.y +
-            front * (std::abs(mState.axeOffset.z) + 0.10f);
+            camTr.position + right * mState.gameplay.viewmodel.axeOffset.x +
+            up * mState.gameplay.viewmodel.axeOffset.y +
+            front * (std::abs(mState.gameplay.viewmodel.axeOffset.z) + 0.10f);
         PhysicsRaycastResult hit =
             mState.physicsSystem.raycast(camTr.position, front, maxDistance,
-                                         mState.playerId);
+                                         mState.gameplay.playerId);
         const glm::vec3 end =
             hit.hit ? hit.position : camTr.position + front * maxDistance;
         mState.projectiles.setLaserBeam(start, end, hit.hit, hit.entityId,
                                         hit.normal, 0.24f);
-        mState.debugGrabHitId = hit.entityId;
-        mState.debugGrabHitDist = hit.hit ? hit.distance : maxDistance;
-        mState.debugGrabHitName.clear();
+        mState.gameplay.debug.debugGrabHitId = hit.entityId;
+        mState.gameplay.debug.debugGrabHitDist = hit.hit ? hit.distance : maxDistance;
+        mState.gameplay.debug.debugGrabHitName.clear();
         if (hit.entityId != 0 && reg.has<NameComponent>(hit.entityId)) {
-          mState.debugGrabHitName = reg.get<NameComponent>(hit.entityId).name;
+          mState.gameplay.debug.debugGrabHitName = reg.get<NameComponent>(hit.entityId).name;
         }
         if (hit.hit) {
           constexpr float kLaserDamage = 100.0f;
@@ -2663,27 +2989,27 @@ void CoreAppLayer::update(float dt, float nowT) {
 
       if (dragging) {
         // Drag object in camera screen plane using mouse deltas.
-        if (reg.has<TransformComponent>(mState.grabbedEntityId) &&
-            mState.playerId != 0 &&
-            reg.has<TransformComponent>(mState.playerId)) {
-          auto &grabTr = reg.get<TransformComponent>(mState.grabbedEntityId);
-          auto &camTr = reg.get<TransformComponent>(mState.playerId);
+        if (reg.has<TransformComponent>(mState.gameplay.grab.grabbedEntityId) &&
+            mState.gameplay.playerId != 0 &&
+            reg.has<TransformComponent>(mState.gameplay.playerId)) {
+          auto &grabTr = reg.get<TransformComponent>(mState.gameplay.grab.grabbedEntityId);
+          auto &camTr = reg.get<TransformComponent>(mState.gameplay.playerId);
           const glm::vec3 front = playCameraForward(camTr.rotation);
           glm::vec3 right =
               glm::normalize(glm::cross(front, glm::vec3(0.0f, 1.0f, 0.0f)));
           glm::vec3 up = glm::normalize(glm::cross(right, front));
-          const float dragScale = 0.01f * mState.grabbedDistance;
-          mState.grabbedOffset += right * (-dx) * dragScale;
-          mState.grabbedOffset += up * (dy) * dragScale;
-          const glm::vec3 targetPos = camTr.position + mState.grabbedOffset;
+          const float dragScale = 0.01f * mState.gameplay.grab.grabbedDistance;
+          mState.gameplay.grab.grabbedOffset += right * (-dx) * dragScale;
+          mState.gameplay.grab.grabbedOffset += up * (dy) * dragScale;
+          const glm::vec3 targetPos = camTr.position + mState.gameplay.grab.grabbedOffset;
           const glm::vec3 oldPos = grabTr.position;
           const glm::vec3 delta = targetPos - oldPos;
           const float invDt = (dt > 0.0001f) ? (1.0f / dt) : 0.0f;
-          mState.grabbedReleaseVelocity = delta * invDt;
+          mState.gameplay.grab.grabbedReleaseVelocity = delta * invDt;
 
           // Apply a simple physics pull if the object has a rigidbody.
-          if (reg.has<RigidbodyComponent>(mState.grabbedEntityId)) {
-            auto &rb = reg.get<RigidbodyComponent>(mState.grabbedEntityId);
+          if (reg.has<RigidbodyComponent>(mState.gameplay.grab.grabbedEntityId)) {
+            auto &rb = reg.get<RigidbodyComponent>(mState.gameplay.grab.grabbedEntityId);
             const glm::vec3 vel = delta * invDt * 0.85f;
             rb.pendingLinearVelocity = vel;
             rb.setLinearVelocity = true;
@@ -2692,59 +3018,59 @@ void CoreAppLayer::update(float dt, float nowT) {
           grabTr.position = targetPos;
 
           // If this is a terrain tree instance, update instanced matrix too.
-          mState.debugGrabPrefab.clear();
-          mState.debugGrabInstance = -1;
-          mState.debugGrabMoved = false;
-          if (reg.has<TreeComponent>(mState.grabbedEntityId)) {
-            auto &tree = reg.get<TreeComponent>(mState.grabbedEntityId);
-            mState.debugGrabPrefab = tree.prefabName;
-            mState.debugGrabInstance = (int)tree.instanceIndex;
-            glm::mat4 instM = mState.grabbedBaseMatrix;
+          mState.gameplay.debug.debugGrabPrefab.clear();
+          mState.gameplay.debug.debugGrabInstance = -1;
+          mState.gameplay.debug.debugGrabMoved = false;
+          if (reg.has<TreeComponent>(mState.gameplay.grab.grabbedEntityId)) {
+            auto &tree = reg.get<TreeComponent>(mState.gameplay.grab.grabbedEntityId);
+            mState.gameplay.debug.debugGrabPrefab = tree.prefabName;
+            mState.gameplay.debug.debugGrabInstance = (int)tree.instanceIndex;
+            glm::mat4 instM = mState.gameplay.grab.grabbedBaseMatrix;
             instM[3] = glm::vec4(targetPos, 1.0f);
-            mState.debugGrabMoved =
+            mState.gameplay.debug.debugGrabMoved =
                 mState.terrainSystem.setPrefabInstanceMatrix(
                     tree.prefabName, tree.instanceIndex, instM);
           }
         } else {
-          mState.grabbedEntityId = 0;
+          mState.gameplay.grab.grabbedEntityId = 0;
         }
       }
 
       if (Mouse::buttonWentUp(GLFW_MOUSE_BUTTON_LEFT)) {
         // On release: convert tree instance into a physics-enabled entity.
-        if (mState.grabbedEntityId != 0 &&
-            reg.has<TreeComponent>(mState.grabbedEntityId)) {
+        if (mState.gameplay.grab.grabbedEntityId != 0 &&
+            reg.has<TreeComponent>(mState.gameplay.grab.grabbedEntityId)) {
           if (mState.terrainSystem.convertTreeToEntity(
-                  mState.grabbedEntityId)) {
-            if (reg.has<RigidbodyComponent>(mState.grabbedEntityId)) {
-              auto &rb = reg.get<RigidbodyComponent>(mState.grabbedEntityId);
+                  mState.gameplay.grab.grabbedEntityId)) {
+            if (reg.has<RigidbodyComponent>(mState.gameplay.grab.grabbedEntityId)) {
+              auto &rb = reg.get<RigidbodyComponent>(mState.gameplay.grab.grabbedEntityId);
               rb.type = RigidbodyComponent::Type::Dynamic;
               rb.lockRotation = false;
-              rb.pendingLinearVelocity = mState.grabbedReleaseVelocity;
+              rb.pendingLinearVelocity = mState.gameplay.grab.grabbedReleaseVelocity;
               rb.setLinearVelocity = true;
             } else {
               auto &rb =
-                  reg.emplace<RigidbodyComponent>(mState.grabbedEntityId);
+                  reg.emplace<RigidbodyComponent>(mState.gameplay.grab.grabbedEntityId);
               rb.type = RigidbodyComponent::Type::Dynamic;
               rb.lockRotation = false;
-              rb.pendingLinearVelocity = mState.grabbedReleaseVelocity;
+              rb.pendingLinearVelocity = mState.gameplay.grab.grabbedReleaseVelocity;
               rb.setLinearVelocity = true;
             }
           }
         }
-        if (mState.grabbedEntityId != 0 && mState.grabbedHadRigidbody &&
-            reg.has<RigidbodyComponent>(mState.grabbedEntityId)) {
-          auto &rb = reg.get<RigidbodyComponent>(mState.grabbedEntityId);
-          rb.type = (RigidbodyComponent::Type)mState.grabbedPrevBodyType;
+        if (mState.gameplay.grab.grabbedEntityId != 0 && mState.gameplay.grab.grabbedHadRigidbody &&
+            reg.has<RigidbodyComponent>(mState.gameplay.grab.grabbedEntityId)) {
+          auto &rb = reg.get<RigidbodyComponent>(mState.gameplay.grab.grabbedEntityId);
+          rb.type = (RigidbodyComponent::Type)mState.gameplay.grab.grabbedPrevBodyType;
         }
-        mState.grabbedEntityId = 0;
-        mState.grabbedHadRigidbody = false;
-        mState.grabbedPrevBodyType = 0;
-        mState.grabbedIsTreeInstance = false;
-        mState.grabbedPrefab.clear();
-        mState.grabbedInstanceIndex = 0;
-        mState.grabbedBaseMatrix = glm::mat4(1.0f);
-        mState.grabbedReleaseVelocity = glm::vec3(0.0f);
+        mState.gameplay.grab.grabbedEntityId = 0;
+        mState.gameplay.grab.grabbedHadRigidbody = false;
+        mState.gameplay.grab.grabbedPrevBodyType = 0;
+        mState.gameplay.grab.grabbedIsTreeInstance = false;
+        mState.gameplay.grab.grabbedPrefab.clear();
+        mState.gameplay.grab.grabbedInstanceIndex = 0;
+        mState.gameplay.grab.grabbedBaseMatrix = glm::mat4(1.0f);
+        mState.gameplay.grab.grabbedReleaseVelocity = glm::vec3(0.0f);
       }
     }
 
@@ -2758,8 +3084,8 @@ void CoreAppLayer::update(float dt, float nowT) {
           GLFW_PRESS;
       if (mouse2Down) {
         auto &reg = mState.scene.registry();
-        if (mState.playerId != 0 && reg.has<TransformComponent>(mState.playerId)) {
-          auto &camTr = reg.get<TransformComponent>(mState.playerId);
+        if (mState.gameplay.playerId != 0 && reg.has<TransformComponent>(mState.gameplay.playerId)) {
+          auto &camTr = reg.get<TransformComponent>(mState.gameplay.playerId);
           glm::vec3 front;
           front.x = -sin(glm::radians(camTr.rotation.y)) *
                     cos(glm::radians(camTr.rotation.x));
@@ -2769,7 +3095,7 @@ void CoreAppLayer::update(float dt, float nowT) {
           front = glm::normalize(front);
 
           auto hit = mState.physicsSystem.raycast(camTr.position, front, 100.0f,
-                                                  mState.playerId);
+                                                  mState.gameplay.playerId);
           if (hit.hit) {
             constexpr float kMouse2Damage = 100.0f;
             const bool consumedByDestruction =
@@ -2824,11 +3150,11 @@ void CoreAppLayer::update(float dt, float nowT) {
 
   // F key: focus on selected entity
   if (Keyboard::key(GLFW_KEY_F) && !uiOut.wantCaptureKeyboard &&
-      mState.selection.selectedEntityId != 0) {
+      mState.editorSubsystem->selection().selectedEntityId != 0) {
     auto &reg = mState.scene.registry();
-    if (reg.has<TransformComponent>(mState.selection.selectedEntityId)) {
+    if (reg.has<TransformComponent>(mState.editorSubsystem->selection().selectedEntityId)) {
       glm::vec3 target =
-          reg.get<TransformComponent>(mState.selection.selectedEntityId)
+          reg.get<TransformComponent>(mState.editorSubsystem->selection().selectedEntityId)
               .position;
       mState.editorCamera.focusOn(target);
     }
@@ -2842,25 +3168,25 @@ void CoreAppLayer::update(float dt, float nowT) {
 
   const bool forcePlayerCam =
       (mState.playState != AppState::PlayState::Playing &&
-       mState.usePlayerCameraInEdit);
+       mState.gameplay.viewmodel.usePlayerCameraInEdit);
 
   if (mState.playState == AppState::PlayState::Playing || forcePlayerCam) {
     auto &reg = mState.scene.registry();
-    if (mState.playerId == 0 || !reg.has<CameraComponent>(mState.playerId)) {
-      mState.playerId =
+    if (mState.gameplay.playerId == 0 || !reg.has<CameraComponent>(mState.gameplay.playerId)) {
+      mState.gameplay.playerId =
           0; // Reset — stays 0 if no CameraComponent entity exists
       for (auto e : reg.view<CameraComponent>()) {
         if (!reg.has<LifecycleComponent>(e) ||
             reg.get<LifecycleComponent>(e).state ==
                 EntityLifecycleState::Alive) {
-          mState.playerId = e;
+          mState.gameplay.playerId = e;
           break;
         }
       }
     }
 
-    if (mState.playerId != 0 && reg.has<TransformComponent>(mState.playerId)) {
-      auto &tr = reg.get<TransformComponent>(mState.playerId);
+    if (mState.gameplay.playerId != 0 && reg.has<TransformComponent>(mState.gameplay.playerId)) {
+      auto &tr = reg.get<TransformComponent>(mState.gameplay.playerId);
       if (forcePlayerCam) {
         tr.position = mState.editorCamera.getPosition();
         tr.rotation =
@@ -2877,7 +3203,7 @@ void CoreAppLayer::update(float dt, float nowT) {
         tr.rotation.y += 360.0f;
 
       if (mState.terrainSystem.isEnabled())
-        clampEntityToTerrain(mState, reg, mState.playerId);
+        clampEntityToTerrain(mState, reg, mState.gameplay.playerId);
 
       cameraPos = tr.position;
 
@@ -2891,76 +3217,76 @@ void CoreAppLayer::update(float dt, float nowT) {
 
       // Use a fixed world up to avoid roll/inversion near steep angles.
       cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
-      mState.debugCamFront = cameraFront;
-      mState.debugCamUp = cameraUp;
+      mState.gameplay.debug.debugCamFront = cameraFront;
+      mState.gameplay.debug.debugCamUp = cameraUp;
       view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
     }
   }
 
   // Viewmodel (axe)
   const bool showAxe =
-      mState.axeEnabled &&
-      mState.activeSlot == AppState::HotbarSlot::Axe &&
+      mState.gameplay.viewmodel.axeEnabled &&
+      mState.gameplay.activeSlot == GameplayState::HotbarSlot::Axe &&
       (mState.playState == AppState::PlayState::Playing || mState.uiMode);
   if (showAxe) {
     auto &reg = mState.scene.registry();
-    if (mState.axeEntity == 0 ||
-        !reg.has<MeshComponent>(mState.axeEntity) ||
-        !reg.has<TransformComponent>(mState.axeEntity)) {
-      auto h = mState.assets.loadOBJ(mState.axePath);
+    if (mState.gameplay.axeEntity == 0 ||
+        !reg.has<MeshComponent>(mState.gameplay.axeEntity) ||
+        !reg.has<TransformComponent>(mState.gameplay.axeEntity)) {
+      auto h = mState.assets.loadOBJ(mState.gameplay.viewmodel.axePath);
       OBJModel *mdl = mState.assets.getOBJ(h);
       if (mdl) {
         EntityId eid = mState.scene.createEmptyEntity("Axe");
         reg.emplace<TransientComponent>(eid);
         auto &t = reg.get<TransformComponent>(eid);
-        t.position = mState.axeOffset;
-        t.rotation = mState.axeRotation;
-        t.scale = mState.axeScale;
+        t.position = mState.gameplay.viewmodel.axeOffset;
+        t.rotation = mState.gameplay.viewmodel.axeRotation;
+        t.scale = mState.gameplay.viewmodel.axeScale;
         auto &mc = reg.emplace<MeshComponent>(eid, mdl, true, false);
         mc.objHandle = h;
-        mc.assetId = mState.axePath;
+        mc.assetId = mState.gameplay.viewmodel.axePath;
         mc.isViewModel = true;
-        mState.axeEntity = eid;
+        mState.gameplay.axeEntity = eid;
       }
     }
 
-    if (mState.axeEntity != 0 && reg.has<TransformComponent>(mState.axeEntity)) {
-      if (reg.has<MeshComponent>(mState.axeEntity)) {
-        reg.get<MeshComponent>(mState.axeEntity).visible = true;
+    if (mState.gameplay.axeEntity != 0 && reg.has<TransformComponent>(mState.gameplay.axeEntity)) {
+      if (reg.has<MeshComponent>(mState.gameplay.axeEntity)) {
+        reg.get<MeshComponent>(mState.gameplay.axeEntity).visible = true;
       }
-      auto &t = reg.get<TransformComponent>(mState.axeEntity);
+      auto &t = reg.get<TransformComponent>(mState.gameplay.axeEntity);
       // Fixed viewmodel in screen space (no camera correlation).
       // View space looks down -Z, so treat positive Z as "forward".
-      t.position = glm::vec3(mState.axeOffset.x, mState.axeOffset.y,
-                             -std::abs(mState.axeOffset.z));
-      t.rotation = mState.axeRotation;
-      t.scale = mState.axeScale;
+      t.position = glm::vec3(mState.gameplay.viewmodel.axeOffset.x, mState.gameplay.viewmodel.axeOffset.y,
+                             -std::abs(mState.gameplay.viewmodel.axeOffset.z));
+      t.rotation = mState.gameplay.viewmodel.axeRotation;
+      t.scale = mState.gameplay.viewmodel.axeScale;
     }
-  } else if (mState.axeEntity != 0) {
+  } else if (mState.gameplay.axeEntity != 0) {
     auto &reg = mState.scene.registry();
-    if (reg.has<MeshComponent>(mState.axeEntity)) {
-      reg.get<MeshComponent>(mState.axeEntity).visible = false;
+    if (reg.has<MeshComponent>(mState.gameplay.axeEntity)) {
+      reg.get<MeshComponent>(mState.gameplay.axeEntity).visible = false;
     }
   }
 
   const bool showTorch =
-      mState.torchEnabled &&
-      mState.activeSlot == AppState::HotbarSlot::Torch &&
+      mState.gameplay.viewmodel.torchEnabled &&
+      mState.gameplay.activeSlot == GameplayState::HotbarSlot::Torch &&
       (mState.playState == AppState::PlayState::Playing || mState.uiMode);
   if (showTorch) {
     auto &reg = mState.scene.registry();
-    if (mState.torchEntity == 0 ||
-        !reg.has<MeshComponent>(mState.torchEntity) ||
-        !reg.has<TransformComponent>(mState.torchEntity)) {
+    if (mState.gameplay.torchEntity == 0 ||
+        !reg.has<MeshComponent>(mState.gameplay.torchEntity) ||
+        !reg.has<TransformComponent>(mState.gameplay.torchEntity)) {
       EntityId eid = mState.scene.spawnPrimitive("cube");
       if (eid != 0) {
         reg.emplace<TransientComponent>(eid);
         if (reg.has<NameComponent>(eid))
           reg.get<NameComponent>(eid).name = "Torch";
         auto &t = reg.get<TransformComponent>(eid);
-        t.position = mState.torchOffset;
-        t.rotation = mState.torchRotation;
-        t.scale = mState.torchScale;
+        t.position = mState.gameplay.viewmodel.torchOffset;
+        t.rotation = mState.gameplay.viewmodel.torchRotation;
+        t.scale = mState.gameplay.viewmodel.torchScale;
         auto &mc = reg.get<MeshComponent>(eid);
         mc.visible = true;
         mc.castsShadow = false;
@@ -2982,25 +3308,25 @@ void CoreAppLayer::update(float dt, float nowT) {
           mo.material.ao = 1.0f;
           reg.emplace<MaterialOverrideComponent>(eid, std::move(mo));
         }
-        mState.torchEntity = eid;
+        mState.gameplay.torchEntity = eid;
       }
     }
 
-    if (mState.torchEntity != 0 &&
-        reg.has<TransformComponent>(mState.torchEntity)) {
-      if (reg.has<MeshComponent>(mState.torchEntity)) {
-        reg.get<MeshComponent>(mState.torchEntity).visible = true;
+    if (mState.gameplay.torchEntity != 0 &&
+        reg.has<TransformComponent>(mState.gameplay.torchEntity)) {
+      if (reg.has<MeshComponent>(mState.gameplay.torchEntity)) {
+        reg.get<MeshComponent>(mState.gameplay.torchEntity).visible = true;
       }
-      auto &t = reg.get<TransformComponent>(mState.torchEntity);
-      t.position = glm::vec3(mState.torchOffset.x, mState.torchOffset.y,
-                             -std::abs(mState.torchOffset.z));
-      t.rotation = mState.torchRotation;
-      t.scale = mState.torchScale;
+      auto &t = reg.get<TransformComponent>(mState.gameplay.torchEntity);
+      t.position = glm::vec3(mState.gameplay.viewmodel.torchOffset.x, mState.gameplay.viewmodel.torchOffset.y,
+                             -std::abs(mState.gameplay.viewmodel.torchOffset.z));
+      t.rotation = mState.gameplay.viewmodel.torchRotation;
+      t.scale = mState.gameplay.viewmodel.torchScale;
     }
-  } else if (mState.torchEntity != 0) {
+  } else if (mState.gameplay.torchEntity != 0) {
     auto &reg = mState.scene.registry();
-    if (reg.has<MeshComponent>(mState.torchEntity)) {
-      reg.get<MeshComponent>(mState.torchEntity).visible = false;
+    if (reg.has<MeshComponent>(mState.gameplay.torchEntity)) {
+      reg.get<MeshComponent>(mState.gameplay.torchEntity).visible = false;
     }
   }
 
@@ -3030,7 +3356,7 @@ void CoreAppLayer::update(float dt, float nowT) {
   glm::mat4 renderProjection = projection;
 
   const bool brushActive =
-      mState.terrainBrush.enabled && mState.terrainSystem.isEnabled() &&
+      mState.terrainSystem.brushSettings().enabled && mState.terrainSystem.isEnabled() &&
       mState.playState != AppState::PlayState::Playing;
   if (brushActive && !uiOut.wantCaptureMouse && !ImGuizmo::IsUsing()) {
     float mx = (float)Mouse::getMouseX();
@@ -3041,7 +3367,7 @@ void CoreAppLayer::update(float dt, float nowT) {
     if (raycastTerrain(mState.terrainSystem, ray, 300.0f, hit)) {
       constexpr int kSegments = 40;
       constexpr float kTwoPi = 6.28318530718f;
-      const float r = mState.terrainBrush.radius;
+      const float r = mState.terrainSystem.brushSettings().radius;
       const float step = kTwoPi / (float)kSegments;
       ImDrawList *dl = ImGui::GetForegroundDrawList();
       ImU32 col = IM_COL32(255, 140, 40, 220);
@@ -3071,21 +3397,21 @@ void CoreAppLayer::update(float dt, float nowT) {
                                         (float)winH, view, projection);
     glm::vec3 hit;
     if (raycastTerrain(mState.terrainSystem, ray, 300.0f, hit)) {
-      if (mState.terrainBrush.mode == 0 || mState.terrainBrush.mode == 1) {
-        float dir = (mState.terrainBrush.mode == 0) ? 1.0f : -1.0f;
-        float delta = dir * mState.terrainBrush.strength * dt;
+      if (mState.terrainSystem.brushSettings().mode == 0 || mState.terrainSystem.brushSettings().mode == 1) {
+        float dir = (mState.terrainSystem.brushSettings().mode == 0) ? 1.0f : -1.0f;
+        float delta = dir * mState.terrainSystem.brushSettings().strength * dt;
         mState.terrainSystem.applyHeightBrush(
-            hit, mState.terrainBrush.radius, delta);
+            hit, mState.terrainSystem.brushSettings().radius, delta);
       } else {
         const char *prefab = "prefab_pine";
-        if (mState.terrainBrush.target == 1)
+        if (mState.terrainSystem.brushSettings().target == 1)
           prefab = "prefab_rock";
-        else if (mState.terrainBrush.target == 2)
+        else if (mState.terrainSystem.brushSettings().target == 2)
           prefab = "prefab_grass";
-        bool add = (mState.terrainBrush.mode == 2);
+        bool add = (mState.terrainSystem.brushSettings().mode == 2);
         mState.terrainSystem.applyVegetationBrush(
-            hit, mState.terrainBrush.radius, prefab, add,
-            mState.terrainBrush.scatterCount);
+            hit, mState.terrainSystem.brushSettings().radius, prefab, add,
+            mState.terrainSystem.brushSettings().scatterCount);
       }
     }
   }
@@ -3105,22 +3431,22 @@ void CoreAppLayer::update(float dt, float nowT) {
           glfwGetKey(mState.window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS ||
           glfwGetKey(mState.window, GLFW_KEY_LEFT_SUPER) == GLFW_PRESS;
       if (ctrlHeld) {
-        auto &sel = mState.selection.selectedEntities;
+        auto &sel = mState.editorSubsystem->selection().selectedEntities;
         auto it = std::find(sel.begin(), sel.end(), hitId);
         if (it != sel.end()) {
           sel.erase(it);
-          if (mState.selection.selectedEntityId == hitId)
-            mState.selection.selectedEntityId = sel.empty() ? 0 : sel.back();
+          if (mState.editorSubsystem->selection().selectedEntityId == hitId)
+            mState.editorSubsystem->selection().selectedEntityId = sel.empty() ? 0 : sel.back();
         } else {
           sel.push_back(hitId);
-          mState.selection.selectedEntityId = hitId;
+          mState.editorSubsystem->selection().selectedEntityId = hitId;
         }
       } else {
-        mState.selection.selectedEntities.clear();
-        mState.selection.selectedEntities.push_back(hitId);
-        mState.selection.selectedEntityId = hitId;
+        mState.editorSubsystem->selection().selectedEntities.clear();
+        mState.editorSubsystem->selection().selectedEntities.push_back(hitId);
+        mState.editorSubsystem->selection().selectedEntityId = hitId;
       }
-      mState.selection.lastClickedEntity = hitId;
+      mState.editorSubsystem->selection().lastClickedEntity = hitId;
 
       auto &reg = mState.scene.registry();
       if (reg.has<MeshComponent>(hitId) && reg.has<TransformComponent>(hitId)) {
@@ -3129,25 +3455,25 @@ void CoreAppLayer::update(float dt, float nowT) {
           auto &tr = reg.get<TransformComponent>(hitId);
           std::string hitPart = MousePicking::pickSubmesh(ray, tr, *mdl);
           if (!hitPart.empty()) {
-            mState.selection.editObjPart = true;
-            mState.selection.selectedObjPartName = hitPart;
+            mState.editorSubsystem->selection().editObjPart = true;
+            mState.editorSubsystem->selection().selectedObjPartName = hitPart;
           } else {
-            mState.selection.editObjPart = false;
-            mState.selection.selectedObjPartName.clear();
+            mState.editorSubsystem->selection().editObjPart = false;
+            mState.editorSubsystem->selection().selectedObjPartName.clear();
           }
         } else {
-          mState.selection.editObjPart = false;
-          mState.selection.selectedObjPartName.clear();
+          mState.editorSubsystem->selection().editObjPart = false;
+          mState.editorSubsystem->selection().selectedObjPartName.clear();
         }
       } else {
-        mState.selection.editObjPart = false;
-        mState.selection.selectedObjPartName.clear();
+        mState.editorSubsystem->selection().editObjPart = false;
+        mState.editorSubsystem->selection().selectedObjPartName.clear();
       }
     } else {
-      mState.selection.selectedEntities.clear();
-      mState.selection.selectedEntityId = 0;
-      mState.selection.editObjPart = false;
-      mState.selection.selectedObjPartName.clear();
+      mState.editorSubsystem->selection().selectedEntities.clear();
+      mState.editorSubsystem->selection().selectedEntityId = 0;
+      mState.editorSubsystem->selection().editObjPart = false;
+      mState.editorSubsystem->selection().selectedObjPartName.clear();
     }
   }
 
@@ -3157,20 +3483,20 @@ void CoreAppLayer::update(float dt, float nowT) {
     if (mState.editor.drawGizmo(mState.uiMode, view, projection, mState.scene,
                                 mState.sun, mState.events, selState,
                                 cameraPos)) {
-      mState.history.pendingHistoryCommit = true;
-      mState.history.pendingHistoryLabel = "Edit Scene";
+      mState.editorSubsystem->history().pendingHistoryCommit = true;
+      mState.editorSubsystem->history().pendingHistoryLabel = "Edit Scene";
     }
   }
 
-  if (mState.history.pendingHistoryCommit) {
+  if (mState.editorSubsystem->history().pendingHistoryCommit) {
     const bool interacting = ImGuizmo::IsUsing() || ImGui::IsAnyItemActive() ||
                              ImGui::IsMouseDown(0);
     if (!interacting || sceneMutatedByCommands) {
-      commitHistorySnapshot(mState.history.pendingHistoryLabel.empty()
+      commitHistorySnapshot(mState.editorSubsystem->history().pendingHistoryLabel.empty()
                                 ? "Edit Scene"
-                                : mState.history.pendingHistoryLabel);
-      mState.history.pendingHistoryCommit = false;
-      mState.history.pendingHistoryLabel.clear();
+                                : mState.editorSubsystem->history().pendingHistoryLabel);
+      mState.editorSubsystem->history().pendingHistoryCommit = false;
+      mState.editorSubsystem->history().pendingHistoryLabel.clear();
     }
   }
 
@@ -3180,9 +3506,9 @@ void CoreAppLayer::update(float dt, float nowT) {
   }
 
   if (mState.audioSubsystem) {
-    if (mState.pending.requestTestFootstepAudio) {
+    if (mState.editorSubsystem->pending().requestTestFootstepAudio) {
       mState.audioSubsystem->playTestFootstep();
-      mState.pending.requestTestFootstepAudio = false;
+      mState.editorSubsystem->pending().requestTestFootstepAudio = false;
     }
     ScopedCpuTimer timer(mState.profiler, "Audio");
     mState.audioSubsystem->update(dt, cameraPos, cameraFront);
