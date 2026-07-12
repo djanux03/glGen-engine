@@ -1,11 +1,7 @@
 #include "AssetManager.h"
 
-#include "FBXModel.h"
-#include "OBJModel.h"
-#include "PrimitiveMeshGenerator.h"
-#include "Shader.h"
-#include "Texture.h"
-#include "UFBXModel.h"
+#include "MeshParse.h"
+#include "MeshPrimitives.h"
 #include "json.hpp"
 
 #include <algorithm>
@@ -21,28 +17,30 @@ std::string toLower(std::string s) {
                  [](unsigned char c) { return (char)std::tolower(c); });
   return s;
 }
-
-std::unique_ptr<OBJModel> makePrimitiveOBJ(const std::string &assetId) {
-  static const std::string kPrefix = "__primitive_";
-  if (assetId.rfind(kPrefix, 0) != 0)
-    return nullptr;
-
-  const std::string shape = assetId.substr(kPrefix.size());
-  if (shape == "cube")
-    return std::unique_ptr<OBJModel>(PrimitiveMeshGenerator::createCube());
-  if (shape == "sphere")
-    return std::unique_ptr<OBJModel>(PrimitiveMeshGenerator::createSphere());
-  if (shape == "plane")
-    return std::unique_ptr<OBJModel>(PrimitiveMeshGenerator::createPlane());
-  if (shape == "cylinder")
-    return std::unique_ptr<OBJModel>(PrimitiveMeshGenerator::createCylinder());
-  if (shape == "cone")
-    return std::unique_ptr<OBJModel>(PrimitiveMeshGenerator::createCone());
-  return nullptr;
-}
 } // namespace
 
-AssetManager::~AssetManager() = default;
+AssetManager::~AssetManager() {
+  for (auto &rec : mOBJ) {
+    if (rec.gpu && mBackend.destroyOBJ)
+      mBackend.destroyOBJ(rec.gpu);
+  }
+  for (auto &rec : mGLTF) {
+    if (rec.gpu && mBackend.destroyGLTF)
+      mBackend.destroyGLTF(rec.gpu);
+  }
+  for (auto &rec : mUFBX) {
+    if (rec.gpu && mBackend.destroyUFBX)
+      mBackend.destroyUFBX(rec.gpu);
+  }
+}
+
+void AssetManager::setGpuBackend(ModelGpuBackend backend) {
+  mBackend = std::move(backend);
+}
+
+void AssetManager::setShaderReloader(std::function<bool(Shader *)> reloader) {
+  mShaderReloader = std::move(reloader);
+}
 
 void AssetManager::setCookRoot(const std::string &cookRoot) {
   mCookRoot = cookRoot;
@@ -122,17 +120,24 @@ OBJHandle AssetManager::loadOBJ(const std::string &path) {
 
   OBJRecord rec;
   rec.sourcePath = path;
-  rec.asset = makePrimitiveOBJ(path);
+  rec.cpu = makePrimitiveMesh(path);
   rec.runtimeAsset = false;
 
-  if (!rec.asset) {
+  if (!rec.cpu) {
     rec.dependencies = {path};
     rec.watchedTime = safeWriteTime_(path);
-    rec.asset = std::make_unique<OBJModel>();
     const std::string cooked = cookedPathFor_(path);
     const std::string loadPath =
         std::filesystem::exists(cooked) ? cooked : path;
-    if (!rec.asset->loadFromFile(loadPath)) {
+    rec.cpu = parseMeshOBJ(loadPath);
+    if (!rec.cpu) {
+      return {};
+    }
+  }
+
+  if (mBackend.createOBJ) {
+    rec.gpu = mBackend.createOBJ(*rec.cpu);
+    if (!rec.gpu) {
       return {};
     }
   }
@@ -154,11 +159,18 @@ GLTFHandle AssetManager::loadGLTF(const std::string &path) {
   rec.sourcePath = path;
   rec.dependencies = {path};
   rec.watchedTime = safeWriteTime_(path);
-  rec.asset = std::make_unique<FBXModel>();
   const std::string cooked = cookedPathFor_(path);
   const std::string loadPath = std::filesystem::exists(cooked) ? cooked : path;
-  if (!rec.asset->loadFromFile(loadPath)) {
+  rec.cpu = parseMeshGLTF(loadPath);
+  if (!rec.cpu) {
     return {};
+  }
+
+  if (mBackend.createGLTF) {
+    rec.gpu = mBackend.createGLTF(*rec.cpu);
+    if (!rec.gpu) {
+      return {};
+    }
   }
 
   const uint32_t idx = (uint32_t)mGLTF.size();
@@ -178,11 +190,18 @@ UFBXHandle AssetManager::loadUFBX(const std::string &path) {
   rec.sourcePath = path;
   rec.dependencies = {path};
   rec.watchedTime = safeWriteTime_(path);
-  rec.asset = std::make_unique<UFBXModel>();
   const std::string cooked = cookedPathFor_(path);
   const std::string loadPath = std::filesystem::exists(cooked) ? cooked : path;
-  if (!rec.asset->loadFromFile(loadPath)) {
+  rec.cpu = parseMeshFBX(loadPath);
+  if (!rec.cpu) {
     return {};
+  }
+
+  if (mBackend.createUFBX) {
+    rec.gpu = mBackend.createUFBX(*rec.cpu);
+    if (!rec.gpu) {
+      return {};
+    }
   }
 
   const uint32_t idx = (uint32_t)mUFBX.size();
@@ -191,10 +210,15 @@ UFBXHandle AssetManager::loadUFBX(const std::string &path) {
   return UFBXHandle{idx, mUFBX[idx].generation};
 }
 
-OBJHandle AssetManager::registerRuntimeOBJ(const std::string &assetId,
-                                           std::unique_ptr<OBJModel> model) {
+OBJHandle AssetManager::registerRuntimeOBJRaw(const std::string &assetId,
+                                              void *model) {
   if (assetId.empty() || !model)
     return {};
+
+  auto destroyExisting = [&](void *gpu) {
+    if (gpu && mBackend.destroyOBJ)
+      mBackend.destroyOBJ(gpu);
+  };
 
   const auto it = mOBJByPath.find(assetId);
   if (it != mOBJByPath.end()) {
@@ -205,7 +229,9 @@ OBJHandle AssetManager::registerRuntimeOBJ(const std::string &assetId,
     rec.sourcePath = assetId;
     rec.dependencies.clear();
     rec.watchedTime = {};
-    rec.asset = std::move(model);
+    rec.cpu.reset();
+    destroyExisting(rec.gpu);
+    rec.gpu = model;
     rec.runtimeAsset = true;
     return OBJHandle{idx, rec.generation};
   }
@@ -214,11 +240,12 @@ OBJHandle AssetManager::registerRuntimeOBJ(const std::string &assetId,
   // the vector unboundedly across terrain chunk load/unload cycles.
   for (uint32_t i = 0; i < (uint32_t)mOBJ.size(); ++i) {
     auto &slot = mOBJ[i];
-    if (!slot.asset && slot.runtimeAsset) {
+    if (!slot.gpu && slot.runtimeAsset) {
       slot.sourcePath = assetId;
       slot.dependencies.clear();
       slot.watchedTime = {};
-      slot.asset = std::move(model);
+      slot.cpu.reset();
+      slot.gpu = model;
       // slot.runtimeAsset already true
       mOBJByPath[assetId] = i;
       return OBJHandle{i, slot.generation};
@@ -230,7 +257,7 @@ OBJHandle AssetManager::registerRuntimeOBJ(const std::string &assetId,
   rec.sourcePath = assetId;
   rec.dependencies.clear();
   rec.watchedTime = {};
-  rec.asset = std::move(model);
+  rec.gpu = model;
   rec.runtimeAsset = true;
 
   const uint32_t idx = (uint32_t)mOBJ.size();
@@ -250,7 +277,10 @@ bool AssetManager::releaseOBJ(const std::string &assetId) {
 
   auto &rec = mOBJ[idx];
   const bool wasRuntimeAsset = rec.runtimeAsset;
-  rec.asset.reset();
+  if (rec.gpu && mBackend.destroyOBJ)
+    mBackend.destroyOBJ(rec.gpu);
+  rec.gpu = nullptr;
+  rec.cpu.reset();
   rec.dependencies.clear();
   rec.watchedTime = {};
   rec.runtimeAsset = wasRuntimeAsset;
@@ -262,7 +292,7 @@ AssetStats AssetManager::stats() const {
   AssetStats s{};
 
   for (const auto &rec : mOBJ) {
-    if (!rec.asset)
+    if (!rec.gpu && !rec.cpu)
       continue;
     ++s.objLive;
     if (rec.runtimeAsset)
@@ -270,10 +300,10 @@ AssetStats AssetManager::stats() const {
   }
 
   for (const auto &rec : mGLTF)
-    if (rec.asset)
+    if (rec.gpu || rec.cpu)
       ++s.gltfLive;
   for (const auto &rec : mUFBX)
-    if (rec.asset)
+    if (rec.gpu || rec.cpu)
       ++s.ufbxLive;
   for (const auto &rec : mShaders)
     if (rec.shader)
@@ -291,28 +321,52 @@ AssetStats AssetManager::stats() const {
   return s;
 }
 
-OBJModel *AssetManager::getOBJ(OBJHandle h) {
+void *AssetManager::gpuOBJ_(OBJHandle h) {
   if (!h.valid() || h.index >= mOBJ.size())
     return nullptr;
   if (mOBJ[h.index].generation != h.generation)
     return nullptr;
-  return mOBJ[h.index].asset.get();
+  return mOBJ[h.index].gpu;
 }
 
-FBXModel *AssetManager::getGLTF(GLTFHandle h) {
+void *AssetManager::gpuGLTF_(GLTFHandle h) {
   if (!h.valid() || h.index >= mGLTF.size())
     return nullptr;
   if (mGLTF[h.index].generation != h.generation)
     return nullptr;
-  return mGLTF[h.index].asset.get();
+  return mGLTF[h.index].gpu;
 }
 
-UFBXModel *AssetManager::getUFBX(UFBXHandle h) {
+void *AssetManager::gpuUFBX_(UFBXHandle h) {
   if (!h.valid() || h.index >= mUFBX.size())
     return nullptr;
   if (mUFBX[h.index].generation != h.generation)
     return nullptr;
-  return mUFBX[h.index].asset.get();
+  return mUFBX[h.index].gpu;
+}
+
+const MeshData *AssetManager::getOBJData(OBJHandle h) const {
+  if (!h.valid() || h.index >= mOBJ.size())
+    return nullptr;
+  if (mOBJ[h.index].generation != h.generation)
+    return nullptr;
+  return mOBJ[h.index].cpu.get();
+}
+
+const MeshData *AssetManager::getGLTFData(GLTFHandle h) const {
+  if (!h.valid() || h.index >= mGLTF.size())
+    return nullptr;
+  if (mGLTF[h.index].generation != h.generation)
+    return nullptr;
+  return mGLTF[h.index].cpu.get();
+}
+
+const MeshData *AssetManager::getUFBXData(UFBXHandle h) const {
+  if (!h.valid() || h.index >= mUFBX.size())
+    return nullptr;
+  if (mUFBX[h.index].generation != h.generation)
+    return nullptr;
+  return mUFBX[h.index].cpu.get();
 }
 
 ShaderHandle AssetManager::registerShader(Shader *shader,
@@ -387,6 +441,8 @@ std::vector<std::string> AssetManager::pollHotReload() {
   std::vector<std::string> out;
 
   for (auto &rec : mOBJ) {
+    if (rec.runtimeAsset || !rec.cpu)
+      continue;
     auto t = safeWriteTime_(rec.sourcePath);
     if (t != std::filesystem::file_time_type{} && t != rec.watchedTime) {
       const std::string cooked = cookedPathFor_(rec.sourcePath);
@@ -398,14 +454,23 @@ std::vector<std::string> AssetManager::pollHotReload() {
       }
       const std::string loadPath =
           std::filesystem::exists(cooked) ? cooked : rec.sourcePath;
-      if (rec.asset && rec.asset->loadFromFile(loadPath)) {
-        rec.watchedTime = t;
-        out.push_back("Reloaded OBJ: " + rec.sourcePath);
+      auto reparsed = parseMeshOBJ(loadPath);
+      if (reparsed) {
+        rec.cpu = std::move(reparsed);
+        bool gpuOk = true;
+        if (rec.gpu && mBackend.reloadOBJ)
+          gpuOk = mBackend.reloadOBJ(rec.gpu, *rec.cpu);
+        if (gpuOk) {
+          rec.watchedTime = t;
+          out.push_back("Reloaded OBJ: " + rec.sourcePath);
+        }
       }
     }
   }
 
   for (auto &rec : mGLTF) {
+    if (!rec.cpu)
+      continue;
     auto t = safeWriteTime_(rec.sourcePath);
     if (t != std::filesystem::file_time_type{} && t != rec.watchedTime) {
       const std::string cooked = cookedPathFor_(rec.sourcePath);
@@ -417,9 +482,16 @@ std::vector<std::string> AssetManager::pollHotReload() {
       }
       const std::string loadPath =
           std::filesystem::exists(cooked) ? cooked : rec.sourcePath;
-      if (rec.asset && rec.asset->loadFromFile(loadPath)) {
-        rec.watchedTime = t;
-        out.push_back("Reloaded GLTF/FBX: " + rec.sourcePath);
+      auto reparsed = parseMeshGLTF(loadPath);
+      if (reparsed) {
+        rec.cpu = std::move(reparsed);
+        bool gpuOk = true;
+        if (rec.gpu && mBackend.reloadGLTF)
+          gpuOk = mBackend.reloadGLTF(rec.gpu, *rec.cpu);
+        if (gpuOk) {
+          rec.watchedTime = t;
+          out.push_back("Reloaded GLTF/FBX: " + rec.sourcePath);
+        }
       }
     }
   }
@@ -429,7 +501,7 @@ std::vector<std::string> AssetManager::pollHotReload() {
     auto ft = safeWriteTime_(rec.fragPath);
     if ((vt != std::filesystem::file_time_type{} && vt != rec.vertTime) ||
         (ft != std::filesystem::file_time_type{} && ft != rec.fragTime)) {
-      if (rec.shader && rec.shader->reload()) {
+      if (rec.shader && mShaderReloader && mShaderReloader(rec.shader)) {
         rec.vertTime = vt;
         rec.fragTime = ft;
         out.push_back("Reloaded Shader: " + rec.vertPath + " + " +

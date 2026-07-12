@@ -65,6 +65,10 @@ struct MaterialOverrideComponent {
   std::string roughnessPath;
   std::string metallicPath;
   std::string aoPath;
+
+  // False when the paths above have not been turned into GPU textures yet;
+  // the rendering backend resolves them lazily (once) and sets this.
+  bool texturesResolved = false;
 };
 
 struct InstancedMeshComponent {

@@ -1,11 +1,8 @@
 #include "Scene.h"
 #include "AssetManager.h"
 
-#include "Assets/UFBXModel.h"
 #include "ECS/Components.h"
-#include "FBXModel.h"
-#include "OBJModel.h"
-#include "Texture.h"
+#include "MeshData.h"
 #include "json.hpp"
 
 #include <algorithm>
@@ -75,33 +72,33 @@ Scene::EntityId Scene::spawnFromFile(const std::string &path) {
   std::transform(ext.begin(), ext.end(), ext.begin(),
                  [](unsigned char c) { return (char)std::tolower(c); });
 
+  // The GPU model pointer may be null when no rendering backend is
+  // installed (e.g. the Vulkan runtime resolves meshes by assetId instead);
+  // a valid handle means the asset parsed successfully.
   MeshComponent mesh;
   if (ext == ".obj") {
     if (!mAssets)
       return 0;
     auto h = mAssets->loadOBJ(path);
-    OBJModel *model = mAssets->getOBJ(h);
-    if (!h.valid() || !model)
+    if (!h.valid())
       return 0;
-    mesh = MeshComponent(model);
+    mesh = MeshComponent(mAssets->getOBJ(h));
     mesh.objHandle = h;
   } else if (ext == ".gltf" || ext == ".glb") {
     if (!mAssets)
       return 0;
     auto h = mAssets->loadGLTF(path);
-    FBXModel *model = mAssets->getGLTF(h);
-    if (!h.valid() || !model)
+    if (!h.valid())
       return 0;
-    mesh = MeshComponent(model);
+    mesh = MeshComponent(mAssets->getGLTF(h));
     mesh.gltfHandle = h;
   } else if (ext == ".fbx") {
     if (!mAssets)
       return 0;
     auto h = mAssets->loadUFBX(path);
-    UFBXModel *model = mAssets->getUFBX(h);
-    if (!h.valid() || !model)
+    if (!h.valid())
       return 0;
-    mesh = MeshComponent(model);
+    mesh = MeshComponent(mAssets->getUFBX(h));
     mesh.ufbxHandle = h;
   } else {
     return 0;
@@ -144,14 +141,13 @@ Scene::EntityId Scene::spawnPrimitive(const std::string &primitiveName) {
 
   const std::string assetId = "__primitive_" + primitiveName;
   auto h = mAssets->loadOBJ(assetId);
-  OBJModel *model = mAssets->getOBJ(h);
-  if (!h.valid() || !model)
+  if (!h.valid())
     return 0;
 
   EntityId id = mRegistry.create();
   mRegistry.emplace<TransformComponent>(id);
 
-  MeshComponent mesh(model);
+  MeshComponent mesh(mAssets->getOBJ(h));
   mesh.assetId = assetId;
   mesh.objHandle = h;
   mRegistry.emplace<MeshComponent>(id, mesh);
@@ -496,54 +492,49 @@ bool Scene::loadFromString(const std::string &jsonText) {
       const bool visible = m.value("visible", true);
       const bool castsShadow = m.value("castsShadow", true);
 
+      // Bounds come from the parsed CPU MeshData; the GPU model pointer may
+      // be null when no rendering backend is installed (Vulkan runtime).
+      auto applyBounds = [&](const MeshData *md) {
+        glm::vec3 minB, maxB;
+        if (md && md->getGlobalBounds(minB, maxB)) {
+          float rad = glm::length(maxB - minB) * 0.5f;
+          mRegistry.get<BoundsComponent>(id).radius = rad;
+        }
+      };
+
       if (!assetId.empty()) {
         if (type == "OBJ") {
           if (!mAssets)
             continue;
           auto h = mAssets->loadOBJ(assetId);
-          if (OBJModel *obj = mAssets->getOBJ(h)) {
-            auto &mc =
-                mRegistry.emplace<MeshComponent>(id, obj, visible, castsShadow);
+          if (h.valid()) {
+            auto &mc = mRegistry.emplace<MeshComponent>(
+                id, mAssets->getOBJ(h), visible, castsShadow);
             mc.assetId = assetId;
             mc.objHandle = h;
-
-            glm::vec3 minB, maxB;
-            if (obj->getGlobalBounds(minB, maxB)) {
-              float rad = glm::length(maxB - minB) * 0.5f;
-              mRegistry.get<BoundsComponent>(id).radius = rad;
-            }
+            applyBounds(mAssets->getOBJData(h));
           }
         } else if (type == "GLTF") {
           if (!mAssets)
             continue;
           auto h = mAssets->loadGLTF(assetId);
-          if (FBXModel *fbx = mAssets->getGLTF(h)) {
-            auto &mc =
-                mRegistry.emplace<MeshComponent>(id, fbx, visible, castsShadow);
+          if (h.valid()) {
+            auto &mc = mRegistry.emplace<MeshComponent>(
+                id, mAssets->getGLTF(h), visible, castsShadow);
             mc.assetId = assetId;
             mc.gltfHandle = h;
-
-            glm::vec3 minB, maxB;
-            if (fbx->getGlobalBounds(minB, maxB)) {
-              float rad = glm::length(maxB - minB) * 0.5f;
-              mRegistry.get<BoundsComponent>(id).radius = rad;
-            }
+            applyBounds(mAssets->getGLTFData(h));
           }
         } else if (type == "FBX") {
           if (!mAssets)
             continue;
           auto h = mAssets->loadUFBX(assetId);
-          if (UFBXModel *ufbx = mAssets->getUFBX(h)) {
-            auto &mc = mRegistry.emplace<MeshComponent>(id, ufbx, visible,
-                                                        castsShadow);
+          if (h.valid()) {
+            auto &mc = mRegistry.emplace<MeshComponent>(
+                id, mAssets->getUFBX(h), visible, castsShadow);
             mc.assetId = assetId;
             mc.ufbxHandle = h;
-
-            glm::vec3 minB, maxB;
-            if (ufbx->getGlobalBounds(minB, maxB)) {
-              float rad = glm::length(maxB - minB) * 0.5f;
-              mRegistry.get<BoundsComponent>(id).radius = rad;
-            }
+            applyBounds(mAssets->getUFBXData(h));
           }
         }
       }
@@ -572,18 +563,9 @@ bool Scene::loadFromString(const std::string &jsonText) {
       mo.metallicPath = moj.value("metallicPath", "");
       mo.aoPath = moj.value("aoPath", "");
 
-      mo.material.texDiffuse =
-          mo.albedoPath.empty() ? 0 : LoadTexture2DCached(mo.albedoPath);
-      mo.material.texNormal =
-          mo.normalPath.empty() ? 0 : LoadTexture2DCached(mo.normalPath);
-      mo.material.texRoughness = mo.roughnessPath.empty()
-                                     ? 0
-                                     : LoadTexture2DCached(mo.roughnessPath);
-      mo.material.texMetallic = mo.metallicPath.empty()
-                                    ? 0
-                                    : LoadTexture2DCached(mo.metallicPath);
-      mo.material.texAO =
-          mo.aoPath.empty() ? 0 : LoadTexture2DCached(mo.aoPath);
+      // Texture ids stay 0 here; the rendering backend resolves the paths
+      // to GPU textures (RenderSystem does this lazily on first draw).
+      mo.texturesResolved = false;
       mo.material.id = "EntityOverride_" + std::to_string(id);
     }
 

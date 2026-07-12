@@ -16,6 +16,7 @@
 #include "FBXModel.h"
 #include "FireFX.h"
 #include "GLDebug.h"
+#include "GLModelBackend.h"
 #include "GLStateCache.h"
 #include "HDRSky.h"
 #include "IEngineSubsystem.h"
@@ -187,6 +188,7 @@ void shutdownWindowAndImGui(AppState &s) {
 
 bool initRuntimeSystems(AppState &s) {
   s.scene.setAssetManager(&s.assets);
+  InstallGLModelBackend(s.assets);
   s.assets.setCookRoot(s.projectConfig.projectPath("Build/cooked"));
 
   const std::string mainVS =

@@ -1,12 +1,13 @@
 #pragma once
 #include "Material.h"
 #include "Texture.h"
-#include "tiny_gltf.h"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
+#include <map>
 #include <string>
-#include <unordered_map>
 #include <vector>
+
+struct MeshData;
 
 struct FBXVertex {
   glm::vec3 pos;
@@ -26,6 +27,8 @@ struct FBXSubmesh {
 class FBXModel {
 public:
   bool loadFromFile(const std::string &path);
+  // GPU-upload half: builds GL buffers/textures from parsed CPU data.
+  bool loadFromData(const MeshData &data);
   void draw(class Shader &shader, const glm::vec3 &pos, const glm::vec3 &rot,
             const glm::vec3 &scale,
             const MaterialAsset *materialOverride = nullptr);
@@ -38,23 +41,16 @@ public:
   bool getGlobalBounds(glm::vec3 &outMin, glm::vec3 &outMax) const;
 
 private:
+  GLuint textureFor_(const MeshData &data, const std::string &path,
+                     TextureUsage usage);
+
   std::vector<FBXSubmesh> mSubmeshes;
   std::string mSourcePath;
-  std::string mDirectory;
-  tinygltf::Model mModel;
 
   glm::vec3 mAabbMin{1e30f};
   glm::vec3 mAabbMax{-1e30f};
   bool mHasBounds = false;
 
-  void processNode(int nodeIndex);
-  void processMesh(const tinygltf::Mesh &mesh);
-  GLuint LoadTextureFromGLTF(int textureIndex,
-                             TextureUsage usage = TextureUsage::Color,
-                             std::string *outSourcePath = nullptr);
-  GLuint CreateTextureFromImage(const tinygltf::Image &image,
-                                TextureUsage usage);
-
-  // Per-instance texture cache (replaces leaked static global)
+  // Per-instance texture cache; entries are owned and freed in shutdown()
   std::map<std::string, GLuint> mTextureCache;
 };

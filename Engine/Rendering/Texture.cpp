@@ -121,6 +121,43 @@ GLuint LoadTexture2DCached(const std::string& path, bool flipY, TextureUsage usa
     return tex;
 }
 
+GLuint CreateTexture2DFromPixels(const unsigned char* pixels, int width,
+                                 int height, int component,
+                                 TextureUsage usage)
+{
+    if (!pixels || width <= 0 || height <= 0)
+        return 0;
+
+    GLuint texID = 0;
+    glGenTextures(1, &texID);
+    glBindTexture(GL_TEXTURE_2D, texID);
+
+    GLenum format = GL_RGBA;
+    GLenum internalFormat = GL_RGBA;
+    if (component == 3) {
+        format = GL_RGB;
+        internalFormat = (usage == TextureUsage::Color) ? GL_SRGB : GL_RGB;
+    } else if (component == 1) {
+        format = GL_RED;
+        internalFormat = GL_RED;
+    } else {
+        internalFormat =
+            (usage == TextureUsage::Color) ? GL_SRGB_ALPHA : GL_RGBA;
+    }
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format,
+                 GL_UNSIGNED_BYTE, pixels);
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    return texID;
+}
+
 GLuint LoadHDRTexture2D(const std::string& path, bool flipY)
 {
     stbi_set_flip_vertically_on_load(flipY);

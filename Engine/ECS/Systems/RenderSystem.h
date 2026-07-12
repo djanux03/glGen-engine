@@ -6,6 +6,7 @@
 #include "ECS/Registry.h"
 #include "Rendering/RenderCapabilities.h"
 #include "Rendering/Shader.h"
+#include "Rendering/Texture.h"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -578,6 +579,24 @@ private:
     class UFBXModel *ufbxModel = nullptr;
   };
 
+  // Scene loading stores material-override texture paths only (it is
+  // GL-free); the GL layer turns them into textures here, once.
+  static void resolveMaterialOverrideTextures_(MaterialOverrideComponent &mo) {
+    if (mo.texturesResolved)
+      return;
+    mo.texturesResolved = true;
+    auto resolve = [](uint32_t &id, const std::string &path,
+                      TextureUsage usage) {
+      if (id == 0 && !path.empty())
+        id = LoadTexture2DCached(path, true, usage);
+    };
+    resolve(mo.material.texDiffuse, mo.albedoPath, TextureUsage::Color);
+    resolve(mo.material.texNormal, mo.normalPath, TextureUsage::Data);
+    resolve(mo.material.texRoughness, mo.roughnessPath, TextureUsage::Data);
+    resolve(mo.material.texMetallic, mo.metallicPath, TextureUsage::Data);
+    resolve(mo.material.texAO, mo.aoPath, TextureUsage::Data);
+  }
+
   void prepareFramePackets_(Registry &registry) {
     if (mFramePacketsPrepared)
       return;
@@ -681,6 +700,7 @@ private:
       uint64_t materialKey = 0;
       if (registry.has<MaterialOverrideComponent>(entity)) {
         auto &mo = registry.get<MaterialOverrideComponent>(entity);
+        resolveMaterialOverrideTextures_(mo);
         if (mo.enabled) {
           if (!mo.material.id.empty()) {
             materialKey = (uint64_t)std::hash<std::string>{}(mo.material.id);

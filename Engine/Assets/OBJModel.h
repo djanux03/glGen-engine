@@ -7,12 +7,15 @@
 #include <vector>
 
 class Shader;
+struct MeshData;
 
 class OBJModel {
 public:
   enum class UpAxis { X, Y, Z };
 
   bool loadFromFile(const std::string &objPath);
+  // GPU-upload half: builds GL buffers/textures from parsed CPU data.
+  bool loadFromData(const MeshData &data);
   void shutdown();
 
   // Load from raw vertex data (for procedural meshes)

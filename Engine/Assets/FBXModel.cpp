@@ -1,20 +1,13 @@
 #include "FBXModel.h"
 #include "GLStateCache.h"
 #include "Logger.h"
+#include "MeshData.h"
+#include "MeshParse.h"
 #include "Shader.h"
 #include "Texture.h"
-#include <stb/stb_image.h>
 
-#include "tiny_gltf.h"
-
-#include <algorithm>
-#include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
-#include <map>
 #include <vector>
-
-// --- STATIC HELPERS & CACHE ---
 
 static glm::mat4 buildTRS(const glm::vec3 &pos, const glm::vec3 &rotDeg,
                           const glm::vec3 &scale) {
@@ -27,428 +20,96 @@ static glm::mat4 buildTRS(const glm::vec3 &pos, const glm::vec3 &rotDeg,
   return m;
 }
 
-static int getExtTextureIndex(const tinygltf::Value &extObj,
-                              const char *textureInfoKey) {
-  if (!extObj.IsObject() || !extObj.Has(textureInfoKey))
-    return -1;
-  const tinygltf::Value &texInfo = extObj.Get(textureInfoKey);
-  if (!texInfo.IsObject() || !texInfo.Has("index"))
-    return -1;
-  return texInfo.Get("index").GetNumberAsInt();
-}
-
-static bool getExtFloat(const tinygltf::Value &extObj, const char *key,
-                        float &outValue) {
-  if (!extObj.IsObject() || !extObj.Has(key))
-    return false;
-  const tinygltf::Value &v = extObj.Get(key);
-  if (!v.IsNumber())
-    return false;
-  outValue = (float)v.GetNumberAsDouble();
-  return true;
-}
-
-static bool getExtVec3(const tinygltf::Value &extObj, const char *key,
-                       glm::vec3 &outValue) {
-  if (!extObj.IsObject() || !extObj.Has(key))
-    return false;
-  const tinygltf::Value &v = extObj.Get(key);
-  if (!v.IsArray() || v.ArrayLen() < 3)
-    return false;
-  outValue = glm::vec3((float)v.Get(0).GetNumberAsDouble(),
-                       (float)v.Get(1).GetNumberAsDouble(),
-                       (float)v.Get(2).GetNumberAsDouble());
-  return true;
-}
-
-static bool getExtVec4(const tinygltf::Value &extObj, const char *key,
-                       glm::vec4 &outValue) {
-  if (!extObj.IsObject() || !extObj.Has(key))
-    return false;
-  const tinygltf::Value &v = extObj.Get(key);
-  if (!v.IsArray() || v.ArrayLen() < 4)
-    return false;
-  outValue = glm::vec4((float)v.Get(0).GetNumberAsDouble(),
-                       (float)v.Get(1).GetNumberAsDouble(),
-                       (float)v.Get(2).GetNumberAsDouble(),
-                       (float)v.Get(3).GetNumberAsDouble());
-  return true;
-}
-
-// --- CLASS IMPLEMENTATION ---
-
 bool FBXModel::loadFromFile(const std::string &path) {
-  shutdown();
-  mSourcePath = path;
-
-  tinygltf::TinyGLTF loader;
-  std::string err, warn;
-  bool ret = false;
-
-  // Determine base directory
-  size_t slash = path.find_last_of("/\\");
-  mDirectory = (slash == std::string::npos) ? "." : path.substr(0, slash);
-
-  // Check if binary (.glb) or ASCII (.gltf)
-  if (path.find(".glb") != std::string::npos) {
-    ret = loader.LoadBinaryFromFile(&mModel, &err, &warn, path);
-  } else {
-    ret = loader.LoadASCIIFromFile(&mModel, &err, &warn, path);
-  }
-
-  if (!warn.empty()) {
-    LOG_WARN("Asset", "glTF warning: " + warn);
-  }
-
-  if (!err.empty()) {
-    LOG_ERROR("Asset", "glTF error: " + err);
-  }
-
-  if (!ret) {
-    LOG_ERROR("Asset", "Failed to load glTF: " + path);
+  auto data = parseMeshGLTF(path);
+  if (!data)
     return false;
+  return loadFromData(*data);
+}
+
+GLuint FBXModel::textureFor_(const MeshData &data, const std::string &path,
+                             TextureUsage usage) {
+  if (path.empty())
+    return 0;
+
+  const std::string key =
+      path + (usage == TextureUsage::Color ? "|color" : "|data");
+  auto cached = mTextureCache.find(key);
+  if (cached != mTextureCache.end())
+    return cached->second;
+
+  GLuint texID = 0;
+  if (const MeshImage *img = data.findImage(path)) {
+    texID = CreateTexture2DFromPixels(img->pixels.data(), img->width,
+                                      img->height, img->component, usage);
+  } else {
+    // glTF parses all images into payloads, so this only triggers for
+    // paths pointing outside the parsed image set.
+    texID = LoadTexture2D(path, true, usage);
   }
 
-  // Process all scenes (usually just one)
-  const tinygltf::Scene &scene =
-      mModel.scenes[mModel.defaultScene > -1 ? mModel.defaultScene : 0];
-
-  for (size_t i = 0; i < scene.nodes.size(); i++) {
-    processNode(scene.nodes[i]);
+  if (texID != 0) {
+    mTextureCache[key] = texID;
+    LOG_TRACE("Asset", "Loaded glTF texture: " + path);
   }
+  return texID;
+}
 
-  LOG_INFO("Asset", "Loaded glTF: " + path + " with " +
-                        std::to_string(mSubmeshes.size()) + " submeshes.");
+bool FBXModel::loadFromData(const MeshData &data) {
+  shutdown();
+  mSourcePath = data.sourcePath;
 
-  // Calculate global bounds across all geometry
   mHasBounds = false;
   mAabbMin = glm::vec3(1e30f);
   mAabbMax = glm::vec3(-1e30f);
 
-  // We do a second fast pass over all generated submeshes rather than tinygltf
-  // buffers
-  for (const auto &sm : mSubmeshes) {
-    // Technically, our vertices are stuck in VBOs right now; we should have
-    // computed AABB during processMesh. Let's rely on standard practice: I will
-    // update processMesh to accumulate these!
-  }
-
-  return true;
-}
-
-bool FBXModel::getGlobalBounds(glm::vec3 &outMin, glm::vec3 &outMax) const {
-  if (!mHasBounds)
-    return false;
-  outMin = mAabbMin;
-  outMax = mAabbMax;
-  return true;
-}
-
-void FBXModel::processNode(int nodeIndex) {
-  if (nodeIndex < 0 || nodeIndex >= mModel.nodes.size())
-    return;
-
-  const tinygltf::Node &node = mModel.nodes[nodeIndex];
-
-  // Process mesh if this node has one
-  if (node.mesh >= 0) {
-    processMesh(mModel.meshes[node.mesh]);
-  }
-
-  // Recursively process children
-  for (size_t i = 0; i < node.children.size(); i++) {
-    processNode(node.children[i]);
-  }
-}
-
-void FBXModel::processMesh(const tinygltf::Mesh &mesh) {
-  // glTF meshes contain "primitives" (our submeshes)
-  for (size_t i = 0; i < mesh.primitives.size(); i++) {
-    const tinygltf::Primitive &primitive = mesh.primitives[i];
-
-    std::vector<FBXVertex> vertices;
-    std::vector<unsigned int> indices;
-
-    // Get positions
-    auto posAttrIt = primitive.attributes.find("POSITION");
-    if (posAttrIt == primitive.attributes.end()) {
-      LOG_WARN("Asset", "Skipping primitive without POSITION attribute");
-      continue;
-    }
-
-    const tinygltf::Accessor &posAccessor = mModel.accessors[posAttrIt->second];
-    const tinygltf::BufferView &posView =
-        mModel.bufferViews[posAccessor.bufferView];
-    const tinygltf::Buffer &posBuffer = mModel.buffers[posView.buffer];
-    const unsigned char *positions =
-        posBuffer.data.data() + posView.byteOffset + posAccessor.byteOffset;
-    const int posStride = posAccessor.ByteStride(posView);
-    if (posStride <= 0) {
-      LOG_WARN("Asset", "Invalid POSITION stride in glTF primitive");
-      continue;
-    }
-
-    // Get normals (if available)
-    const unsigned char *normals = nullptr;
-    int normStride = 0;
-    auto normalIt = primitive.attributes.find("NORMAL");
-    if (normalIt != primitive.attributes.end()) {
-      const tinygltf::Accessor &normAccessor =
-          mModel.accessors[normalIt->second];
-      const tinygltf::BufferView &normView =
-          mModel.bufferViews[normAccessor.bufferView];
-      const tinygltf::Buffer &normBuffer = mModel.buffers[normView.buffer];
-      normals =
-          normBuffer.data.data() + normView.byteOffset + normAccessor.byteOffset;
-      normStride = normAccessor.ByteStride(normView);
-      if (normStride <= 0)
-        normals = nullptr;
-    }
-
-    // Get UVs (if available)
-    const unsigned char *uvs = nullptr;
-    int uvStride = 0;
-    auto uvIt = primitive.attributes.find("TEXCOORD_0");
-    if (uvIt != primitive.attributes.end()) {
-      const tinygltf::Accessor &uvAccessor = mModel.accessors[uvIt->second];
-      const tinygltf::BufferView &uvView =
-          mModel.bufferViews[uvAccessor.bufferView];
-      const tinygltf::Buffer &uvBuffer = mModel.buffers[uvView.buffer];
-      uvs = uvBuffer.data.data() + uvView.byteOffset + uvAccessor.byteOffset;
-      uvStride = uvAccessor.ByteStride(uvView);
-      if (uvStride <= 0)
-        uvs = nullptr;
-    }
-
-    // Build vertices
-    for (size_t v = 0; v < posAccessor.count; v++) {
-      FBXVertex vertex;
-      const float *pos = reinterpret_cast<const float *>(positions + v * posStride);
-      vertex.pos = glm::vec3(pos[0], pos[1], pos[2]);
-
-      // Accumulate global AABB bounds
-      mAabbMin = glm::min(mAabbMin, vertex.pos);
-      mAabbMax = glm::max(mAabbMax, vertex.pos);
-      mHasBounds = true;
-
-      if (normals) {
-        const float *n = reinterpret_cast<const float *>(normals + v * normStride);
-        vertex.normal = glm::vec3(n[0], n[1], n[2]);
-      } else {
-        vertex.normal = glm::vec3(0, 1, 0);
-      }
-
-      if (uvs) {
-        const float *uv = reinterpret_cast<const float *>(uvs + v * uvStride);
-        vertex.uv = glm::vec2(uv[0], uv[1]);
-      } else {
-        vertex.uv = glm::vec2(0, 0);
-      }
-
-      vertices.push_back(vertex);
-    }
-
-    // Get indices
-    if (primitive.indices >= 0) {
-      const tinygltf::Accessor &indexAccessor = mModel.accessors[primitive.indices];
-      const tinygltf::BufferView &indexView =
-          mModel.bufferViews[indexAccessor.bufferView];
-      const tinygltf::Buffer &indexBuffer = mModel.buffers[indexView.buffer];
-      const unsigned char *idxData =
-          indexBuffer.data.data() + indexView.byteOffset + indexAccessor.byteOffset;
-
-      if (indexAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
-        const uint8_t *buf = reinterpret_cast<const uint8_t *>(idxData);
-        for (size_t j = 0; j < indexAccessor.count; j++)
-          indices.push_back((unsigned int)buf[j]);
-      } else if (indexAccessor.componentType ==
-                 TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
-        const uint16_t *buf = reinterpret_cast<const uint16_t *>(idxData);
-        for (size_t j = 0; j < indexAccessor.count; j++)
-          indices.push_back((unsigned int)buf[j]);
-      } else if (indexAccessor.componentType ==
-                 TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
-        const uint32_t *buf = reinterpret_cast<const uint32_t *>(idxData);
-        for (size_t j = 0; j < indexAccessor.count; j++)
-          indices.push_back((unsigned int)buf[j]);
-      } else {
-        LOG_WARN("Asset", "Unsupported glTF index component type: " +
-                              std::to_string(indexAccessor.componentType));
-      }
-    } else {
-      for (unsigned int j = 0; j < (unsigned int)vertices.size(); ++j)
-        indices.push_back(j);
-    }
-
-    // Create submesh
+  for (const auto &sd : data.submeshes) {
     FBXSubmesh submesh;
-    submesh.name =
-        mesh.name.empty() ? ("glTFPrimitive_" + std::to_string(i))
-                          : (mesh.name + "_" + std::to_string(i));
-    submesh.indexCount = (GLsizei)indices.size();
-    submesh.material.baseColor = glm::vec4(0.8f, 0.8f, 0.8f, 1.0f);
-    submesh.material.sourceAssetPath = mSourcePath;
-    submesh.material.texDiffuse = 0;
-    submesh.material.texNormal = 0;
-    submesh.material.texRoughness = 0;
-    submesh.material.texMetallic = 0;
-    submesh.material.texAO = 0;
-    submesh.material.texEmissive = 0;
-    submesh.material.texOpacity = 0;
-    submesh.material.alphaCutoff = 0.0f;
-    submesh.material.roughnessMapIsGloss = false;
+    submesh.name = sd.objectName;
+    submesh.materialName = sd.materialName;
+    submesh.material = sd.material;
 
-    // Load material
-    if (primitive.material >= 0) {
-      const tinygltf::Material &mat = mModel.materials[primitive.material];
-      submesh.materialName = mat.name;
-      submesh.material.sourceMaterialName = mat.name;
-      LOG_TRACE("Asset", "Processing material: " + mat.name);
+    // Resolve texture paths/payloads to GL textures. Opacity uses Color
+    // usage because glTF alpha rides in the base-color texture — this makes
+    // it share the diffuse cache entry (same GL id, like the old loader).
+    submesh.material.texDiffuse =
+        textureFor_(data, submesh.material.texDiffusePath, TextureUsage::Color);
+    submesh.material.texNormal =
+        textureFor_(data, submesh.material.texNormalPath, TextureUsage::Data);
+    submesh.material.texRoughness = textureFor_(
+        data, submesh.material.texRoughnessPath, TextureUsage::Data);
+    submesh.material.texMetallic = textureFor_(
+        data, submesh.material.texMetallicPath, TextureUsage::Data);
+    submesh.material.texAO =
+        textureFor_(data, submesh.material.texAOPath, TextureUsage::Data);
+    submesh.material.texEmissive = textureFor_(
+        data, submesh.material.texEmissivePath, TextureUsage::Color);
+    submesh.material.texOpacity = textureFor_(
+        data, submesh.material.texOpacityPath, TextureUsage::Color);
 
-      // Base color
-      if (mat.pbrMetallicRoughness.baseColorTexture.index >= 0) {
-        submesh.material.texDiffuse =
-            LoadTextureFromGLTF(mat.pbrMetallicRoughness.baseColorTexture.index,
-                                TextureUsage::Color,
-                                &submesh.material.texDiffusePath);
-        if (submesh.material.texDiffuse != 0) {
-          LOG_TRACE("Asset", "Loaded diffuse texture");
-        }
-      }
-
-      // Base color factor (fallback color)
-      auto &colorFactor = mat.pbrMetallicRoughness.baseColorFactor;
-      if (colorFactor.size() >= 4) {
-        submesh.material.baseColor =
-            glm::vec4((float)colorFactor[0], (float)colorFactor[1],
-                      (float)colorFactor[2], (float)colorFactor[3]);
-      }
-      submesh.material.roughness =
-          (float)mat.pbrMetallicRoughness.roughnessFactor;
-      submesh.material.metallic =
-          (float)mat.pbrMetallicRoughness.metallicFactor;
-      if (mat.emissiveFactor.size() >= 3) {
-        submesh.material.emissiveColor = glm::vec3((float)mat.emissiveFactor[0],
-                                                   (float)mat.emissiveFactor[1],
-                                                   (float)mat.emissiveFactor[2]);
-      }
-
-      // Normal map
-      if (mat.normalTexture.index >= 0) {
-        submesh.material.texNormal = LoadTextureFromGLTF(
-            mat.normalTexture.index, TextureUsage::Data,
-            &submesh.material.texNormalPath);
-        if (submesh.material.texNormal != 0) {
-          LOG_TRACE("Asset", "Loaded normal texture");
-        }
-      }
-
-      // Metallic-roughness texture (packed: R=unused, G=roughness, B=metallic)
-      if (mat.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0) {
-        submesh.material.texRoughness = LoadTextureFromGLTF(
-            mat.pbrMetallicRoughness.metallicRoughnessTexture.index,
-            TextureUsage::Data, &submesh.material.texRoughnessPath);
-        submesh.material.texMetallic =
-            submesh.material.texRoughness; // Same texture, different channels
-        submesh.material.texMetallicPath = submesh.material.texRoughnessPath;
-        submesh.material.roughnessChannel = 1; // G
-        submesh.material.metallicChannel = 2;  // B
-        if (submesh.material.texRoughness != 0) {
-          LOG_TRACE("Asset", "Loaded metallic-roughness texture");
-        }
-      }
-
-      if (mat.occlusionTexture.index >= 0) {
-        submesh.material.texAO = LoadTextureFromGLTF(
-            mat.occlusionTexture.index, TextureUsage::Data,
-            &submesh.material.texAOPath);
-        submesh.material.ao = (float)mat.occlusionTexture.strength;
-      }
-
-      if (mat.emissiveTexture.index >= 0) {
-        submesh.material.texEmissive = LoadTextureFromGLTF(
-            mat.emissiveTexture.index, TextureUsage::Color,
-            &submesh.material.texEmissivePath);
-      }
-
-      // glTF alpha masking/blending uses base-color alpha.
-      if (mat.alphaMode == "MASK") {
-        submesh.material.texOpacity = submesh.material.texDiffuse;
-        submesh.material.texOpacityPath = submesh.material.texDiffusePath;
-        submesh.material.opacityChannel = 3;
-        submesh.material.alphaCutoff = (float)mat.alphaCutoff;
-      } else if (mat.alphaMode == "BLEND") {
-        submesh.material.texOpacity = submesh.material.texDiffuse;
-        submesh.material.texOpacityPath = submesh.material.texDiffusePath;
-        submesh.material.opacityChannel = 3;
-        submesh.material.alphaCutoff = 0.001f;
-      }
-
-      // KHR_materials_pbrSpecularGlossiness compatibility fallback
-      auto extIt = mat.extensions.find("KHR_materials_pbrSpecularGlossiness");
-      if (extIt != mat.extensions.end() && extIt->second.IsObject()) {
-        const tinygltf::Value &ext = extIt->second;
-
-        const int diffuseTex = getExtTextureIndex(ext, "diffuseTexture");
-        if (diffuseTex >= 0 && submesh.material.texDiffuse == 0) {
-          submesh.material.texDiffuse =
-              LoadTextureFromGLTF(diffuseTex, TextureUsage::Color,
-                                  &submesh.material.texDiffusePath);
-        }
-
-        glm::vec4 diffuseFactor;
-        if (getExtVec4(ext, "diffuseFactor", diffuseFactor)) {
-          submesh.material.baseColor = diffuseFactor;
-        }
-
-        const int specGlossTex = getExtTextureIndex(ext, "specularGlossinessTexture");
-        if (specGlossTex >= 0) {
-          std::string packedPath;
-          GLuint packedTex =
-              LoadTextureFromGLTF(specGlossTex, TextureUsage::Data, &packedPath);
-          if (packedTex != 0) {
-            submesh.material.texRoughness = packedTex;
-            submesh.material.texMetallic = packedTex;
-            submesh.material.texRoughnessPath = packedPath;
-            submesh.material.texMetallicPath = packedPath;
-            submesh.material.roughnessChannel = 3; // A=glossiness
-            submesh.material.metallicChannel = 2;  // B≈specular intensity proxy
-            submesh.material.roughnessMapIsGloss = true;
-          }
-        }
-
-        float glossiness = 0.0f;
-        if (getExtFloat(ext, "glossinessFactor", glossiness)) {
-          submesh.material.roughness = std::clamp(1.0f - glossiness, 0.04f, 1.0f);
-        }
-
-        glm::vec3 specularFactor;
-        if (getExtVec3(ext, "specularFactor", specularFactor)) {
-          float maxSpec = std::max(specularFactor.x,
-                                   std::max(specularFactor.y, specularFactor.z));
-          submesh.material.metallic =
-              std::clamp((maxSpec - 0.04f) / 0.96f, 0.0f, 1.0f);
-        }
-      }
+    if (sd.hasBounds) {
+      mAabbMin = glm::min(mAabbMin, sd.aabbMin);
+      mAabbMax = glm::max(mAabbMax, sd.aabbMax);
+      mHasBounds = true;
     }
-    if (submesh.materialName.empty())
-      submesh.materialName = "glTFMaterial_" + std::to_string(i);
-    if (submesh.material.sourceMaterialName.empty())
-      submesh.material.sourceMaterialName = submesh.materialName;
-    submesh.material.id = submesh.materialName;
 
     // Create GL buffers
+    static_assert(sizeof(FBXVertex) == sizeof(MeshVertex),
+                  "FBXVertex must match MeshVertex layout");
+    submesh.indexCount = (GLsizei)sd.indices.size();
+
     glGenVertexArrays(1, &submesh.vao);
     glGenBuffers(1, &submesh.vbo);
     glGenBuffers(1, &submesh.ebo);
 
     glBindVertexArray(submesh.vao);
     glBindBuffer(GL_ARRAY_BUFFER, submesh.vbo);
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(FBXVertex),
-                 vertices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sd.vertices.size() * sizeof(MeshVertex),
+                 sd.vertices.data(), GL_STATIC_DRAW);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, submesh.ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int),
-                 indices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                 sd.indices.size() * sizeof(uint32_t), sd.indices.data(),
+                 GL_STATIC_DRAW);
 
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(FBXVertex),
@@ -463,82 +124,16 @@ void FBXModel::processMesh(const tinygltf::Mesh &mesh) {
     glBindVertexArray(0);
     mSubmeshes.push_back(submesh);
   }
+
+  return true;
 }
 
-GLuint FBXModel::LoadTextureFromGLTF(int textureIndex, TextureUsage usage,
-                                     std::string *outSourcePath) {
-  if (textureIndex < 0 || textureIndex >= mModel.textures.size())
-    return 0;
-
-  const tinygltf::Texture &tex = mModel.textures[textureIndex];
-  if (tex.source < 0 || tex.source >= mModel.images.size())
-    return 0;
-
-  const tinygltf::Image &image = mModel.images[tex.source];
-  const std::string sourcePath =
-      image.uri.empty() ? ("embedded://" + std::to_string(tex.source))
-                        : (mDirectory + "/" + image.uri);
-  if (outSourcePath) {
-    *outSourcePath = sourcePath;
-  }
-
-  // Check cache
-  std::string key = (image.uri.empty()
-                        ? ("embedded_" + std::to_string(tex.source))
-                        : image.uri) +
-                    (usage == TextureUsage::Color ? "|color" : "|data");
-  if (mTextureCache.find(key) != mTextureCache.end()) {
-    return mTextureCache[key];
-  }
-
-  GLuint texID = CreateTextureFromImage(image, usage);
-
-  if (texID != 0) {
-    mTextureCache[key] = texID;
-    if (image.uri.empty()) {
-      LOG_TRACE("Asset", "Loaded embedded texture from glTF");
-    } else {
-      LOG_TRACE("Asset", "Loaded texture file: " + image.uri);
-    }
-  }
-
-  return texID;
-}
-
-GLuint FBXModel::CreateTextureFromImage(const tinygltf::Image &image,
-                                        TextureUsage usage) {
-  if (image.width <= 0 || image.height <= 0 || image.image.empty())
-    return 0;
-
-  GLuint texID = 0;
-  glGenTextures(1, &texID);
-  glBindTexture(GL_TEXTURE_2D, texID);
-
-  GLenum format = GL_RGBA;
-  GLenum internalFormat = GL_RGBA;
-  if (image.component == 3) {
-    format = GL_RGB;
-    internalFormat =
-        (usage == TextureUsage::Color) ? GL_SRGB : GL_RGB;
-  } else if (image.component == 1) {
-    format = GL_RED;
-    internalFormat = GL_RED;
-  } else {
-    internalFormat =
-        (usage == TextureUsage::Color) ? GL_SRGB_ALPHA : GL_RGBA;
-  }
-
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                  GL_LINEAR_MIPMAP_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-  glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, image.width, image.height, 0, format,
-               GL_UNSIGNED_BYTE, image.image.data());
-  glGenerateMipmap(GL_TEXTURE_2D);
-
-  return texID;
+bool FBXModel::getGlobalBounds(glm::vec3 &outMin, glm::vec3 &outMax) const {
+  if (!mHasBounds)
+    return false;
+  outMin = mAabbMin;
+  outMax = mAabbMax;
+  return true;
 }
 
 void FBXModel::draw(Shader &shader, const glm::vec3 &pos, const glm::vec3 &rot,
@@ -604,6 +199,8 @@ void FBXModel::shutdown() {
   }
   mTextureCache.clear();
 
-  // tinygltf::Model cleans up automatically
+  mHasBounds = false;
+  mAabbMin = glm::vec3(1e30f);
+  mAabbMax = glm::vec3(-1e30f);
   mSourcePath.clear();
 }

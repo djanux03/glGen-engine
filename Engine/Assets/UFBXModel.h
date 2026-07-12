@@ -1,12 +1,13 @@
 #pragma once
 #include "Material.h"
 #include "Texture.h"
-#include "ufbx.h"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 #include <map>
 #include <string>
 #include <vector>
+
+struct MeshData;
 
 struct UFBXVertex {
   glm::vec3 pos;
@@ -30,6 +31,8 @@ struct UFBXSubmesh {
 class UFBXModel {
 public:
   bool loadFromFile(const std::string &path);
+  // GPU-upload half: builds GL buffers/textures from parsed CPU data.
+  bool loadFromData(const MeshData &data);
   void draw(class Shader &shader, const glm::vec3 &pos, const glm::vec3 &rot,
             const glm::vec3 &scale,
             const MaterialAsset *materialOverride = nullptr);
@@ -56,24 +59,17 @@ private:
     bool instancingReady = false;
   };
 
+  GLuint textureFor_(const MeshData &data, const std::string &path,
+                     TextureUsage usage);
+
   std::vector<UFBXSubmesh> mSubmeshes;
   std::string mSourcePath;
-  std::string mDirectory;
-  ufbx_scene *mScene = nullptr;
 
   glm::vec3 mAabbMin{1e30f};
   glm::vec3 mAabbMax{-1e30f};
   bool mHasBounds = false;
   ShadowMesh mShadowMesh;
-  std::vector<glm::vec3> mShadowBuildPositions;
-  std::vector<unsigned int> mShadowBuildIndices;
 
-  void processNode(ufbx_node *node);
-  void processMesh(ufbx_mesh *mesh, ufbx_node *node);
-  GLuint loadTextureFromUFBX(ufbx_texture *tex,
-                             TextureUsage usage = TextureUsage::Color,
-                             std::string *outSourcePath = nullptr);
-
-  // Per-instance texture cache (replaces leaked static global)
+  // Per-instance texture cache; entries are owned and freed in shutdown()
   std::map<std::string, GLuint> mTextureCache;
 };
