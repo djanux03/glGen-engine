@@ -12,10 +12,11 @@
 - **Branch layout:**
   - `main` — the **old OpenGL engine** (preserved, untouched).
   - `vulkan-engine` — **all the Vulkan work + integration** (this branch).
-- **Where it is:** a capable standalone Vulkan renderer (`VulkanRHI/`) driven by
-  a demo/runtime exe `glGenVulkanSmoke`, now being wired into the real engine.
-  The actual `glGen` game exe is still OpenGL; the Vulkan path is opt-in
-  (`-DGLGEN_BUILD_VULKAN=ON`).
+- **Where it is:** the engine-core/render split is DONE — `EngineCore` is a
+  GL-free static library, and **`glGenVk`** is a real Vulkan runtime running
+  the engine's actual Scene/AssetManager/Jolt-physics systems with per-frame
+  dynamic RT (TLAS rebuilt every frame). The actual `glGen` game exe is still
+  OpenGL; the Vulkan path is opt-in (`-DGLGEN_BUILD_VULKAN=ON`).
 
 ## Build & run
 
@@ -29,6 +30,10 @@ GPU (dev used an RTX 3070).
   cmake --build Build-vs18 --config Release --target glGenVulkanSmoke
   .\Build-vs18\bin\Release\glGenVulkanSmoke.exe
   ```
+  The **real Vulkan runtime** (EngineCore + physics) is the `glGenVk` target:
+  `cmake --build Build-vs18 --config Release --target glGenVk` then
+  `.\Build-vs18\bin\Release\glGenVk.exe` (needs `Jolt.dll` from the same bin
+  dir, already there).
   Controls: **RMB** = mouse-look, **scroll** = zoom (FOV), **WASD + Space/Ctrl**
   = fly (Shift = fast). ImGui panel: exposure, light (day/night), terrain
   generator (amplitude/frequency/octaves/seed), draw-terrain toggle.
@@ -103,30 +108,46 @@ API-agnostic.**
 4. **`Input` decoupled from OpenGL** — `Keyboard.h`/`Mouse.h` only used GLFW; the
    dead `glad` include was removed.
 
+5. **Asset parse/upload split (the keystone) — DONE.** Model loading is split
+   into CPU parse (`MeshData` + `MeshParse{OBJ,GLTF,FBX}.cpp`, agnostic) and
+   per-backend GPU upload (`loadFromData` on the GL model classes,
+   `createMeshFromData` on the Vulkan renderer). `AssetManager` is GL-free:
+   it owns parsed `MeshData` and delegates GPU model create/reload/destroy to
+   a registered `ModelGpuBackend` (GL installs `InstallGLModelBackend` in App
+   init). `Scene.cpp` includes no GL headers; bounds come from `MeshData`;
+   material-override textures resolve lazily in the GL `RenderSystem`.
+   Primitives are agnostic too (`MeshPrimitives`). `MeshData::recenter` /
+   `AssetManager::recenterOBJ` handle off-origin authored assets (rock.obj is
+   authored 53 units from its origin).
+6. **Physics debug-draw extracted — DONE.** `PhysicsSystem` is fully GL-free;
+   the collider wireframes live in `Engine/Rendering/PhysicsDebugRenderer`.
+7. **`EngineCore` static library — DONE.** Core + Scene + Input + agnostic
+   Assets + Jolt physics; links glm/stb/tinygltf/ufbx/tinyobjloader/glfw/
+   sol2/Jolt — **no glad, no imgui**. `Engine` is now just the GL layer on
+   top of it. (DestructionSystem stays GL-side: it builds OBJModels.)
+8. **Per-frame `VulkanRenderSystem` + dynamic TLAS — DONE.** `VulkanAccel`
+   keeps one TLAS + instance/scratch buffer per frame in flight;
+   `drawFrame()` rebuilds the frame's TLAS from the instance list every
+   frame (barrier to fragment-shader ray queries included), so transforms
+   are fully dynamic. `VulkanRenderSystem` walks the ECS per frame
+   (hierarchy-aware world transforms, Lifecycle/visible), resolves meshes
+   through the AssetManager (`createMeshFromData`) or by OBJ path, and
+   re-finalizes when new meshes appear.
+9. **True `glGenVk` runtime — DONE (first cut).** `VulkanRHI/runtime/main.cpp`:
+   GLFW_NO_API window + surface + EngineCore, world built via
+   `Scene::spawnFromFile`, dynamic rock pile simulated by the engine's Jolt
+   `PhysicsSystem` on a static floor, RT shadows tracking the motion.
+   Not yet wired: scripting/gameplay/audio subsystems from `Runtime/`.
+
 ### What's LEFT (in recommended order)
-1. **Asset parse/upload split (the next keystone).** `Scene.cpp` includes the GL
-   model classes (`OBJModel.h` etc.), so `Scene` — and a full `EngineCore` — is
-   still coupled to GL. Split model loading into **CPU parse (agnostic)** vs
-   **GPU upload (per-backend)**, so `Scene` stores mesh *paths/handles* and the
-   Vulkan renderer uploads. (For now the Vulkan path uses VulkanRHI's own
-   tinyobj loader and entity `assetId` paths, sidestepping this.)
-2. **Extract `PhysicsSystem::renderDebug()`** (GL debug-draw) out to the render
-   layer so the physics *simulation* is fully GL-free.
-3. **Carve an `EngineCore` static library** (CMake) = Core + Scene + Scripting +
-   ECS (minus `RenderSystem.h`) + Input + agnostic Assets, building with **no
-   OpenGL** (links glm/sol2/Jolt/glfw, not glad/imgui-gl). This is the milestone
-   that lets the Vulkan runtime link real engine systems.
-4. **Reusable `VulkanRenderSystem`** (extract the bridge) running **per-frame**;
-   dynamic transforms require **per-frame-in-flight TLAS rebuild/refit** in
-   `VulkanAccel` (currently the TLAS is built once for a static scene).
-5. **True `glGenVk` runtime** — the real app: Vulkan window/surface (swap
-   `App`'s GLFW GL-context init to `GLFW_NO_API` + surface) + EngineCore +
-   VulkanRHI, driving physics/scripting/gameplay.
-6. **Editor on Vulkan** — keep `EditorUI` + ImGuizmo logic; swap ImGui backend
-   to imgui_impl_vulkan (already working in the demo).
-7. **Port FX** — sky + fog already done in Vulkan; port clouds, fire, volumetric
+1. **Grow `glGenVk` into the full app** — wire ScriptSystem (Lua), gameplay,
+   audio and the `Runtime/Framework` subsystem structure; scene save/load
+   round-trip already works (Scene serialization is GL-free).
+2. **Editor on Vulkan** — keep `EditorUI` + ImGuizmo logic; swap ImGui backend
+   to imgui_impl_vulkan (already working in glGenVk/smoke).
+3. **Port FX** — sky + fog already done in Vulkan; port clouds, fire, volumetric
    fog, and the `black_hole_raymarch.comp` compute effect (modernized).
-8. **Delete OpenGL** — remove glad + GL renderer/FX; drop the dependency.
+4. **Delete OpenGL** — remove glad + GL renderer/FX; drop the dependency.
 
 ## Gotchas / lessons (so they aren't rediscovered)
 - **GLM clip space:** build with `GLM_FORCE_DEPTH_ZERO_TO_ONE` and flip
@@ -149,5 +170,7 @@ API-agnostic.**
 foundation → bindless/PSO → mesh+materials → HDR/tonemap → RT shadows → mesh-shader
 terrain → ImGui UI → free-fly camera → terrain generator + `run-vulkan.bat` → sky →
 terrain materials → fog → multi-object scene → engine-drivable API → **Material
-decoupled** → **ECS-driven scene** → **Input decoupled**. (`main` is untouched
-old OpenGL.)
+decoupled** → **ECS-driven scene** → **Input decoupled** → **asset parse/upload
+split** → **physics debug-draw extracted** → **EngineCore carved (no GL)** →
+**per-frame VulkanRenderSystem + dynamic TLAS** → **glGenVk runtime (EngineCore +
+Jolt physics + VulkanRHI)**. (`main` is untouched old OpenGL.)
