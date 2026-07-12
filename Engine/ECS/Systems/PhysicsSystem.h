@@ -75,13 +75,7 @@ private:
   // Sync ECS -> Jolt and Jolt -> ECS
   void createBodies(Registry &registry);
   void syncTransforms(Registry &registry);
-
-  // Debug meshes
-  class OBJModel *mDebugCube = nullptr;
-  class OBJModel *mDebugSphere = nullptr;
-
-public:
-  // Render wireframe representations of all ColliderComponents
-  void drawDebugColliders(Registry &reg, const glm::mat4 &view,
-                          const glm::mat4 &proj, class Shader &shader);
 };
+
+// Collider wireframe debug view lives in the rendering layer:
+// Engine/Rendering/PhysicsDebugRenderer.h (keeps the simulation GL-free).

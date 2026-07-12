@@ -1,6 +1,7 @@
 #include "RenderLoopSubsystem.h"
 #include "AppState.h"
 #include "EditorSubsystem.h"
+#include "PhysicsDebugRenderer.h"
 #include "Texture.h"
 #include <algorithm>
 #include <array>
@@ -1473,8 +1474,11 @@ void RenderLoopSubsystem::renderMainPass(const glm::mat4 &view,
   }
 
   if (mState.playState != AppState::PlayState::Playing) {
-    mState.physicsSystem.drawDebugColliders(
-        mState.scene.registry(), view, projection, mState.renderer.shader());
+    // GL-side collider wireframes (extracted from PhysicsSystem so the
+    // simulation stays graphics-API-free).
+    static PhysicsDebugRenderer sPhysicsDebugRenderer;
+    sPhysicsDebugRenderer.drawColliders(mState.scene.registry(), view,
+                                        projection, mState.renderer.shader());
   }
   endMainGpuTimer(sceneGpuTimerActive);
 
