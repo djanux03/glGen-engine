@@ -345,6 +345,18 @@ void *AssetManager::gpuUFBX_(UFBXHandle h) {
   return mUFBX[h.index].gpu;
 }
 
+bool AssetManager::recenterOBJ(OBJHandle h, MeshData::Recenter mode) {
+  if (!h.valid() || h.index >= mOBJ.size())
+    return false;
+  auto &rec = mOBJ[h.index];
+  if (rec.generation != h.generation || !rec.cpu)
+    return false;
+  rec.cpu->recenter(mode);
+  if (rec.gpu && mBackend.reloadOBJ)
+    return mBackend.reloadOBJ(rec.gpu, *rec.cpu);
+  return true;
+}
+
 const MeshData *AssetManager::getOBJData(OBJHandle h) const {
   if (!h.valid() || h.index >= mOBJ.size())
     return nullptr;

@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+struct MeshData; // engine CPU model data (Engine/Assets/MeshData.h)
+
 namespace vkrhi {
 
 // Phase 2 renderer. Frame = shadow pass (cascaded depth) -> scene pass (HDR,
@@ -37,6 +39,10 @@ public:
   // the device and rebuilds the BLAS set).
   using MeshHandle = uint32_t;
   MeshHandle createMeshFromObj(const std::string &path);
+  // Uploads the engine's parsed CPU model data (any source format, authored
+  // scale, embedded textures) — the Vulkan half of the parse/upload split.
+  MeshHandle createMeshFromData(const ::MeshData &data,
+                                const std::string &debugName);
   void addInstance(MeshHandle mesh, const glm::mat4 &transform);
   void clearInstances() { mInstances.clear(); }
   bool finalizeScene();
@@ -130,7 +136,9 @@ private:
 
   uint32_t addTexture(const uint8_t *rgba, uint32_t w, uint32_t h,
                       VkFormat format);
-  uint32_t loadTextureFile(const std::string &path);
+  // flipY mirrors the GL engine's texture loading for raw (unflipped) model
+  // UVs; the OBJ smoke path pre-flips UVs instead and loads unflipped.
+  uint32_t loadTextureFile(const std::string &path, bool flipY = false);
   uint32_t createDefaultTexture();
 
   VkShaderModule loadShaderModule(const std::string &path);

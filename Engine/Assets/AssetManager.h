@@ -128,6 +128,10 @@ public:
   const MeshData *getGLTFData(GLTFHandle h) const;
   const MeshData *getUFBXData(UFBXHandle h) const;
 
+  // Recenters an off-origin authored model (CPU data + GPU reload when a
+  // backend is installed). Idempotent; affects every instance of the asset.
+  bool recenterOBJ(OBJHandle h, MeshData::Recenter mode);
+
   ShaderHandle registerShader(Shader *shader, const std::string &vertPath,
                               const std::string &fragPath);
 

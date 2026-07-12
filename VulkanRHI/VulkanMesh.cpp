@@ -1,6 +1,7 @@
 #include "VulkanMesh.h"
 
-#define TINYOBJLOADER_IMPLEMENTATION
+// tinyobjloader implementation is compiled once in EngineCore
+// (Engine/Assets/MeshParseOBJ.cpp); header-only usage here.
 #include "tiny_obj_loader.h"
 
 #include <cstdio>

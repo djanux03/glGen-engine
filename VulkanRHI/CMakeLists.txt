@@ -52,21 +52,18 @@ add_library(VulkanRHI STATIC
     VulkanRenderer.cpp
     VulkanRenderSystem.cpp
     vk_mem_alloc_impl.cpp
-    vk_stb_write_impl.cpp
 )
-# The engine's ECS/Assets headers (GL-free, header-only) drive
-# VulkanRenderSystem; include paths only, no Engine library link.
+# Note: tinyobjloader + stb_image_write implementations come from EngineCore's
+# parsers and the tinygltf lib respectively — do not compile them again here.
 target_include_directories(VulkanRHI PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${VMA_INCLUDE_DIR}
-    ${CMAKE_SOURCE_DIR}/Engine
-    ${CMAKE_SOURCE_DIR}/Engine/ECS
-    ${CMAKE_SOURCE_DIR}/Engine/Assets
 )
-# glm (math) and tinyobjloader (OBJ loading) are header-only and carry no
-# OpenGL dependency, so VulkanRHI stays decoupled from the GL engine.
+# EngineCore supplies the GL-free engine systems (ECS, Scene, AssetManager
+# with CPU MeshData) that VulkanRenderSystem drives — no OpenGL anywhere in
+# this dependency chain.
 # GLM_FORCE_DEPTH_ZERO_TO_ONE makes glm::perspective emit Vulkan's [0,1] depth.
-target_link_libraries(VulkanRHI PUBLIC Vulkan::Vulkan glm tinyobjloader stb)
+target_link_libraries(VulkanRHI PUBLIC Vulkan::Vulkan glm tinyobjloader stb EngineCore)
 target_compile_definitions(VulkanRHI PUBLIC
     GLM_FORCE_DEPTH_ZERO_TO_ONE
     GLM_FORCE_RADIANS
@@ -102,3 +99,11 @@ target_compile_definitions(glGenVulkanSmoke PRIVATE
     GLGEN_VK_MODEL_PATH2="${CMAKE_SOURCE_DIR}/assets/terraingeneratorassets/rock.obj"
     GLGEN_VK_MODEL_PATH3="${CMAKE_SOURCE_DIR}/assets/terraingeneratorassets/tree.obj")
 add_dependencies(glGenVulkanSmoke VulkanShaders)
+
+# --- glGenVk: the real Vulkan runtime (EngineCore + VulkanRHI, no OpenGL) ----
+add_executable(glGenVk runtime/main.cpp)
+target_link_libraries(glGenVk PRIVATE VulkanRHI EngineCore glfw Vulkan::Vulkan imgui_vk)
+target_compile_definitions(glGenVk PRIVATE
+    GLGEN_VK_SHADER_DIR="${VK_SHADER_OUT_DIR}"
+    GLGEN_VK_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets")
+add_dependencies(glGenVk VulkanShaders)

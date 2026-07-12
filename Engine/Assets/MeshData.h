@@ -80,4 +80,35 @@ struct MeshData {
         return &img;
     return nullptr;
   }
+
+  // Some assets are authored far from their own origin. Shifts all vertices
+  // and bounds so the model sits at the origin (CPU counterpart of
+  // OBJModel::centerAtOrigin). BaseY: base at y=0, centered in XZ (props).
+  // Center: fully centered (bodies that tumble). Idempotent.
+  enum class Recenter { BaseY, Center };
+  void recenter(Recenter mode) {
+    glm::vec3 mn, mx;
+    if (!getGlobalBounds(mn, mx))
+      return;
+    const glm::vec3 c = (mn + mx) * 0.5f;
+    const glm::vec3 offset = (mode == Recenter::Center)
+                                 ? -c
+                                 : glm::vec3(-c.x, -mn.y, -c.z);
+    if (glm::dot(offset, offset) < 1e-8f)
+      return;
+    for (auto &sm : submeshes) {
+      for (auto &v : sm.vertices)
+        v.pos += offset;
+      if (sm.hasBounds) {
+        sm.aabbMin += offset;
+        sm.aabbMax += offset;
+      }
+    }
+    for (auto &ob : objectBounds) {
+      if (ob.second.hasBounds) {
+        ob.second.aabbMin += offset;
+        ob.second.aabbMax += offset;
+      }
+    }
+  }
 };

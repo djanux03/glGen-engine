@@ -1,5 +1,7 @@
 #include "VulkanRenderer.h"
 
+#include "Assets/MeshData.h" // engine CPU model data (::MeshData)
+
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "stb_image.h"
@@ -8,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <unordered_map>
 #include <vector>
 
 namespace vkrhi {
@@ -296,9 +299,11 @@ uint32_t VulkanRenderer::createDefaultTexture() {
   return addTexture(pixels.data(), size, size, VK_FORMAT_R8G8B8A8_UNORM);
 }
 
-uint32_t VulkanRenderer::loadTextureFile(const std::string &path) {
+uint32_t VulkanRenderer::loadTextureFile(const std::string &path, bool flipY) {
   int w = 0, h = 0, channels = 0;
+  stbi_set_flip_vertically_on_load(flipY ? 1 : 0);
   stbi_uc *pixels = stbi_load(path.c_str(), &w, &h, &channels, STBI_rgb_alpha);
+  stbi_set_flip_vertically_on_load(0);
   if (!pixels) {
     std::fprintf(stderr,
                  "[VulkanRHI] Failed to load texture '%s' (%s); using default\n",
@@ -1105,6 +1110,109 @@ VulkanRenderer::createMeshFromObj(const std::string &path) {
   const MeshHandle handle = static_cast<MeshHandle>(mMeshes.size());
   std::fprintf(stderr, "[VulkanRHI] mesh %u: '%s' (%u indices)\n", handle,
                path.c_str(), mesh.indexCount);
+  mMeshes.push_back(std::move(mesh));
+  return handle;
+}
+
+VulkanRenderer::MeshHandle
+VulkanRenderer::createMeshFromData(const ::MeshData &data,
+                                   const std::string &debugName) {
+  // Flatten the engine submeshes into one vertex/index buffer with a
+  // per-submesh draw item (engine MeshVertex is pos/uv/normal; ours is
+  // pos/normal/uv).
+  std::vector<MeshVertex> vertices;
+  std::vector<uint32_t> indices;
+  Mesh mesh;
+  std::unordered_map<std::string, uint32_t> texByPath;
+
+  auto textureFor = [&](const std::string &path) -> uint32_t {
+    if (path.empty())
+      return mDefaultTexIndex;
+    auto it = texByPath.find(path);
+    if (it != texByPath.end())
+      return it->second;
+
+    uint32_t tex = mDefaultTexIndex;
+    if (const ::MeshImage *img = data.findImage(path)) {
+      // Embedded payload: expand 1/3-channel data to tightly packed RGBA.
+      const size_t pixelCount = static_cast<size_t>(img->width) * img->height;
+      std::vector<uint8_t> rgba(pixelCount * 4);
+      const uint8_t *src = img->pixels.data();
+      if (img->component == 4) {
+        std::memcpy(rgba.data(), src, rgba.size());
+      } else if (img->component == 3) {
+        for (size_t i = 0; i < pixelCount; ++i) {
+          rgba[i * 4 + 0] = src[i * 3 + 0];
+          rgba[i * 4 + 1] = src[i * 3 + 1];
+          rgba[i * 4 + 2] = src[i * 3 + 2];
+          rgba[i * 4 + 3] = 255;
+        }
+      } else {
+        for (size_t i = 0; i < pixelCount; ++i) {
+          const uint8_t v = src[i * img->component];
+          rgba[i * 4 + 0] = v;
+          rgba[i * 4 + 1] = v;
+          rgba[i * 4 + 2] = v;
+          rgba[i * 4 + 3] = 255;
+        }
+      }
+      tex = addTexture(rgba.data(), static_cast<uint32_t>(img->width),
+                       static_cast<uint32_t>(img->height),
+                       VK_FORMAT_R8G8B8A8_SRGB);
+    } else {
+      // Engine model UVs are raw (OBJ bottom-left origin); flip the file
+      // like the GL engine does so sampling matches.
+      tex = loadTextureFile(path, /*flipY=*/true);
+    }
+    texByPath[path] = tex;
+    return tex;
+  };
+
+  for (const auto &sd : data.submeshes) {
+    if (sd.vertices.empty())
+      continue;
+    const uint32_t base = static_cast<uint32_t>(vertices.size());
+
+    DrawItem item{};
+    item.indexOffset = static_cast<uint32_t>(indices.size());
+    for (const auto &v : sd.vertices)
+      vertices.push_back({v.pos, v.normal, v.uv});
+    if (!sd.indices.empty()) {
+      for (uint32_t idx : sd.indices)
+        indices.push_back(base + idx);
+      item.indexCount = static_cast<uint32_t>(sd.indices.size());
+    } else {
+      for (uint32_t i = 0; i < static_cast<uint32_t>(sd.vertices.size()); ++i)
+        indices.push_back(base + i);
+      item.indexCount = static_cast<uint32_t>(sd.vertices.size());
+    }
+    item.textureIndex = textureFor(sd.material.texDiffusePath);
+    mesh.drawItems.push_back(item);
+  }
+
+  if (vertices.empty() || indices.empty()) {
+    std::fprintf(stderr, "[VulkanRHI] mesh data '%s' has no geometry\n",
+                 debugName.c_str());
+    return UINT32_MAX;
+  }
+
+  mesh.indexCount = static_cast<uint32_t>(indices.size());
+  mesh.vertexCount = static_cast<uint32_t>(vertices.size());
+
+  const VkBufferUsageFlags asInput =
+      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+      VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+  createDeviceLocalBuffer(vertices.data(),
+                          vertices.size() * sizeof(MeshVertex),
+                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | asInput,
+                          mesh.vertexBuffer, mesh.vertexAlloc);
+  createDeviceLocalBuffer(indices.data(), indices.size() * sizeof(uint32_t),
+                          VK_BUFFER_USAGE_INDEX_BUFFER_BIT | asInput,
+                          mesh.indexBuffer, mesh.indexAlloc);
+
+  const MeshHandle handle = static_cast<MeshHandle>(mMeshes.size());
+  std::fprintf(stderr, "[VulkanRHI] mesh %u: '%s' (%u indices, engine data)\n",
+               handle, debugName.c_str(), mesh.indexCount);
   mMeshes.push_back(std::move(mesh));
   return handle;
 }

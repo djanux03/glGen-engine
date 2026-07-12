@@ -1,9 +1,15 @@
 #include "VulkanRenderSystem.h"
 
+#include "Assets/AssetManager.h"
+#include "Assets/MeshData.h"
 #include "ECS/Components.h"
 #include "ECS/Registry.h"
 
 #include <glm/glm.hpp>
+
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
 
 namespace vkrhi {
 
@@ -28,6 +34,40 @@ bool entityAlive(Registry &registry, EntityId e) {
          EntityLifecycleState::Alive;
 }
 
+// Resolves an entity's mesh to the engine's parsed CPU data, loading it
+// through the AssetManager if the component doesn't carry a handle yet
+// (also covers "__primitive_*" ids).
+const ::MeshData *resolveMeshData(AssetManager &assets, MeshComponent &mc) {
+  if (mc.objHandle.valid())
+    if (const ::MeshData *d = assets.getOBJData(mc.objHandle))
+      return d;
+  if (mc.gltfHandle.valid())
+    if (const ::MeshData *d = assets.getGLTFData(mc.gltfHandle))
+      return d;
+  if (mc.ufbxHandle.valid())
+    if (const ::MeshData *d = assets.getUFBXData(mc.ufbxHandle))
+      return d;
+
+  std::string ext =
+      std::filesystem::path(mc.assetId).extension().string();
+  std::transform(ext.begin(), ext.end(), ext.begin(),
+                 [](unsigned char c) { return (char)std::tolower(c); });
+
+  if (ext == ".obj" || mc.assetId.rfind("__primitive_", 0) == 0) {
+    mc.objHandle = assets.loadOBJ(mc.assetId);
+    return assets.getOBJData(mc.objHandle);
+  }
+  if (ext == ".gltf" || ext == ".glb") {
+    mc.gltfHandle = assets.loadGLTF(mc.assetId);
+    return assets.getGLTFData(mc.gltfHandle);
+  }
+  if (ext == ".fbx") {
+    mc.ufbxHandle = assets.loadUFBX(mc.assetId);
+    return assets.getUFBXData(mc.ufbxHandle);
+  }
+  return nullptr;
+}
+
 } // namespace
 
 bool VulkanRenderSystem::update(Registry &registry, VulkanRenderer &renderer) {
@@ -48,7 +88,13 @@ bool VulkanRenderSystem::update(Registry &registry, VulkanRenderer &renderer) {
     if (it != mMeshByAsset.end()) {
       handle = it->second;
     } else {
-      handle = renderer.createMeshFromObj(mc.assetId);
+      if (mAssets) {
+        const ::MeshData *data = resolveMeshData(*mAssets, mc);
+        handle = data ? renderer.createMeshFromData(*data, mc.assetId)
+                      : UINT32_MAX;
+      } else {
+        handle = renderer.createMeshFromObj(mc.assetId);
+      }
       mMeshByAsset[mc.assetId] = handle;
       if (handle != UINT32_MAX)
         meshesAdded = true;
