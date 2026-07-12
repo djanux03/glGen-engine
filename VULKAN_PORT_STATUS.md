@@ -139,15 +139,24 @@ API-agnostic.**
    `PhysicsSystem` on a static floor, RT shadows tracking the motion.
    Not yet wired: scripting/gameplay/audio subsystems from `Runtime/`.
 
+10. **Editor UI on Vulkan — DONE (shell).** `VulkanRHI/runtime/VkEditor.{h,cpp}`
+   runs the old editor's UI on glGenVk: EditorTheme + EditorToolbar (reused
+   headers, GL-free), Hierarchy / Inspector (Transform, Mesh, Rigidbody,
+   Collider, Add Component) / Assets browser (double-click spawns via
+   `Scene::spawnFromFile`) + Console (engine Logger) / Environment /
+   Statistics panels, scene New/Save/Load through the GL-free Scene
+   serialization, and ImGuizmo gizmos (Y-X-Z Euler decomposition, unflipped
+   projection, W/E/R + snap from the toolbar). Uses its own
+   `imgui_glgenvk.ini`. The full `EditorUI.cpp` panels for FX systems
+   (sky/clouds/post/black hole) follow with the FX port.
+
 ### What's LEFT (in recommended order)
 1. **Grow `glGenVk` into the full app** — wire ScriptSystem (Lua), gameplay,
-   audio and the `Runtime/Framework` subsystem structure; scene save/load
-   round-trip already works (Scene serialization is GL-free).
-2. **Editor on Vulkan** — keep `EditorUI` + ImGuizmo logic; swap ImGui backend
-   to imgui_impl_vulkan (already working in glGenVk/smoke).
-3. **Port FX** — sky + fog already done in Vulkan; port clouds, fire, volumetric
-   fog, and the `black_hole_raymarch.comp` compute effect (modernized).
-4. **Delete OpenGL** — remove glad + GL renderer/FX; drop the dependency.
+   audio and the `Runtime/Framework` subsystem structure.
+2. **Port FX** — sky + fog already done in Vulkan; port clouds, fire, volumetric
+   fog, and the `black_hole_raymarch.comp` compute effect (modernized); then
+   bring the corresponding EditorUI panels across.
+3. **Delete OpenGL** — remove glad + GL renderer/FX; drop the dependency.
 
 ## Gotchas / lessons (so they aren't rediscovered)
 - **GLM clip space:** build with `GLM_FORCE_DEPTH_ZERO_TO_ONE` and flip
