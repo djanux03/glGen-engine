@@ -20,6 +20,9 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 
+#include "EditorTheme.h"
+#include "VkEditor.h"
+
 // EngineCore — the engine's real, GL-free systems.
 #include "Assets/AssetManager.h"
 #include "Assets/MeshData.h"
@@ -219,6 +222,8 @@ int main() {
   vkrhi::VulkanRenderSystem renderSystem;
   renderSystem.setAssets(&assets);
 
+  VkEditor editor; // the old engine's editor shell, Vulkan-side
+
   // --- Dear ImGui (platform: GLFW, renderer: Vulkan, dynamic rendering) ---
   VkDescriptorPool imguiPool = VK_NULL_HANDLE;
   {
@@ -234,7 +239,10 @@ int main() {
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
-  ImGui::StyleColorsDark();
+  // Own layout file so the GL editor's imgui.ini isn't clobbered (and its
+  // stale window positions aren't inherited).
+  ImGui::GetIO().IniFilename = "imgui_glgenvk.ini";
+  EditorTheme::applyAATheme(); // the old editor's dark theme
   glfwSetScrollCallback(window, scrollCallback); // before ImGui so it chains
   ImGui_ImplGlfw_InitForVulkan(window, true);
 
@@ -326,8 +334,9 @@ int main() {
                             20.0f, 90.0f);
     g_scrollY = 0.0;
 
-    // WASD + Space/Ctrl to fly (Shift = fast), unless the UI has focus.
-    if (!io.WantCaptureKeyboard) {
+    // WASD + Space/Ctrl to fly (Shift = fast) — only while RMB-looking, so
+    // the editor's W/E/R gizmo shortcuts work when not flying.
+    if (looking && !io.WantCaptureKeyboard) {
       const float yaw = glm::radians(p.camYawDeg);
       const float pitch = glm::radians(p.camPitchDeg);
       const glm::vec3 forward = glm::normalize(
@@ -362,34 +371,25 @@ int main() {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
     {
-      ImGui::Begin("glGen Vulkan runtime");
-      ImGui::Text("EngineCore + VulkanRHI (no OpenGL)");
-      ImGui::Text("%.1f FPS (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
-      ImGui::Separator();
-      ImGui::TextWrapped(
-          "RMB: look   Scroll: zoom   WASD + Space/Ctrl: fly (Shift = fast)");
-      ImGui::Separator();
-      ImGui::Checkbox("Simulate physics", &simulate);
-      int meshEntities = 0;
-      for (EntityId e : reg.view<MeshComponent>()) {
-        (void)e;
-        ++meshEntities;
-      }
-      ImGui::Text("Mesh entities: %d", meshEntities);
-      ImGui::Separator();
-      ImGui::SliderFloat("FOV", &p.fovDeg, 20.0f, 90.0f);
-      ImGui::SliderFloat("Exposure", &p.exposure, 0.1f, 3.0f);
-      ImGui::SliderFloat("Light yaw", &p.lightYawDeg, 0.0f, 360.0f);
-      ImGui::SliderFloat("Light pitch", &p.lightPitchDeg, 5.0f, 89.0f);
-      ImGui::Separator();
-      ImGui::Text("Terrain generator");
-      ImGui::Checkbox("Draw terrain", &p.drawTerrain);
-      ImGui::SliderFloat("Amplitude", &p.terrainAmplitude, 0.0f, 3.0f);
-      ImGui::SliderFloat("Frequency", &p.terrainFrequency, 0.05f, 1.5f);
-      ImGui::SliderFloat("Octaves", &p.terrainOctaves, 1.0f, 8.0f, "%.0f");
-      ImGui::Separator();
-      ImGui::Text("Cam  %.1f, %.1f, %.1f", p.camPos.x, p.camPos.y, p.camPos.z);
-      ImGui::End();
+      // Camera matrices for the gizmo — same math as the renderer, but the
+      // projection stays UNflipped (ImGuizmo maps to screen itself).
+      int fbw = 0, fbh = 0;
+      glfwGetFramebufferSize(window, &fbw, &fbh);
+      const float aspect =
+          (fbh > 0) ? (float)fbw / (float)fbh : 16.0f / 9.0f;
+      const float cyaw = glm::radians(p.camYawDeg);
+      const float cpitch = glm::radians(p.camPitchDeg);
+      const glm::vec3 camForward = glm::normalize(
+          glm::vec3(std::cos(cpitch) * std::sin(cyaw), std::sin(cpitch),
+                    std::cos(cpitch) * std::cos(cyaw)));
+      const glm::mat4 view = glm::lookAt(p.camPos, p.camPos + camForward,
+                                         glm::vec3(0.0f, 1.0f, 0.0f));
+      const glm::mat4 proj =
+          glm::perspective(glm::radians(p.fovDeg), aspect, 0.05f, 300.0f);
+
+      VkEditor::Context ectx{scene, assets, physics, renderer,
+                             dt,    &simulate, assetDir};
+      editor.draw(ectx, view, proj);
     }
     ImGui::Render();
 
