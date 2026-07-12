@@ -519,8 +519,8 @@ bool VulkanRenderer::createTlasDescriptors() {
 }
 
 void VulkanRenderer::writeTlasDescriptors() {
-  VkAccelerationStructureKHR tlas = mAccel.tlas();
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    VkAccelerationStructureKHR tlas = mAccel.tlas(i);
     VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
     asInfo.sType =
         VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
@@ -1124,6 +1124,14 @@ bool VulkanRenderer::finalizeScene() {
     return false;
   }
 
+  // Re-finalizing (new meshes appeared): tear down the previous
+  // acceleration structures first. Rare, so a device stall is acceptable.
+  if (mSceneReady) {
+    vkDeviceWaitIdle(mCtx->device());
+    mAccel.destroy(*mCtx);
+    mSceneReady = false;
+  }
+
   // Build acceleration structures: one BLAS per mesh, TLAS from the instances.
   auto deviceAddress = [&](VkBuffer buffer) {
     VkBufferDeviceAddressInfo info{};
@@ -1147,9 +1155,10 @@ bool VulkanRenderer::finalizeScene() {
   auto submit = [this](const std::function<void(VkCommandBuffer)> &fn) {
     immediateSubmit(fn);
   };
-  if (!mAccel.build(*mCtx, submit, blasInputs, instInputs))
+  if (!mAccel.build(*mCtx, submit, blasInputs, instInputs, kFramesInFlight))
     return false;
   writeTlasDescriptors();
+  mSceneReady = true;
   return true;
 }
 
@@ -1266,6 +1275,18 @@ void VulkanRenderer::drawFrame() {
   begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
+
+  // Rebuild this frame's TLAS from the current instance list so per-frame
+  // transform changes are reflected in the ray-traced shadows. The frame
+  // fence above guarantees this frame's TLAS/instance buffer is idle.
+  if (mSceneReady) {
+    std::vector<VulkanAccel::InstanceInput> instInputs(mInstances.size());
+    for (size_t i = 0; i < mInstances.size(); ++i) {
+      instInputs[i].blasIndex = mInstances[i].meshIndex;
+      instInputs[i].transform = mInstances[i].model;
+    }
+    mAccel.recordTlasBuild(cmd, mCurrentFrame, instInputs);
+  }
 
   VkDeviceSize vbOffset = 0;
 

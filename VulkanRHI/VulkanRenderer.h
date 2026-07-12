@@ -31,10 +31,16 @@ public:
   // --- engine-drivable scene API ---------------------------------------
   // Build the scene after init(): create meshes, place instances, then call
   // finalizeScene() to build the ray-tracing acceleration structures.
+  // For dynamic scenes, call clearInstances() + addInstance() every frame:
+  // drawFrame() rebuilds the current frame's TLAS from the instance list.
+  // finalizeScene() may be called again after adding meshes (it waits for
+  // the device and rebuilds the BLAS set).
   using MeshHandle = uint32_t;
   MeshHandle createMeshFromObj(const std::string &path);
   void addInstance(MeshHandle mesh, const glm::mat4 &transform);
+  void clearInstances() { mInstances.clear(); }
   bool finalizeScene();
+  bool sceneReady() const { return mSceneReady; }
 
   void drawFrame();
   void waitIdle();
@@ -210,6 +216,7 @@ private:
 
   Params mParams;
   std::function<void(VkCommandBuffer)> mOverlay;
+  bool mSceneReady = false;
 };
 
 } // namespace vkrhi

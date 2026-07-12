@@ -8,6 +8,7 @@
 #include <GLFW/glfw3.h>
 
 #include "VulkanContext.h"
+#include "VulkanRenderSystem.h"
 #include "VulkanRenderer.h"
 
 #include "imgui.h"
@@ -103,13 +104,10 @@ int main() {
     return 1;
   }
 
-  // Build the scene in the engine's ECS, then bridge it to the renderer. This
-  // is the integration seam: the engine's render loop will walk ECS Transform +
-  // Mesh components and drive VulkanRHI exactly like this.
+  // Build the scene in the engine's ECS. VulkanRenderSystem walks it every
+  // frame (below) — transforms are live, and the TLAS is rebuilt per frame.
+  Registry registry;
   {
-    using MeshHandle = vkrhi::VulkanRenderer::MeshHandle;
-
-    Registry registry;
     auto spawn = [&](const std::string &path, glm::vec3 pos, float yawDeg,
                      float scale) {
       EntityId e = registry.create();
@@ -118,7 +116,7 @@ int main() {
       t.rotation = glm::vec3(0.0f, yawDeg, 0.0f);
       t.scale = glm::vec3(scale);
       MeshComponent &mc = registry.emplace<MeshComponent>(e);
-      mc.assetId = path; // resolved to a renderer mesh by the bridge below
+      mc.assetId = path; // resolved to a renderer mesh by VulkanRenderSystem
     };
 
     std::vector<std::string> paths = {GLGEN_VK_MODEL_PATH};
@@ -142,30 +140,8 @@ int main() {
             glm::vec3(s.x, -0.5f + 0.5f * s.scale, s.z), s.yawDeg, s.scale);
       ++k;
     }
-
-    // --- ECS -> renderer bridge (the seed of the Vulkan render system) ---
-    std::unordered_map<std::string, MeshHandle> meshCache;
-    for (EntityId e : registry.view<MeshComponent>()) {
-      if (!registry.has<TransformComponent>(e))
-        continue;
-      MeshComponent &mc = registry.get<MeshComponent>(e);
-      if (mc.assetId.empty())
-        continue;
-      MeshHandle handle;
-      auto it = meshCache.find(mc.assetId);
-      if (it != meshCache.end()) {
-        handle = it->second;
-      } else {
-        handle = renderer.createMeshFromObj(mc.assetId);
-        if (handle == UINT32_MAX)
-          continue;
-        meshCache[mc.assetId] = handle;
-      }
-      renderer.addInstance(
-          handle, registry.get<TransformComponent>(e).getMatrix());
-    }
-    renderer.finalizeScene();
   }
+  vkrhi::VulkanRenderSystem renderSystem;
 
   // --- Dear ImGui (platform: GLFW, renderer: Vulkan, dynamic rendering) ---
   VkDescriptorPool imguiPool = VK_NULL_HANDLE;
@@ -319,6 +295,19 @@ int main() {
       ImGui::End();
     }
     ImGui::Render();
+
+    // Animate the ECS: slow spin on every mesh entity. This exercises the
+    // dynamic path — VulkanRenderSystem resubmits transforms and drawFrame
+    // rebuilds the frame's TLAS, so the RT shadows track the motion.
+    for (EntityId e : registry.view<MeshComponent>()) {
+      if (!registry.has<TransformComponent>(e))
+        continue;
+      TransformComponent &t = registry.get<TransformComponent>(e);
+      t.rotation.y += 45.0f * dt;
+      if (t.rotation.y > 360.0f)
+        t.rotation.y -= 360.0f;
+    }
+    renderSystem.update(registry, renderer);
 
     if (capturePath && maxFrames > 0 && frame == maxFrames - 1)
       renderer.requestCapture(capturePath);

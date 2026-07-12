@@ -50,12 +50,18 @@ add_library(VulkanRHI STATIC
     VulkanMesh.cpp
     VulkanAccel.cpp
     VulkanRenderer.cpp
+    VulkanRenderSystem.cpp
     vk_mem_alloc_impl.cpp
     vk_stb_write_impl.cpp
 )
+# The engine's ECS/Assets headers (GL-free, header-only) drive
+# VulkanRenderSystem; include paths only, no Engine library link.
 target_include_directories(VulkanRHI PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${VMA_INCLUDE_DIR}
+    ${CMAKE_SOURCE_DIR}/Engine
+    ${CMAKE_SOURCE_DIR}/Engine/ECS
+    ${CMAKE_SOURCE_DIR}/Engine/Assets
 )
 # glm (math) and tinyobjloader (OBJ loading) are header-only and carry no
 # OpenGL dependency, so VulkanRHI stays decoupled from the GL engine.
