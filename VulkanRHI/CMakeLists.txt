@@ -22,8 +22,11 @@ set(VK_SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/shaders/vulkan)
 set(VK_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${VK_SHADER_OUT_DIR})
 
-set(VK_SHADERS mesh.vert mesh.frag tonemap.vert tonemap.frag
-               terrain.task terrain.mesh terrain.frag sky.vert sky.frag)
+set(VK_SHADERS mesh.vert mesh.frag meshInstanced.vert meshInstanced.frag
+               tonemap.vert tonemap.frag
+               terrainChunk.vert terrainChunk.frag sky.vert sky.frag
+               ssao.frag blur.frag bloomExtract.frag bloomBlur.frag
+               volumetric.frag volumetricComposite.frag)
 set(VK_SPV_FILES)
 foreach(shader ${VK_SHADERS})
     set(spv ${VK_SHADER_OUT_DIR}/${shader}.spv)
@@ -32,6 +35,11 @@ foreach(shader ${VK_SHADERS})
         COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.3
                 ${VK_SHADER_SRC_DIR}/${shader} -o ${spv}
         DEPENDS ${VK_SHADER_SRC_DIR}/${shader}
+                ${VK_SHADER_SRC_DIR}/frameData.glsl
+                ${VK_SHADER_SRC_DIR}/skyModel.glsl
+                ${VK_SHADER_SRC_DIR}/grassMaterial.glsl
+               ${VK_SHADER_SRC_DIR}/biomeLighting.glsl
+                ${VK_SHADER_SRC_DIR}/paintMaterial.glsl
         COMMENT "glslc ${shader} -> SPIR-V"
         VERBATIM
     )
@@ -102,6 +110,8 @@ add_dependencies(glGenVulkanSmoke VulkanShaders)
 add_executable(glGenVk
     runtime/main.cpp
     runtime/VkEditor.cpp
+    runtime/VkScriptBindings.cpp
+    runtime/VkAgentBridge.cpp
     runtime/gameplay/VkPlayerControllerSystem.cpp
     runtime/gameplay/VkPlayerInteractionSystem.cpp
     runtime/gameplay/VkSpaceshipControlSystem.cpp
@@ -110,7 +120,8 @@ add_executable(glGenVk
     runtime/subsystems/VkScriptSubsystem.cpp
     runtime/subsystems/VkEditorSubsystem.cpp
     runtime/subsystems/VkCoreAppLayer.cpp
-    runtime/subsystems/VkAudioSubsystem.cpp)
+    runtime/subsystems/VkAudioSubsystem.cpp
+    runtime/subsystems/VkTerrainSubsystem.cpp)
 target_link_libraries(glGenVk PRIVATE VulkanRHI EngineCore glfw Vulkan::Vulkan imgui_vk)
 target_include_directories(glGenVk PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 target_compile_definitions(glGenVk PRIVATE

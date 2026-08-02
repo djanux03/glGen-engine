@@ -4,20 +4,111 @@
 #include "Logger.h"
 #include "ScriptBindings.h"
 
+#include <functional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 class ScriptSystem {
 public:
+  // Extension point for bindings that EngineCore cannot see. render.* and
+  // terrain.* need VulkanRenderer and VkTerrainSubsystem, which live above
+  // this layer -- the Vulkan runtime registers them here instead of EngineCore
+  // acquiring a dependency on its own consumer. Hooks run during initialize(),
+  // in registration order, after the core bindings.
+  using BindingHook = std::function<void(sol::state &)>;
+  void addBindingHook(BindingHook hook) {
+    mBindingHooks.push_back(std::move(hook));
+  }
+
   // Initialize the Lua VM and register all API bindings.
   // Must be called once after the Registry is available.
-  void initialize(Registry &registry, class PhysicsSystem *physics = nullptr) {
+  //
+  // `io` and `os` are deliberately NOT opened. Scripts here are increasingly
+  // machine-authored (see AI_ASSET_PIPELINE_PLAN.md), and those two libraries
+  // are arbitrary file and process access -- os.execute alone makes the Lua
+  // console a remote shell. Nothing in scripts/ used them.
+  void initialize(Registry &registry, class PhysicsSystem *physics = nullptr,
+                  class Scene *scene = nullptr,
+                  gen::AssetLibrary *assetLibrary = nullptr) {
     mLua.open_libraries(sol::lib::base, sol::lib::math, sol::lib::string,
-                        sol::lib::table, sol::lib::io, sol::lib::os);
-    registerScriptBindings(mLua, registry, physics);
+                        sol::lib::table);
+    registerScriptBindings(mLua, registry, physics, scene, assetLibrary);
+    for (auto &hook : mBindingHooks)
+      hook(mLua);
     mInitialized = true;
     LOG_INFO("Script", "Lua scripting system initialized");
   }
+
+  // Runs a chunk of Lua in the global environment. This is the console /
+  // command-port entry point -- everything else in this class is per-entity
+  // ScriptComponent execution, which cannot answer "run this one statement".
+  // Returns false with `error` set; never throws.
+  bool execString(const std::string &source, std::string &error) {
+    if (!mInitialized) {
+      error = "script system not initialized";
+      return false;
+    }
+    try {
+      sol::protected_function_result result = mLua.safe_script(
+          source, sol::script_pass_on_error);
+      if (!result.valid()) {
+        const sol::error err = result;
+        error = err.what();
+        return false;
+      }
+      return true;
+    } catch (const std::exception &e) {
+      error = e.what();
+      return false;
+    }
+  }
+
+  // execString's counterpart for callers that need the VALUE back (the
+  // command port, where "list the generators" has to return a list).
+  //
+  // `source` is tried as an EXPRESSION first ("return " + source) and only
+  // then as a statement chunk -- the standard REPL trick, and what lets
+  // `assets.generators()` and `x = 1` both work through one entry point.
+  // Multiple return values come back as a JSON array.
+  bool eval(const std::string &source, nlohmann::json &result,
+            std::string &error) {
+    if (!mInitialized) {
+      error = "script system not initialized";
+      return false;
+    }
+    try {
+      sol::protected_function_result r =
+          mLua.safe_script("return " + source, sol::script_pass_on_error);
+      if (!r.valid()) {
+        // Not an expression: run it as statements. Any error from THIS attempt
+        // is the one worth reporting -- the expression attempt's error is
+        // usually just "unexpected symbol near '='".
+        r = mLua.safe_script(source, sol::script_pass_on_error);
+        if (!r.valid()) {
+          const sol::error err = r;
+          error = err.what();
+          return false;
+        }
+      }
+      if (r.return_count() == 0) {
+        result = nullptr;
+      } else if (r.return_count() == 1) {
+        result = scriptjson::toJson(r.get<sol::object>(0));
+      } else {
+        result = nlohmann::json::array();
+        for (int i = 0; i < r.return_count(); ++i)
+          result.push_back(scriptjson::toJson(r.get<sol::object>(i)));
+      }
+      return true;
+    } catch (const std::exception &e) {
+      error = e.what();
+      return false;
+    }
+  }
+
+  // Direct access for hooks that need to push state after initialize().
+  sol::state &lua() { return mLua; }
 
   // Run all scripts for entities with ScriptComponent.
   // Called once per frame from CoreAppLayer::update().
@@ -38,7 +129,7 @@ public:
 
       // First frame: load the script file and call on_spawn
       if (!sc.initialized) {
-        if (!loadScript(entity, sc)) {
+        if (!loadScript(entity, sc, registry)) {
           sc.scriptPath.clear(); // Prevent retrying a broken script
           continue;
         }
@@ -64,14 +155,16 @@ public:
 private:
   sol::state mLua;
   bool mInitialized = false;
+  std::vector<BindingHook> mBindingHooks;
 
   // Per-entity Lua environments (sandboxes)
   std::unordered_map<EntityId, sol::environment> mScriptEnvs;
 
-  bool loadScript(EntityId entity, ScriptComponent &sc) {
+  bool loadScript(EntityId entity, ScriptComponent &sc, Registry &registry) {
     try {
       // Create a sandbox environment that inherits from globals
       sol::environment env(mLua, sol::create, mLua.globals());
+      env["self"] = EntityProxy{entity, &registry};
       mScriptEnvs[entity] = env;
 
       // Load and execute the script file in this environment
