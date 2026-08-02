@@ -2,15 +2,17 @@
 
 // The Vulkan-side counterpart of the old OpenGL app's AppState: a state
 // struct that ties together EngineCore's GL-free systems (Scene, Assets,
-// Jolt physics, ScriptSystem) with the ported gameplay logic and the
-// Vk*Subsystem set, without depending on anything GL-coupled. Phase 1 scope
-// only -- FX systems (clouds/fire/fog/black hole/projectiles/fireflies) and
-// the CPU TerrainSystem are intentionally not represented here yet.
+// Jolt physics, ScriptSystem, chunked terrain streaming) with the ported
+// gameplay logic and the Vk*Subsystem set, without depending on anything
+// GL-coupled. FX systems (clouds/fire/fog/black hole/projectiles/fireflies)
+// are still not represented here.
 
 #include "Assets/AssetManager.h"
+#include "Generators/AssetLibrary.h"
 #include "Scene/Scene.h"
 #include "ECS/Systems/PhysicsSystem.h"
 #include "Scripting/ScriptSystem.h"
+#include "TerrainChunkManager.h"
 
 #include "GameplayState.h"
 #include "InputSettings.h"
@@ -22,6 +24,8 @@
 
 #include "SubsystemManager.h"
 
+#include <string>
+
 struct GLFWwindow;
 
 namespace vkrhi {
@@ -29,6 +33,7 @@ class VulkanRenderer;
 class VulkanRenderSystem;
 } // namespace vkrhi
 class VkEditor;
+class VkTerrainSubsystem;
 
 struct VkAppState {
   // Window / timing
@@ -37,11 +42,21 @@ struct VkAppState {
   int scrH = 720;
   float lastT = 0.0f;
 
+  // Set once in main() from GLGEN_VK_ASSET_DIR. Subsystems that load files
+  // by path (VkTerrainSubsystem's R2 terrain material textures) resolve
+  // their defaults relative to this rather than hardcoding an absolute path.
+  std::string assetDir;
+
   // Core systems (EngineCore, GL-free)
   AssetManager assets;
+  // Procedurally generated assets (AI_ASSET_PIPELINE_PLAN.md Phase 1): owns
+  // the recipes under <assetDir>/recipes and registers their meshes with
+  // `assets` above. Editing a recipe file regenerates and hot-swaps it.
+  gen::AssetLibrary assetLibrary;
   Scene scene;
   PhysicsSystem physicsSystem;
   ScriptSystem scriptSystem;
+  TerrainChunkManager terrain;
 
   GameplayState gameplay;
   InputSettings input;
@@ -64,6 +79,13 @@ struct VkAppState {
   vkrhi::VulkanRenderer *renderer = nullptr;
   vkrhi::VulkanRenderSystem *renderSystem = nullptr;
   VkEditor *vkEditor = nullptr;
+  // Lets gameplay systems query the procedural terrain surface directly
+  // (VkTerrainSubsystem::heightAt()) instead of only the Jolt physics
+  // raycast -- the physics heightfield only exists within
+  // collisionChunkRadius of the camera and streams in asynchronously, so a
+  // ground candidate that doesn't depend on it is what keeps the player
+  // from falling through on spawn or right after a terrain regenerate().
+  VkTerrainSubsystem *terrainSubsystem = nullptr;
 
   SubsystemManager subsystems;
 };

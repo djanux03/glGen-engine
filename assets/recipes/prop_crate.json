@@ -1,0 +1,36 @@
+{
+  "id": "prop/crate",
+  "generator": "kitbash.v1",
+  "seed": 3311,
+  "params": {
+    "color": [0.52, 0.38, 0.23],
+    "roughness": 0.85,
+    "roundSegments": 8,
+    "jitter": 0.006,
+    "parts": [
+      { "shape": "box", "pos": [0, 0.4, 0],    "size": [0.8, 0.8, 0.8] },
+      { "shape": "box", "pos": [0, 0.12, 0],   "size": [0.86, 0.07, 0.86], "color": [0.28, 0.26, 0.25] },
+      { "shape": "box", "pos": [0, 0.68, 0],   "size": [0.86, 0.07, 0.86], "color": [0.28, 0.26, 0.25] },
+      { "shape": "box", "pos": [0, 0.4, 0.41], "size": [0.82, 0.62, 0.02], "color": [0.58, 0.43, 0.26] },
+      { "shape": "box", "pos": [0, 0.4, -0.41],"size": [0.82, 0.62, 0.02], "color": [0.58, 0.43, 0.26] },
+      { "shape": "box", "pos": [0.41, 0.4, 0], "size": [0.02, 0.62, 0.82], "color": [0.58, 0.43, 0.26] },
+      { "shape": "box", "pos": [-0.41, 0.4, 0],"size": [0.02, 0.62, 0.82], "color": [0.58, 0.43, 0.26] }
+    ]
+  },
+  "material": {
+    "prop": {
+      "generator": "tex.wood",
+      "params": { "resolution": 256, "color": [0.52, 0.38, 0.23], "ringScale": 12, "grain": 0.5 }
+    },
+    "prop_1": {
+      "generator": "tex.metal",
+      "params": { "resolution": 128, "color": [0.33, 0.31, 0.30], "polish": 0.25, "rust": 0.4 }
+    }
+  },
+  "provenance": {
+    "prompt": "wooden supply crate with dark metal banding",
+    "author": "claude",
+    "date": "2026-08-01",
+    "note": "parts are grouped by colour into submeshes: 'prop' is the default colour, 'prop_1' the second distinct one"
+  }
+}

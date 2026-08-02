@@ -19,8 +19,30 @@ set(ENGINE_CORE_SOURCES
     Assets/MeshParseGLTF.cpp
     Assets/MeshParseFBX.cpp
     Assets/MeshPrimitives.cpp
+    Bridge/CommandServer.cpp
+    Generators/MeshBuilder.cpp
+    Generators/GeneratorSchema.cpp
+    Generators/GeneratorRegistry.cpp
+    Generators/AssetRecipe.cpp
+    Generators/TextureGen.cpp
+    Generators/AssetLibrary.cpp
+    Generators/gen/GenTree.cpp
+    Generators/gen/GenRock.cpp
+    Generators/gen/GenGrass.cpp
+    Generators/gen/GenKitbash.cpp
+    Generators/MeshDecimate.cpp
+    Generators/MeshValidate.cpp
+    Generators/gen/GenImport.cpp
+    Generators/gen/Builtins.cpp
     ECS/Systems/PhysicsSystem.cpp
     ECS/Systems/PhysicsTerrainChunk.cpp
+    Terrain/TerrainNoise.cpp
+    Terrain/TerrainQuery.cpp
+    Terrain/TerrainChunkMesher.cpp
+    Terrain/TerrainChunkManager.cpp
+    Terrain/ScatterManifest.cpp
+    Terrain/TerrainScatter.cpp
+    Terrain/HeightOffsetGrid.cpp
 )
 
 add_library(EngineCore STATIC ${ENGINE_CORE_SOURCES})
@@ -38,8 +60,13 @@ target_include_directories(EngineCore PUBLIC
     Assets
     ECS
     Scripting
+    Terrain
+    Generators
+    Bridge
     ../ThirdParty/JoltPhysics
 )
+
+find_package(Threads REQUIRED)
 
 target_link_libraries(EngineCore PUBLIC
     glm
@@ -50,4 +77,11 @@ target_link_libraries(EngineCore PUBLIC
     glfw
     sol2
     Jolt
+    Threads::Threads
 )
+
+# Bridge/CommandServer.cpp's sockets. Winsock on Windows; POSIX sockets are in
+# libc everywhere else this would plausibly build.
+if(WIN32)
+    target_link_libraries(EngineCore PUBLIC ws2_32)
+endif()

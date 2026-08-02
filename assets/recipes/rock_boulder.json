@@ -1,0 +1,29 @@
+{
+  "id": "rock/boulder",
+  "generator": "rock.v1",
+  "seed": 5521,
+  "params": {
+    "radius": 0.9,
+    "detail": 2,
+    "roughness": 0.34,
+    "noiseScale": 2.0,
+    "octaves": 3,
+    "stretch": [1.0, 0.62, 0.88],
+    "flatCuts": 2,
+    "cutDepth": 0.26,
+    "sinkFlat": 0.18,
+    "color": [0.44, 0.42, 0.39],
+    "smooth": true
+  },
+  "material": {
+    "rock": {
+      "generator": "tex.rock",
+      "params": { "resolution": 256, "color": [0.44, 0.42, 0.39], "crackDepth": 0.55, "speckle": 0.3, "scale": 1.4 }
+    }
+  },
+  "provenance": {
+    "prompt": "weathered granite boulder with a couple of cleaved faces",
+    "author": "claude",
+    "date": "2026-08-01"
+  }
+}

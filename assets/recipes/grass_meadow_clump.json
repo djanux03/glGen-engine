@@ -1,0 +1,29 @@
+{
+  "id": "grass/meadow_clump",
+  "generator": "grass.v1",
+  "seed": 7788,
+  "params": {
+    "blades": 7,
+    "height": 0.34,
+    "heightVariance": 0.45,
+    "width": 0.032,
+    "spread": 0.085,
+    "bendDeg": 58,
+    "segments": 2,
+    "color": [0.24, 0.42, 0.15],
+    "tipColor": [0.46, 0.53, 0.21],
+    "tipFade": true
+  },
+  "material": {
+    "grass": {
+      "generator": "tex.grass",
+      "params": { "resolution": 64, "color": [0.24, 0.42, 0.15], "tipColor": [0.46, 0.53, 0.21], "dryness": 0.12 }
+    }
+  },
+  "provenance": {
+    "prompt": "short meadow grass clump for dense ground cover",
+    "author": "claude",
+    "date": "2026-08-01",
+    "note": "7 blades x 2 segments = 28 triangles; this mesh is instanced tens of thousands of times"
+  }
+}

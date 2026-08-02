@@ -1,0 +1,38 @@
+{
+  "id": "tree/pine_tall",
+  "generator": "tree.v1",
+  "seed": 91733,
+  "params": {
+    "height": 11.5,
+    "trunkRadius": 0.26,
+    "trunkTaper": 0.72,
+    "trunkSegments": 5,
+    "crook": 0.12,
+    "branchLevels": 2,
+    "branchesPerLevel": 4,
+    "branchAngleDeg": 62,
+    "branchLengthRatio": 0.42,
+    "branchStartHeight": 0.45,
+    "radialSegments": 6,
+    "canopy": "conifer",
+    "canopyDensity": 0.85,
+    "leafSize": 0.95,
+    "barkColor": [0.26, 0.19, 0.14],
+    "foliageColor": [0.16, 0.34, 0.15]
+  },
+  "material": {
+    "bark": {
+      "generator": "tex.bark",
+      "params": { "resolution": 256, "ridgeDepth": 0.7, "ridgeScale": 9, "color": [0.26, 0.19, 0.14] }
+    },
+    "foliage": {
+      "generator": "tex.leaf",
+      "params": { "resolution": 128, "color": [0.16, 0.34, 0.15], "width": 0.85, "veinStrength": 0.15 }
+    }
+  },
+  "provenance": {
+    "prompt": "tall mature conifer for the forest biome",
+    "author": "claude",
+    "date": "2026-08-01"
+  }
+}

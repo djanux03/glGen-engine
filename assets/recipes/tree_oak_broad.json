@@ -1,0 +1,40 @@
+{
+  "id": "tree/oak_broad",
+  "generator": "tree.v1",
+  "seed": 40391,
+  "params": {
+    "height": 7.5,
+    "trunkRadius": 0.34,
+    "trunkTaper": 0.5,
+    "trunkSegments": 4,
+    "lean": 0.12,
+    "leanDirDeg": 210,
+    "crook": 0.45,
+    "branchLevels": 3,
+    "branchesPerLevel": 3,
+    "branchAngleDeg": 46,
+    "branchLengthRatio": 0.68,
+    "branchStartHeight": 0.3,
+    "radialSegments": 6,
+    "canopy": "broadleaf",
+    "canopyDensity": 0.85,
+    "leafSize": 0.8,
+    "barkColor": [0.33, 0.27, 0.2],
+    "foliageColor": [0.22, 0.44, 0.15]
+  },
+  "material": {
+    "bark": {
+      "generator": "tex.bark",
+      "params": { "resolution": 256, "ridgeDepth": 0.55, "ridgeScale": 14, "color": [0.33, 0.27, 0.2] }
+    },
+    "foliage": {
+      "generator": "tex.leaf",
+      "params": { "resolution": 128, "color": [0.22, 0.44, 0.15], "autumn": 0.12, "veinStrength": 0.4 }
+    }
+  },
+  "provenance": {
+    "prompt": "spreading broadleaf oak, slight windswept lean",
+    "author": "claude",
+    "date": "2026-08-01"
+  }
+}
