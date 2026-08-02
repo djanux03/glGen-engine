@@ -51,6 +51,63 @@ PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "glgen"
 SERVER_VERSION = "0.1.0"
 
+# Sent to the client on initialize. This is the only place the server can
+# explain HOW to work with it -- tool descriptions cover one call each and
+# cannot say "render before you believe it" or "reuse the id to iterate".
+# Everything here is load-bearing; it goes into the model's context on every
+# session, so anything that does not change behaviour has been left out.
+SERVER_INSTRUCTIONS = """\
+glGen is a 3D game engine. You author assets here by describing them as
+PARAMETERS, not by writing geometry: each glgen_create_* tool's schema is the
+engine's own validation schema, with real ranges, defaults and enums.
+
+THE LOOP. Creating an asset is half the job. Always:
+
+  1. glgen_create_<generator>  with an `id` like "tree/windswept_oak"
+  2. glgen_render_asset        and LOOK at the images
+  3. adjust the parameters, REUSING THE SAME id, and render again
+
+Reusing an id regenerates that asset in place, so anything already placed in
+the scene updates too. That is what makes iteration cheap. A new id makes a
+new asset.
+
+Do not describe an asset as finished until you have rendered it. Parameters
+that read sensibly often look wrong -- branches at a wide angle become a
+clothes-line, a sparse canopy reads as a dying tree -- and the render is the
+only way you will know.
+
+WHEN YOU JUDGE A RENDER, in this order:
+  silhouette   is the shape readable? this survives at distance; nothing else does
+  proportion   is it the size a real one would be? metres, and Y is up
+  detail       colour and texture come last and matter least
+
+TWO FEEDBACK CHANNELS, both worth reading. The images show proportion and
+silhouette. The TEXT of a create call reports what an image cannot: parameters
+that were clamped to their valid range, triangle budgets exceeded, material
+slots that matched nothing. A clamped parameter means the asset is not what you
+asked for. Act on those messages rather than re-rendering and guessing.
+
+TRIANGLE BUDGETS ARE REAL. This renderer builds one ray-tracing acceleration
+structure per unique mesh, and scattered content multiplies every triangle by
+its instance count. Going over budget is a warning, not a rejection, but for
+anything scattered it is a genuine performance problem. Get variety from
+DIFFERENT SEEDS on a few recipes -- one recipe with six seeds is six distinct
+individuals for the cost of six small meshes -- not from a unique mesh per
+placement.
+
+CONVENTIONS. Units are metres. Y is up. An asset's pivot sits at its base, so
+placing it at a terrain height puts it on the ground; glgen_place_asset with
+onGround does that for you.
+
+BEYOND THE TOOLS. glgen_eval_lua runs Lua inside the engine and returns the
+result. Use it for anything not covered: terrain.regenerate{...},
+assets.list(), assets.info(assetId), scene.stats(), entity manipulation.
+Prefer a typed tool when one fits.
+
+If a call fails, the error text is specific -- read it before retrying. An
+unknown parameter is reported by name; a bad enum lists the valid values.\
+"""
+
 REPO_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 )
@@ -532,6 +589,9 @@ class McpServer:
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                # How to operate this server. Per-tool descriptions cover one
+                # call each; this is where the workflow lives.
+                "instructions": SERVER_INSTRUCTIONS,
             })
 
         if method in ("notifications/initialized", "initialized"):
@@ -614,6 +674,11 @@ def selftest() -> int:
     init = server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
     check("protocol version", init["result"]["protocolVersion"] == PROTOCOL_VERSION)
     check("tools capability", "tools" in init["result"]["capabilities"])
+    # The workflow guidance only reaches a model if it is actually sent.
+    instructions = init["result"].get("instructions", "")
+    check("instructions sent", len(instructions) > 500, f"{len(instructions)} chars")
+    check("instructions cover the loop", "glgen_render_asset" in instructions)
+    check("instructions cover id reuse", "REUSING THE SAME id" in instructions)
 
     print("\n[tools/list]")
     listing = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
