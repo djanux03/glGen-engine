@@ -1,0 +1,16 @@
+{
+  "id": "imported/wrench",
+  "generator": "import.gltf",
+  "seed": 0,
+  "params": {
+    "path": "assets/imported/wrench.glb",
+    "maxTriangles": 8000,
+    "normalizeSize": 0.4,
+    "recenter": "baseY"
+  },
+  "provenance": {
+    "source": "assets/imported/wrench.glb",
+    "class": "prop",
+    "tool": "glgen-fetch"
+  }
+}
