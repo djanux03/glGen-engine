@@ -6,9 +6,8 @@
 #include <string>
 
 // MaterialAsset is pure, backend-neutral data so it can live in ECS components
-// without pulling in any graphics API. The renderer (OpenGL today, Vulkan next)
-// interprets the texture handles and applies the material.
-class Shader; // forward declaration only
+// without pulling in any graphics API. The renderer interprets the texture
+// handles and applies the material.
 
 enum class ShaderVariant {
   Lit = 0,
@@ -61,7 +60,3 @@ struct MaterialAsset {
            texOpacity != 0;
   }
 };
-
-// Binds the material to an OpenGL shader. Defined in the GL rendering layer
-// (Material.cpp); not available to GL-free targets.
-void applyMaterial(const MaterialAsset &material, Shader &shader);

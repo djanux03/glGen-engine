@@ -1,0 +1,285 @@
+{
+  "layers": [
+    {
+      "alignToNormal": 0.15000000596046448,
+      "alphaCutout": false,
+      "biomes": {
+        "forest": 1.0,
+        "meadow": 0.05999999865889549,
+        "mountain": 0.15000000596046448
+      },
+      "castRayShadow": true,
+      "clustering": {
+        "clearingChance": 0.25,
+        "outcrops": false,
+        "standRadius": 25.0,
+        "stands": true
+      },
+      "collision": "capsule",
+      "cullCellSize": 0.0,
+      "density": 0.05000000074505806,
+      "densityFalloffStart": 1000000.0,
+      "groundOcclusion": 0.25,
+      "foliageSssStrength": 1.15,
+      "heightScale": [
+        0.9399999976158142,
+        1.1200000047683716
+      ],
+      "interactive": true,
+      "leanMaxDeg": 4.0,
+      "maxDrawDistance": 1000000.0,
+      "mesh": "assets/terraingeneratorassets/tree.obj",
+      "meshUpAxisFixDeg": [
+        0.0,
+        0.0,
+        90.0
+      ],
+      "minSpacing": 6.0,
+      "moistureMin": 0.30000001192092896,
+      "name": "pine_canopy",
+      "patchScale": 0.0,
+      "patchThreshold": 0.3499999940395355,
+      "randomYaw": true,
+      "scale": [
+        1.25,
+        2.049999952316284
+      ],
+      "sinkIntoGround": 0.0,
+      "slopeMax": 0.44999998807907104,
+      "tint": [
+        0.9200000166893005,
+        1.0,
+        0.8799999952316284
+      ],
+      "type": "tree",
+      "wind": true,
+      "windSpeed": 0.3499999940395355,
+      "windStrength": 0.550000011920929
+    },
+    {
+      "alignToNormal": 0.3499999940395355,
+      "alphaCutout": false,
+      "biomes": {
+        "forest": 0.8500000238418579,
+        "meadow": 0.10000000149011612,
+        "mountain": 0.25
+      },
+      "castRayShadow": true,
+      "clustering": {
+        "clearingChance": 0.3499999940395355,
+        "outcrops": false,
+        "standRadius": 18.0,
+        "stands": true
+      },
+      "collision": "none",
+      "cullCellSize": 0.0,
+      "density": 0.07000000029802322,
+      "densityFalloffStart": 1000000.0,
+      "groundOcclusion": 0.3499999940395355,
+      "foliageSssStrength": 1.05,
+      "heightScale": [
+        0.8999999761581421,
+        1.0800000429153442
+      ],
+      "interactive": false,
+      "leanMaxDeg": 11.0,
+      "maxDrawDistance": 1000000.0,
+      "mesh": "assets/terraingeneratorassets/tree.obj",
+      "meshUpAxisFixDeg": [
+        0.0,
+        0.0,
+        90.0
+      ],
+      "minSpacing": 2.4000000953674316,
+      "moistureMin": 0.25,
+      "name": "pine_young",
+      "patchScale": 0.0,
+      "patchThreshold": 0.3499999940395355,
+      "randomYaw": true,
+      "scale": [
+        0.30000001192092896,
+        0.6499999761581421
+      ],
+      "sinkIntoGround": 0.0,
+      "slopeMax": 0.6000000238418579,
+      "tint": [
+        1.0800000429153442,
+        1.0399999618530273,
+        0.8600000143051147
+      ],
+      "type": "tree",
+      "wind": true,
+      "windSpeed": 0.800000011920929,
+      "windStrength": 0.30000001192092896
+    },
+    {
+      "alignToNormal": 0.800000011920929,
+      "alphaCutout": false,
+      "biomes": {
+        "forest": 0.30000001192092896,
+        "meadow": 0.30000001192092896,
+        "mountain": 1.0
+      },
+      "castRayShadow": true,
+      "clustering": {
+        "clearingChance": 0.25,
+        "outcrops": true,
+        "standRadius": 25.0,
+        "stands": false
+      },
+      "collision": "convex-or-sphere",
+      "cullCellSize": 0.0,
+      "density": 0.004000000189989805,
+      "densityFalloffStart": 1000000.0,
+      "groundOcclusion": 0.0,
+      "foliageSssStrength": 0.35,
+      "heightScale": [
+        1.0,
+        1.0
+      ],
+      "interactive": false,
+      "leanMaxDeg": 0.0,
+      "maxDrawDistance": 1000000.0,
+      "mesh": "assets/terraingeneratorassets/rock.obj",
+      "meshUpAxisFixDeg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "minSpacing": 0.0,
+      "moistureMin": 0.0,
+      "name": "boulder",
+      "patchScale": 0.0,
+      "patchThreshold": 0.3499999940395355,
+      "randomYaw": true,
+      "scale": [
+        0.4000000059604645,
+        2.200000047683716
+      ],
+      "sinkIntoGround": 0.15000000596046448,
+      "slopeMax": 1.0,
+      "tint": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "type": "rock",
+      "wind": false,
+      "windSpeed": 1.0,
+      "windStrength": 0.0
+    },
+    {
+      "alignToNormal": 0.699999988079071,
+      "alphaCutout": false,
+      "biomes": {
+        "forest": 0.44999998807907104,
+        "meadow": 1.0,
+        "mountain": 0.11999999731779099
+      },
+      "castRayShadow": false,
+      "clustering": {
+        "clearingChance": 0.25,
+        "outcrops": false,
+        "standRadius": 25.0,
+        "stands": false
+      },
+      "collision": "none",
+      "cullCellSize": 8.0,
+      "density": 1.2000000476837158,
+      "densityFalloffStart": 55.0,
+      "groundOcclusion": 0.6200000047683716,
+      "foliageSssStrength": 0.7,
+      "heightScale": [
+        0.800000011920929,
+        1.2999999523162842
+      ],
+      "interactive": false,
+      "leanMaxDeg": 14.0,
+      "maxDrawDistance": 95.0,
+      "mesh": "assets/terraingeneratorassets/grass.obj",
+      "meshUpAxisFixDeg": [
+        0.0,
+        0.0,
+        90.0
+      ],
+      "minSpacing": 0.0,
+      "moistureMin": 0.0,
+      "name": "grass_meadow",
+      "patchScale": 1.0,
+      "patchThreshold": 0.3400000035762787,
+      "randomYaw": true,
+      "scale": [
+        0.44999998807907104,
+        0.8500000238418579
+      ],
+      "sinkIntoGround": 0.05999999865889549,
+      "slopeMax": 0.7200000286102295,
+      "tint": [
+        0.41999998688697815,
+        0.6600000262260437,
+        0.25999999046325684
+      ],
+      "type": "grass",
+      "wind": true,
+      "windSpeed": 1.600000023841858,
+      "windStrength": 0.12999999523162842
+    },
+    {
+      "alignToNormal": 0.5,
+      "alphaCutout": false,
+      "biomes": {
+        "forest": 1.0,
+        "meadow": 0.800000011920929,
+        "mountain": 0.30000001192092896
+      },
+      "castRayShadow": false,
+      "clustering": {
+        "clearingChance": 0.25,
+        "outcrops": false,
+        "standRadius": 25.0,
+        "stands": false
+      },
+      "collision": "none",
+      "cullCellSize": 10.0,
+      "density": 0.44999998807907104,
+      "densityFalloffStart": 70.0,
+      "groundOcclusion": 0.550000011920929,
+      "foliageSssStrength": 0.8,
+      "heightScale": [
+        1.2999999523162842,
+        2.0
+      ],
+      "interactive": false,
+      "leanMaxDeg": 20.0,
+      "maxDrawDistance": 110.0,
+      "mesh": "assets/terraingeneratorassets/grass.obj",
+      "meshUpAxisFixDeg": [
+        0.0,
+        0.0,
+        90.0
+      ],
+      "minSpacing": 0.0,
+      "moistureMin": 0.0,
+      "name": "grass_tuft",
+      "patchScale": 2.299999952316284,
+      "patchThreshold": 0.46000000834465027,
+      "randomYaw": true,
+      "scale": [
+        0.6000000238418579,
+        1.0
+      ],
+      "sinkIntoGround": 0.10000000149011612,
+      "slopeMax": 0.800000011920929,
+      "tint": [
+        0.550000011920929,
+        0.6200000047683716,
+        0.23999999463558197
+      ],
+      "type": "grass",
+      "wind": true,
+      "windSpeed": 1.25,
+      "windStrength": 0.25999999046325684
+    }
+  ],
+  "version": 6
+}

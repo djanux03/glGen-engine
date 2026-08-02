@@ -44,9 +44,9 @@ using HDRHandle = AssetHandle<HDRAssetTag>;
 using ShaderHandle = AssetHandle<ShaderAssetTag>;
 
 // GPU upload half of the asset pipeline. The active rendering backend
-// (OpenGL: InstallGLModelBackend) registers these so AssetManager itself
-// stays graphics-API-free. Without a backend, assets still parse to CPU
-// MeshData (handles stay valid; get*() model pointers are null).
+// registers these so AssetManager itself stays graphics-API-free. Without a
+// backend, assets still parse to CPU MeshData (handles stay valid; get*()
+// model pointers are null).
 struct ModelGpuBackend {
   std::function<void *(const MeshData &)> createOBJ;
   std::function<void *(const MeshData &)> createGLTF;

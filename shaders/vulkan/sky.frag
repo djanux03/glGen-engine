@@ -1,53 +1,58 @@
 #version 450
-
-// Procedural atmospheric sky. Reconstructs the per-pixel world view ray from the
-// inverse view-projection, then shades an analytic sky that responds to the sun
-// elevation: blue day gradient, dusk reddening near the horizon, and a darkened
-// night sky as the sun drops. Includes a sun disc + glow. Writes linear HDR.
-layout(location = 0) in vec2 vNdc;
-layout(location = 0) out vec4 outColor;
-
+#extension GL_GOOGLE_include_directive : require
+#define FRAME_DATA_SET 0
+#include "frameData.glsl"
+#include "skyModel.glsl"
+layout(location=0) in vec2 vNdc;
+layout(location=0) out vec4 outColor;
 layout(push_constant) uniform Push {
-    mat4 invViewProj;
-    vec4 sunDir; // xyz = direction the light travels (downward); toward-sun = -sunDir
-    vec4 camPos;
+ mat4 invViewProj; vec4 sunDir; vec4 moonDir; vec4 camPos; vec4 passFlags;
 } pc;
-
-vec3 skyColor(vec3 dir, vec3 sun) {
-    float up = clamp(dir.y, 0.0, 1.0);
-
-    // Daytime gradient: horizon -> zenith.
-    vec3 zenith = vec3(0.10, 0.26, 0.58);
-    vec3 horizon = vec3(0.62, 0.74, 0.86);
-    vec3 sky = mix(horizon, zenith, pow(up, 0.5));
-
-    // Sun elevation drives day / dusk / night.
-    float sunEl = sun.y;
-    float day = smoothstep(-0.10, 0.18, sunEl);
-    vec3 night = vec3(0.02, 0.03, 0.06);
-    vec3 duskTint = vec3(0.95, 0.45, 0.22);
-    float dusk = (1.0 - day) * smoothstep(0.0, 0.4, up) *
-                 smoothstep(-0.25, 0.12, sunEl);
-    sky = mix(night, sky, day);
-    sky = mix(sky, duskTint, dusk * 0.6);
-
-    // Sun disc + glow.
-    float cosA = max(dot(dir, sun), 0.0);
-    float disc = smoothstep(0.9990, 0.9996, cosA);
-    float glow = pow(cosA, 350.0) * 0.6 + pow(cosA, 12.0) * 0.15;
-    vec3 sunCol = mix(vec3(1.0, 0.55, 0.25), vec3(1.0, 0.96, 0.88), day);
-    sky += sunCol * (disc * 12.0 + glow) * max(day, 0.15);
-
-    // Below the horizon: ground haze.
-    sky = mix(sky, mix(vec3(0.06, 0.07, 0.08), sky * 0.5, day),
-              smoothstep(0.0, -0.15, dir.y));
-    return max(sky, vec3(0.0));
+float hash31(vec3 p){p=fract(p*.1031);p+=dot(p,p.yzx+33.33);return fract((p.x+p.y)*p.z);}
+float noise3(vec3 p){vec3 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
+ float a=hash31(i),b=hash31(i+vec3(1,0,0)),c=hash31(i+vec3(0,1,0)),d=hash31(i+vec3(1,1,0));
+ float e=hash31(i+vec3(0,0,1)),g=hash31(i+vec3(1,0,1)),h=hash31(i+vec3(0,1,1)),j=hash31(i+1.0);
+ return mix(mix(mix(a,b,f.x),mix(c,d,f.x),f.y),mix(mix(e,g,f.x),mix(h,j,f.x),f.y),f.z);}
+float fbm(vec3 p){return noise3(p)*.56+noise3(p*2.03+7.1)*.28+noise3(p*4.07-3.7)*.16;}
+vec3 painterlyGrade(vec3 physical,vec3 dir){
+ float horizon=pow(1.0-clamp(dir.y,0.0,1.0),1.7);
+ vec3 palette=mix(uFrame.styleSkyZenith.rgb,uFrame.styleSkyHorizon.rgb,horizon);
+ float y=dot(max(physical,vec3(0)),vec3(.2126,.7152,.0722));
+ vec3 chroma=physical/max(y,.001);float bands=max(uFrame.styleSky0.y,2.0);
+ float q=floor(y*bands+.5)/bands;float softness=clamp(uFrame.styleSky0.z,0.01,.49);
+ q=mix(q,y,softness);vec3 washed=palette*mix(.42,1.30,q)+chroma*q*.22;
+ return mix(physical,washed,uFrame.styleSky0.x);
 }
-
-void main() {
-    vec4 farW = pc.invViewProj * vec4(vNdc, 1.0, 1.0);
-    vec3 worldFar = farW.xyz / farW.w;
-    vec3 dir = normalize(worldFar - pc.camPos.xyz);
-    vec3 sun = normalize(-pc.sunDir.xyz);
-    outColor = vec4(skyColor(dir, sun), 1.0);
+void main(){
+ vec4 fw=pc.invViewProj*vec4(vNdc,1,1);vec3 dir=normalize(fw.xyz/fw.w-pc.camPos.xyz);
+ vec3 toSun=normalize(pc.sunDir.xyz),toMoon=normalize(pc.moonDir.xyz);
+ vec3 ro=atmPlanetPos(pc.camPos.y);
+ AtmSample a=atmScatter(ro,dir,toSun,vec3(pc.sunDir.w),toMoon,
+   vec3(.72,.82,1)*pc.moonDir.w,uFrame.styleSkyZenith.w,12);
+ vec3 color=a.radiance*uFrame.styleSkyHorizon.w;
+ float sunUp=smoothstep(-.14,.02,toSun.y);
+ color+=vec3(.0022,.0031,.0058)*uFrame.skyAmbientParams.x*(1.0-sunUp)*a.transmittance;
+ bool sky=a.groundT<0.0;bool env=pc.passFlags.x>.5;
+ if(sky&&dir.y>-.03){
+   vec3 cp=dir/max(dir.y+.28,.12)*1.35;
+   cp.xz+=uFrame.styleCloud0.zw*pc.camPos.w;
+   float warp=fbm(cp*.55+vec3(4,0,7));float n=fbm(cp+vec3(warp*1.7,0,warp));
+   float cov=clamp(uFrame.styleCloud0.x,0.0,.95),soft=max(uFrame.styleCloud0.y,.01);
+   float mask=smoothstep(1.0-cov-soft,1.0-cov+soft,n)*smoothstep(-.02,.18,dir.y);
+   float light=smoothstep(.20,.82,dot(dir,toSun)*.5+.5);
+   vec3 cloud=mix(uFrame.styleCloudBase.rgb,uFrame.styleCloudMid.rgb,clamp(n*1.3-.2,0,1));
+   cloud=mix(cloud,uFrame.styleCloudLit.rgb,light);
+   color=mix(color,cloud*mix(.35,1.35,sunUp),mask*.88);
+ }
+ color=painterlyGrade(color,dir);
+ if(!env&&sky){
+   float ang=acos(clamp(dot(dir,toSun),-1,1));float radius=.009;
+   float edge=1.0-smoothstep(radius*(.55-uFrame.styleSky0.w*.2),radius,ang);
+   color+=vec3(1.0,.86,.60)*pc.sunDir.w*uFrame.styleCloudMid.w*edge*a.transmittance;
+   float mr=max(pc.passFlags.y,1e-4),ma=acos(clamp(dot(dir,toMoon),-1,1));
+   color+=vec3(.88,.92,1.0)*pc.moonDir.w*18.0*(1.0-smoothstep(mr*.82,mr,ma))*a.transmittance;
+   float star=(hash31(floor(dir*180.0))>.992?1.0:0.0)*(1.0-sunUp);
+   color+=vec3(.7,.82,1.0)*star*uFrame.styleCloudLit.w*.18;
+ }
+ outColor=vec4(max(color,vec3(0)),1);
 }

@@ -45,3 +45,4 @@
 /assets/realistic-pine/source/Pine[[:space:]]OBJ.zip filter=lfs diff=lfs merge=lfs -text
 /assets/sherman/ShermanComplete_HullMetal_BaseColor.png filter=lfs diff=lfs merge=lfs -text
 /assets/trees/Untitled.fbx filter=lfs diff=lfs merge=lfs -text
+/assets/scenes/vk_editor_scene.json filter=lfs diff=lfs merge=lfs -text

@@ -1,6 +1,4 @@
-# Experimental Vulkan RHI (Phase 0 of the Vulkan-first rewrite).
-# Only added to the build when GLGEN_BUILD_VULKAN=ON; the OpenGL engine is
-# untouched otherwise.
+# VulkanRHI — the engine's renderer (OpenGL has been removed from the repo).
 
 find_package(Vulkan REQUIRED)
 
@@ -100,15 +98,23 @@ target_compile_definitions(glGenVulkanSmoke PRIVATE
     GLGEN_VK_MODEL_PATH3="${CMAKE_SOURCE_DIR}/assets/terraingeneratorassets/tree.obj")
 add_dependencies(glGenVulkanSmoke VulkanShaders)
 
-# --- glGenVk: the real Vulkan runtime (EngineCore + VulkanRHI, no OpenGL) ----
-add_executable(glGenVk runtime/main.cpp runtime/VkEditor.cpp)
+# --- glGenVk: the engine's runtime (EngineCore + VulkanRHI) ------------------
+add_executable(glGenVk
+    runtime/main.cpp
+    runtime/VkEditor.cpp
+    runtime/gameplay/VkPlayerControllerSystem.cpp
+    runtime/gameplay/VkPlayerInteractionSystem.cpp
+    runtime/gameplay/VkSpaceshipControlSystem.cpp
+    runtime/subsystems/VkWindowSubsystem.cpp
+    runtime/subsystems/VkPhysicsSubsystem.cpp
+    runtime/subsystems/VkScriptSubsystem.cpp
+    runtime/subsystems/VkEditorSubsystem.cpp
+    runtime/subsystems/VkCoreAppLayer.cpp
+    runtime/subsystems/VkAudioSubsystem.cpp)
 target_link_libraries(glGenVk PRIVATE VulkanRHI EngineCore glfw Vulkan::Vulkan imgui_vk)
-# Editor/ supplies the (GL-free) EditorTheme/EditorToolbar headers; Runtime/
-# Framework supplies EditorState.h. Header-only reuse — no Editor lib link.
-target_include_directories(glGenVk PRIVATE
-    ${CMAKE_SOURCE_DIR}/Editor
-    ${CMAKE_SOURCE_DIR}/Runtime/Framework)
+target_include_directories(glGenVk PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 target_compile_definitions(glGenVk PRIVATE
     GLGEN_VK_SHADER_DIR="${VK_SHADER_OUT_DIR}"
-    GLGEN_VK_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets")
+    GLGEN_VK_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets"
+    GLGEN_VK_SCRIPT_DIR="${CMAKE_SOURCE_DIR}/scripts")
 add_dependencies(glGenVk VulkanShaders)

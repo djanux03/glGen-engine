@@ -1,5 +1,5 @@
 #include <doctest/doctest.h>
-#include "../Runtime/Framework/EditorState.h"
+#include "../VulkanRHI/runtime/EditorState.h"
 
 TEST_CASE("SelectionState initialization") {
     SelectionState s;

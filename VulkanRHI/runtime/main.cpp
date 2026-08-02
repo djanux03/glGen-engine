@@ -1,14 +1,24 @@
-// glGenVk — the real Vulkan runtime seed: a GLFW_NO_API window + Vulkan
-// surface driving the engine's actual systems from EngineCore (Scene +
-// AssetManager for assets, Jolt PhysicsSystem for simulation, the ECS for
-// state) with VulkanRHI as the renderer. No OpenGL anywhere in the link.
+// glGenVk — the real Vulkan runtime: a GLFW_NO_API window + Vulkan surface
+// driving the engine's actual systems from EngineCore (Scene + AssetManager
+// for assets, Jolt PhysicsSystem for simulation, ScriptSystem for Lua, the
+// ECS for state) with VulkanRHI as the renderer. No OpenGL anywhere in the
+// link.
 //
-// The demo world: static props spawned through Scene::spawnFromFile plus a
-// stack of dynamic rigid bodies dropped onto a static floor — physics moves
-// the TransformComponents, VulkanRenderSystem resubmits them every frame,
-// and the per-frame TLAS rebuild keeps the ray-traced shadows tracking.
+// Startup goes through Engine/Core/SubsystemManager (the same GL-free
+// dependency-ordered manager the old OpenGL app used), registering
+// Vulkan-side subsystems (VulkanRHI/runtime/subsystems/) that own
+// Window/Physics/Script/Audio/Editor over VkAppState. Gameplay (player
+// controller/interaction, spaceship control) is driven by ported copies of
+// the old Runtime/Gameplay systems (VulkanRHI/runtime/gameplay/). FX
+// rendering (clouds/fire/volumetric fog/black hole) and the CPU
+// TerrainSystem were never ported to Vulkan (skipped by explicit decision).
+// OpenGL has been fully removed from the repo -- this is the only renderer.
 //
-// Only built when GLGEN_BUILD_VULKAN=ON.
+// The demo world: static props spawned through Scene::spawnFromFile, a
+// scripted player entity (compatibility-stub Lua script), plus a stack of
+// dynamic rigid bodies dropped onto a static floor — physics moves the
+// TransformComponents, VulkanRenderSystem resubmits them every frame, and
+// the per-frame TLAS rebuild keeps the ray-traced shadows tracking.
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
@@ -28,8 +38,16 @@
 #include "Assets/MeshData.h"
 #include "ECS/Components.h"
 #include "ECS/Registry.h"
-#include "ECS/Systems/PhysicsSystem.h"
-#include "Scene/Scene.h"
+#include "Keyboard.h"
+#include "Mouse.h"
+
+#include "VkAppState.h"
+#include "subsystems/VkAudioSubsystem.h"
+#include "subsystems/VkCoreAppLayer.h"
+#include "subsystems/VkEditorSubsystem.h"
+#include "subsystems/VkPhysicsSubsystem.h"
+#include "subsystems/VkScriptSubsystem.h"
+#include "subsystems/VkWindowSubsystem.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -43,7 +61,8 @@
 
 namespace {
 // Accumulated scroll, drained each frame. Installed before ImGui so ImGui's
-// own callback chains to it.
+// own callback chains to it. (Independent of the Keyboard/Mouse statics --
+// this drives the free-fly debug camera's FOV zoom, not gameplay.)
 double g_scrollY = 0.0;
 void scrollCallback(GLFWwindow *, double, double yoffset) {
   g_scrollY += yoffset;
@@ -78,6 +97,9 @@ float normalizeEntityScale(Registry &reg, AssetManager &assets, EntityId e,
 #endif
 #ifndef GLGEN_VK_ASSET_DIR
 #define GLGEN_VK_ASSET_DIR "assets"
+#endif
+#ifndef GLGEN_VK_SCRIPT_DIR
+#define GLGEN_VK_SCRIPT_DIR "scripts"
 #endif
 
 int main() {
@@ -139,13 +161,10 @@ int main() {
   }
 
   // --- the engine: EngineCore systems, no OpenGL --------------------------
-  AssetManager assets; // no GPU backend: parses CPU MeshData, Vulkan uploads
-  Scene scene;
-  scene.setAssetManager(&assets);
-  Registry &reg = scene.registry();
-
-  PhysicsSystem physics;
-  physics.init();
+  VkAppState state;
+  state.window = window;
+  state.scene.setAssetManager(&state.assets);
+  Registry &reg = state.scene.registry();
 
   const std::string assetDir = GLGEN_VK_ASSET_DIR;
   const std::string rockPath = assetDir + "/terraingeneratorassets/rock.obj";
@@ -154,7 +173,7 @@ int main() {
 
   // Static floor: an invisible physics plane at the terrain's base height.
   {
-    EntityId floor = scene.createEmptyEntity("Floor");
+    EntityId floor = state.scene.createEmptyEntity("Floor");
     reg.get<TransformComponent>(floor).position = glm::vec3(0.0f, -0.55f, 0.0f);
     auto &rb = reg.emplace<RigidbodyComponent>(floor);
     rb.type = RigidbodyComponent::Type::Static;
@@ -177,17 +196,17 @@ int main() {
         {&axePath, {0.8f, -0.5f, -0.9f}, 130.0f, 0.7f},
     };
     for (const Prop &p : props) {
-      EntityId e = scene.spawnFromFile(*p.path);
+      EntityId e = state.scene.spawnFromFile(*p.path);
       if (e == 0)
         continue;
       // These assets are authored off-origin; recenter so the pivot is the
       // model's base and placement is straightforward.
-      assets.recenterOBJ(reg.get<MeshComponent>(e).objHandle,
-                         MeshData::Recenter::BaseY);
+      state.assets.recenterOBJ(reg.get<MeshComponent>(e).objHandle,
+                               MeshData::Recenter::BaseY);
       TransformComponent &t = reg.get<TransformComponent>(e);
       t.position = p.pos; // y = floor top; base sits on it
       t.rotation = glm::vec3(0.0f, p.yawDeg, 0.0f);
-      normalizeEntityScale(reg, assets, e, p.size);
+      normalizeEntityScale(reg, state.assets, e, p.size);
     }
   }
 
@@ -199,15 +218,15 @@ int main() {
         {0.1f, 3.6f, 0.25f}, {-0.3f, 4.4f, 0.1f},  {0.35f, 5.2f, -0.2f},
     };
     for (const glm::vec3 &pos : drops) {
-      EntityId e = scene.spawnFromFile(rockPath);
+      EntityId e = state.scene.spawnFromFile(rockPath);
       if (e == 0)
         continue;
       // Fully centered so the mesh tumbles about the physics body's center.
-      assets.recenterOBJ(reg.get<MeshComponent>(e).objHandle,
-                         MeshData::Recenter::Center);
+      state.assets.recenterOBJ(reg.get<MeshComponent>(e).objHandle,
+                               MeshData::Recenter::Center);
       TransformComponent &t = reg.get<TransformComponent>(e);
       t.position = pos;
-      normalizeEntityScale(reg, assets, e, 0.5f);
+      normalizeEntityScale(reg, state.assets, e, 0.5f);
       auto &rb = reg.emplace<RigidbodyComponent>(e);
       rb.type = RigidbodyComponent::Type::Dynamic;
       rb.mass = 2.0f;
@@ -219,10 +238,36 @@ int main() {
     }
   }
 
+  // Scripted player entity -- gives ScriptSystem/PlayerControllerSystem
+  // something to drive (mirrors Runtime/Framework/App.cpp's
+  // initRuntimeSystems). Movement/aim is handled by
+  // VkPlayerControllerSystem/VkPlayerInteractionSystem in C++; the Lua
+  // script is a harmless compatibility stub.
+  {
+    state.gameplay.playerId = reg.create();
+    const EntityId playerId = state.gameplay.playerId;
+    reg.emplace<TransformComponent>(playerId).position =
+        glm::vec3(0.0f, 1.1f, 3.4f);
+    reg.emplace<RigidbodyComponent>(playerId).type =
+        RigidbodyComponent::Type::Kinematic;
+    reg.emplace<ColliderComponent>(playerId);
+    reg.emplace<CameraComponent>(playerId);
+    reg.emplace<NameComponent>(playerId, "Player");
+    reg.emplace<ScriptComponent>(playerId).scriptPath =
+        std::string(GLGEN_VK_SCRIPT_DIR) + "/fps_controller.lua";
+    reg.emplace<BoundsComponent>(playerId, BoundsComponent{1.0f});
+    reg.emplace<LifecycleComponent>(playerId);
+    reg.emplace<HierarchyComponent>(playerId);
+  }
+
   vkrhi::VulkanRenderSystem renderSystem;
-  renderSystem.setAssets(&assets);
+  renderSystem.setAssets(&state.assets);
 
   VkEditor editor; // the old engine's editor shell, Vulkan-side
+
+  state.renderer = &renderer;
+  state.renderSystem = &renderSystem;
+  state.vkEditor = &editor;
 
   // --- Dear ImGui (platform: GLFW, renderer: Vulkan, dynamic rendering) ---
   VkDescriptorPool imguiPool = VK_NULL_HANDLE;
@@ -243,6 +288,14 @@ int main() {
   // stale window positions aren't inherited).
   ImGui::GetIO().IniFilename = "imgui_glgenvk.ini";
   EditorTheme::applyAATheme(); // the old editor's dark theme
+
+  // Gameplay input (ScriptBindings' Lua input.* API and
+  // VkPlayerControllerSystem/VkPlayerInteractionSystem read these statics
+  // directly) -- installed before ImGui so its own GLFW backend chains onto
+  // them, same as the pre-existing scroll callback below.
+  glfwSetKeyCallback(window, Keyboard::keyCallBack);
+  glfwSetCursorPosCallback(window, Mouse::cursorPosCallback);
+  glfwSetMouseButtonCallback(window, Mouse::mouseButtonCallback);
   glfwSetScrollCallback(window, scrollCallback); // before ImGui so it chains
   ImGui_ImplGlfw_InitForVulkan(window, true);
 
@@ -271,6 +324,19 @@ int main() {
   renderer.setOverlayCallback([](VkCommandBuffer cmd) {
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
   });
+
+  // --- subsystem startup: Window -> Physics -> Script/Audio -> Editor -----
+  auto audioOwned = std::make_unique<VkAudioSubsystem>(state);
+  VkAudioSubsystem *audio = audioOwned.get();
+  state.subsystems.registerSubsystem(std::make_unique<VkWindowSubsystem>(state));
+  state.subsystems.registerSubsystem(std::make_unique<VkPhysicsSubsystem>(state));
+  state.subsystems.registerSubsystem(std::make_unique<VkScriptSubsystem>(state));
+  state.subsystems.registerSubsystem(std::move(audioOwned));
+  state.subsystems.registerSubsystem(std::make_unique<VkEditorSubsystem>(state));
+  if (!state.subsystems.initializeAll()) {
+    std::fprintf(stderr, "[glGenVk] subsystem startup failed\n");
+    return 1;
+  }
 
   std::fprintf(stderr, "[glGenVk] Running. Close the window to exit.\n");
 
@@ -305,7 +371,9 @@ int main() {
     ImGuiIO &io = ImGui::GetIO();
     vkrhi::VulkanRenderer::Params &p = renderer.params();
 
-    // Mouse-look while holding the right button (cursor captured).
+    // Mouse-look while holding the right button (cursor captured). This is
+    // the free-fly debug/spectator camera, independent of the ECS player
+    // entity/Keyboard/Mouse statics above.
     static bool looking = false;
     static double lastX = 0.0, lastY = 0.0;
     const bool rmb =
@@ -361,11 +429,20 @@ int main() {
         p.camPos.y -= speed;
     }
 
-    // --- the engine frame: physics -> render system -> draw ---------------
-    if (simulate)
-      physics.update(reg, dt);
+    // --- the engine frame: gameplay -> script -> physics -> audio ----------
+    VkCoreAppLayer::update(state, dt, simulate);
+    audio->update(dt, p.camPos,
+                  glm::normalize(glm::vec3(
+                      std::cos(glm::radians(p.camPitchDeg)) *
+                          std::sin(glm::radians(p.camYawDeg)),
+                      std::sin(glm::radians(p.camPitchDeg)),
+                      std::cos(glm::radians(p.camPitchDeg)) *
+                          std::cos(glm::radians(p.camYawDeg)))));
     renderSystem.update(reg, renderer);
 
+    // Per-frame input deltas are drained by consumers above; clear whatever
+    // is left so stale button-changed flags don't linger across frames.
+    Mouse::resetDeltas();
 
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -387,8 +464,9 @@ int main() {
       const glm::mat4 proj =
           glm::perspective(glm::radians(p.fovDeg), aspect, 0.05f, 300.0f);
 
-      VkEditor::Context ectx{scene, assets, physics, renderer,
-                             dt,    &simulate, assetDir};
+      VkEditor::Context ectx{state.scene, state.assets,   state.physicsSystem,
+                             renderer,    dt,             &simulate,
+                             assetDir};
       editor.draw(ectx, view, proj);
     }
     ImGui::Render();
@@ -408,7 +486,7 @@ int main() {
   ImGui::DestroyContext();
   vkDestroyDescriptorPool(ctx.device(), imguiPool, nullptr);
 
-  physics.shutdown();
+  state.subsystems.shutdownAll();
   renderer.shutdown();
   vkDestroySurfaceKHR(ctx.instance(), surface, nullptr);
   ctx.destroy();

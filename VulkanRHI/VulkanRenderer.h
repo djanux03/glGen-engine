@@ -56,23 +56,72 @@ public:
   // PNG at `path`. Used to visually verify rendering headlessly.
   void requestCapture(const std::string &path);
 
-  // Live, UI/input-driven render parameters.
+  // Live, UI/input-driven render parameters. Defaults reproduce the original
+  // hardcoded look exactly.
   struct Params {
     // Free-fly camera (driven by mouse-look / scroll / WASD in the app).
     glm::vec3 camPos = glm::vec3(0.0f, 0.7f, 3.0f);
     float camYawDeg = 180.0f;   // facing -Z toward the origin
     float camPitchDeg = -8.0f;
     float fovDeg = 55.0f;
-    // Lighting / rendering.
-    float exposure = 1.1f;
+
+    // Lighting & ray-traced shadows.
     float lightYawDeg = 215.0f;
     float lightPitchDeg = 50.0f;
-    // Terrain generator.
+    float sunIntensity = 1.0f;
+    float ambientIntensity = 0.2f;
+    float shadowStrength = 1.0f; // 0 = shadows off, 1 = full occlusion
+    float shadowSoftness = 0.0f; // sun angular radius; 0 = sharp single ray
+    int shadowSamples = 4;       // rays per pixel when soft
+
+    // Procedural sky.
+    float sunDiscIntensity = 12.0f;
+    float sunGlowIntensity = 1.0f;
+    float nightSkyBrightness = 1.0f;
+    float duskStrength = 0.6f;
+
+    // Aerial / height fog.
+    float fogDensity = 0.05f;
+    float fogStart = 2.0f;
+    float fogMaxOpacity = 0.9f;
+    float fogHeightFalloff = 0.0f; // >0 keeps fog near the ground
+    glm::vec3 fogDayColor = glm::vec3(0.55f, 0.65f, 0.78f);
+    glm::vec3 fogNightColor = glm::vec3(0.03f, 0.04f, 0.07f);
+
+    // Post-processing (tonemap pass).
+    float exposure = 1.1f;
+    float gamma = 2.2f;
+    float saturation = 1.0f;
+    float contrast = 1.0f;
+    float vignette = 0.0f;
+    int tonemapMode = 0; // 0=ACES 1=Reinhard 2=Linear
+
+    // Terrain generator (fbm).
     bool drawTerrain = true;
     float terrainAmplitude = 1.3f;
     float terrainFrequency = 0.35f;
     float terrainOctaves = 4.0f;
     float terrainSeed = 0.0f;
+    float terrainLacunarity = 2.0f;
+    float terrainGain = 0.5f;       // per-octave amplitude falloff
+    float terrainHeightOffset = 0.0f;
+    float terrainWarp = 0.0f;       // domain-warp strength
+
+    // Terrain materials (band edges in world height / slope).
+    float grassStart = -0.52f;
+    float grassEnd = -0.38f;
+    float snowStart = 0.30f;
+    float snowEnd = 0.60f;
+    float rockSlopeStart = 0.35f;
+    float rockSlopeEnd = 0.65f;
+    float terrainDetailScale = 0.35f;
+    float terrainDetailStrength = 0.4f;
+
+    // Terrain material colors
+    glm::vec3 terrainColorSand = glm::vec3(0.60f, 0.54f, 0.37f);
+    glm::vec3 terrainColorGrass = glm::vec3(0.22f, 0.42f, 0.16f);
+    glm::vec3 terrainColorRock = glm::vec3(0.33f, 0.29f, 0.25f);
+    glm::vec3 terrainColorSnow = glm::vec3(0.90f, 0.93f, 0.97f);
   };
   Params &params() { return mParams; }
 
@@ -87,11 +136,23 @@ private:
   static constexpr uint32_t kFramesInFlight = 2;
   static constexpr uint32_t kTerrainPatches = 24; // grid is kTerrainPatches^2
 
+  // Mirrors the FrameData uniform block in every scene shader.
   struct FrameDataGpu {
     glm::mat4 viewProj;
     glm::mat4 view;
-    glm::vec4 lightDir; // xyz world-space
-    glm::vec4 terrain;  // x=amplitude, y=frequency, z=octaves, w=seed
+    glm::vec4 lightDir;      // xyz world-space, w=sun intensity
+    glm::vec4 terrain;       // x=amplitude y=frequency z=octaves w=seed
+    glm::vec4 terrain2;      // x=lacunarity y=gain z=heightOffset w=warp
+    glm::vec4 fogParams;     // x=density y=start z=maxOpacity w=heightFalloff
+    glm::vec4 fogDayColor;   // rgb
+    glm::vec4 fogNightColor; // rgb
+    glm::vec4 lightParams;   // x=ambient y=shadowStrength z=softness w=samples
+    glm::vec4 terrainMat1;   // x=grassStart y=grassEnd z=snowStart w=snowEnd
+    glm::vec4 terrainMat2;   // x=rockSlopeStart y=rockSlopeEnd z=detailScale w=detailStrength
+    glm::vec4 terrainColorSand;
+    glm::vec4 terrainColorGrass;
+    glm::vec4 terrainColorRock;
+    glm::vec4 terrainColorSnow;
   };
 
   struct DrawItem {

@@ -21,6 +21,16 @@ struct SkyPush {
   glm::mat4 invViewProj;
   glm::vec4 sunDir;
   glm::vec4 camPos;
+  glm::vec4 skyParams; // x=discIntensity y=glowIntensity z=night w=dusk
+};
+
+struct TonemapPush {
+  float exposure;
+  float gamma;
+  float saturation;
+  float contrast;
+  float vignette;
+  int tonemapMode;
 };
 
 // Scene / terrain push constant. model is per-instance (vertex stage);
@@ -955,7 +965,7 @@ bool VulkanRenderer::createTonemapPipeline(const std::string &shaderDir) {
   VkPushConstantRange pcRange{};
   pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
   pcRange.offset = 0;
-  pcRange.size = sizeof(float);
+  pcRange.size = sizeof(TonemapPush);
 
   VkPipelineLayoutCreateInfo layoutCi{};
   layoutCi.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1369,10 +1379,31 @@ void VulkanRenderer::drawFrame() {
   FrameDataGpu frameData{};
   frameData.viewProj = proj * viewMat;
   frameData.view = viewMat;
-  frameData.lightDir = glm::vec4(lightDir, 0.0f);
+  frameData.lightDir = glm::vec4(lightDir, mParams.sunIntensity);
   frameData.terrain =
       glm::vec4(mParams.terrainAmplitude, mParams.terrainFrequency,
                 mParams.terrainOctaves, mParams.terrainSeed);
+  frameData.terrain2 =
+      glm::vec4(mParams.terrainLacunarity, mParams.terrainGain,
+                mParams.terrainHeightOffset, mParams.terrainWarp);
+  frameData.fogParams =
+      glm::vec4(mParams.fogDensity, mParams.fogStart, mParams.fogMaxOpacity,
+                mParams.fogHeightFalloff);
+  frameData.fogDayColor = glm::vec4(mParams.fogDayColor, 0.0f);
+  frameData.fogNightColor = glm::vec4(mParams.fogNightColor, 0.0f);
+  frameData.lightParams =
+      glm::vec4(mParams.ambientIntensity, mParams.shadowStrength,
+                mParams.shadowSoftness,
+                static_cast<float>(mParams.shadowSamples));
+  frameData.terrainMat1 = glm::vec4(mParams.grassStart, mParams.grassEnd,
+                                    mParams.snowStart, mParams.snowEnd);
+  frameData.terrainMat2 =
+      glm::vec4(mParams.rockSlopeStart, mParams.rockSlopeEnd,
+                mParams.terrainDetailScale, mParams.terrainDetailStrength);
+  frameData.terrainColorSand = glm::vec4(mParams.terrainColorSand, 0.0f);
+  frameData.terrainColorGrass = glm::vec4(mParams.terrainColorGrass, 0.0f);
+  frameData.terrainColorRock = glm::vec4(mParams.terrainColorRock, 0.0f);
+  frameData.terrainColorSnow = glm::vec4(mParams.terrainColorSnow, 0.0f);
   std::memcpy(mFrameUBOMapped[mCurrentFrame], &frameData, sizeof(frameData));
 
   VK_CHECK(vkResetFences(device, 1, &mInFlight[mCurrentFrame]));
@@ -1554,9 +1585,15 @@ void VulkanRenderer::drawFrame() {
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           mTonemapPipelineLayout, 0, 1,
                           &mTonemapSets[mCurrentFrame], 0, nullptr);
-  const float exposure = mParams.exposure;
+  TonemapPush tp{};
+  tp.exposure = mParams.exposure;
+  tp.gamma = mParams.gamma;
+  tp.saturation = mParams.saturation;
+  tp.contrast = mParams.contrast;
+  tp.vignette = mParams.vignette;
+  tp.tonemapMode = mParams.tonemapMode;
   vkCmdPushConstants(cmd, mTonemapPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
-                     0, sizeof(float), &exposure);
+                     0, sizeof(TonemapPush), &tp);
   vkCmdDraw(cmd, 3, 1, 0, 0);
 
   // UI / overlay (e.g. ImGui) draws on top of the tonemapped image.

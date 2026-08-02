@@ -1,9 +1,5 @@
 # ThirdParty CMakeLists.txt
 
-# GLAD
-add_library(glad STATIC glad/src/glad.c)
-target_include_directories(glad PUBLIC glad/include)
-
 # GLM - header only
 add_library(glm INTERFACE)
 target_include_directories(glm INTERFACE glm/include)
@@ -29,20 +25,7 @@ else()
     find_package(glfw3 CONFIG REQUIRED)
 endif()
 
-# ImGui
-file(GLOB IMGUI_SOURCES 
-    imgui/src/*.cpp 
-    imgui/src/ImGuizmo.cpp
-    imgui/backends/imgui_impl_glfw.cpp 
-    imgui/backends/imgui_impl_opengl3.cpp
-)
-list(FILTER IMGUI_SOURCES EXCLUDE REGEX [[(^|[\\/])\._]])
-add_library(imgui STATIC ${IMGUI_SOURCES})
-target_include_directories(imgui PUBLIC imgui/include imgui/backends)
-target_link_libraries(imgui PUBLIC glfw)
-# ImGui needs OpenGL
-find_package(OpenGL REQUIRED)
-target_link_libraries(imgui PUBLIC OpenGL::GL)
+# ImGui (Vulkan backend) is built by VulkanRHI/CMakeLists.txt as `imgui_vk`.
 
 # STB - header only but we have impl file
 add_library(stb STATIC stb/src/stb_image_impl.cpp)

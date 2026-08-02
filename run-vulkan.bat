@@ -24,9 +24,9 @@ echo.
 rem --- 1) Configure (first run downloads dependencies; needs internet) ---
 echo [1/3] Configuring...
 if exist "Build-vs18\CMakeCache.txt" (
-    cmake -S . -B Build-vs18 -DGLGEN_BUILD_VULKAN=ON
+    cmake -S . -B Build-vs18
 ) else (
-    cmake -S . -B Build-vs18 -G "Visual Studio 18 2026" -A x64 -DGLGEN_BUILD_VULKAN=ON
+    cmake -S . -B Build-vs18 -G "Visual Studio 18 2026" -A x64
 )
 if errorlevel 1 goto :fail
 

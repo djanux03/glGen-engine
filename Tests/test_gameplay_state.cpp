@@ -1,5 +1,5 @@
 #include <doctest/doctest.h>
-#include "../Runtime/Framework/GameplayState.h"
+#include "../VulkanRHI/runtime/GameplayState.h"
 
 TEST_CASE("GameplayState initialization") {
     GameplayState g;

@@ -276,22 +276,76 @@ int main() {
       ImGui::TextWrapped(
           "RMB: look   Scroll: zoom   WASD + Space/Ctrl: fly (Shift = fast)");
       ImGui::Separator();
-      ImGui::SliderFloat("FOV", &p.fovDeg, 20.0f, 90.0f);
-      ImGui::SliderFloat("Exposure", &p.exposure, 0.1f, 3.0f);
-      ImGui::SliderFloat("Light yaw", &p.lightYawDeg, 0.0f, 360.0f);
-      ImGui::SliderFloat("Light pitch", &p.lightPitchDeg, 5.0f, 89.0f);
-      ImGui::Separator();
-      ImGui::Text("Terrain generator");
-      ImGui::Checkbox("Draw terrain", &p.drawTerrain);
-      ImGui::SliderFloat("Amplitude", &p.terrainAmplitude, 0.0f, 3.0f);
-      ImGui::SliderFloat("Frequency", &p.terrainFrequency, 0.05f, 1.5f);
-      ImGui::SliderFloat("Octaves", &p.terrainOctaves, 1.0f, 8.0f, "%.0f");
-      if (ImGui::Button("Randomize seed"))
-        p.terrainSeed = static_cast<float>(std::rand() % 1000);
-      ImGui::SameLine();
-      ImGui::Text("seed %.0f", p.terrainSeed);
-      ImGui::Separator();
-      ImGui::Text("Cam  %.1f, %.1f, %.1f", p.camPos.x, p.camPos.y, p.camPos.z);
+      
+      if (ImGui::CollapsingHeader("Camera & Controls", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("FOV", &p.fovDeg, 20.0f, 90.0f);
+        ImGui::Text("Cam  %.1f, %.1f, %.1f", p.camPos.x, p.camPos.y, p.camPos.z);
+      }
+
+      if (ImGui::CollapsingHeader("Lighting & Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Light yaw", &p.lightYawDeg, 0.0f, 360.0f);
+        ImGui::SliderFloat("Light pitch", &p.lightPitchDeg, 5.0f, 89.0f);
+        ImGui::SliderFloat("Ambient Intensity", &p.ambientIntensity, 0.0f, 1.0f);
+        ImGui::SliderFloat("Shadow Strength", &p.shadowStrength, 0.0f, 1.0f);
+        ImGui::SliderFloat("Shadow Softness", &p.shadowSoftness, 0.0f, 5.0f);
+        ImGui::SliderInt("Shadow Samples", &p.shadowSamples, 1, 16);
+      }
+
+      if (ImGui::CollapsingHeader("Sky & Ambient")) {
+        ImGui::SliderFloat("Sun Disc Intensity", &p.sunDiscIntensity, 0.0f, 50.0f);
+        ImGui::SliderFloat("Sun Glow Intensity", &p.sunGlowIntensity, 0.0f, 5.0f);
+        ImGui::SliderFloat("Night Sky Brightness", &p.nightSkyBrightness, 0.0f, 2.0f);
+        ImGui::SliderFloat("Dusk Strength", &p.duskStrength, 0.0f, 2.0f);
+      }
+
+      if (ImGui::CollapsingHeader("Volumetrics & Fog")) {
+        ImGui::SliderFloat("Fog Density", &p.fogDensity, 0.0f, 0.2f, "%.4f");
+        ImGui::SliderFloat("Fog Start", &p.fogStart, 0.0f, 100.0f);
+        ImGui::SliderFloat("Fog Max Opacity", &p.fogMaxOpacity, 0.0f, 1.0f);
+        ImGui::SliderFloat("Fog Height Falloff", &p.fogHeightFalloff, 0.0f, 2.0f);
+      }
+
+      if (ImGui::CollapsingHeader("Post-Processing & Tonemapping", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Exposure", &p.exposure, 0.1f, 5.0f);
+        const char* tonemapModes[] = { "ACES", "Reinhard", "Linear" };
+        ImGui::Combo("Tonemap Mode", &p.tonemapMode, tonemapModes, IM_ARRAYSIZE(tonemapModes));
+        ImGui::SliderFloat("Gamma", &p.gamma, 1.0f, 3.0f);
+        ImGui::SliderFloat("Saturation", &p.saturation, 0.0f, 2.0f);
+        ImGui::SliderFloat("Contrast", &p.contrast, 0.0f, 2.0f);
+        ImGui::SliderFloat("Vignette", &p.vignette, 0.0f, 1.0f);
+      }
+
+      if (ImGui::CollapsingHeader("Terrain Generator")) {
+        ImGui::Checkbox("Draw terrain", &p.drawTerrain);
+        ImGui::SliderFloat("Amplitude", &p.terrainAmplitude, 0.0f, 3.0f);
+        ImGui::SliderFloat("Frequency", &p.terrainFrequency, 0.05f, 1.5f);
+        ImGui::SliderFloat("Octaves", &p.terrainOctaves, 1.0f, 8.0f, "%.0f");
+        ImGui::SliderFloat("Lacunarity", &p.terrainLacunarity, 1.0f, 4.0f);
+        ImGui::SliderFloat("Gain", &p.terrainGain, 0.1f, 1.0f);
+        ImGui::SliderFloat("Height Offset", &p.terrainHeightOffset, -2.0f, 2.0f);
+        ImGui::SliderFloat("Warp", &p.terrainWarp, 0.0f, 2.0f);
+        if (ImGui::Button("Randomize seed"))
+          p.terrainSeed = static_cast<float>(std::rand() % 1000);
+        ImGui::SameLine();
+        ImGui::Text("seed %.0f", p.terrainSeed);
+      }
+
+      if (ImGui::CollapsingHeader("Terrain Materials")) {
+        ImGui::ColorEdit3("Sand Color", &p.terrainColorSand.x);
+        ImGui::ColorEdit3("Grass Color", &p.terrainColorGrass.x);
+        ImGui::ColorEdit3("Rock Color", &p.terrainColorRock.x);
+        ImGui::ColorEdit3("Snow Color", &p.terrainColorSnow.x);
+        ImGui::Separator();
+        ImGui::SliderFloat("Grass Start", &p.grassStart, -1.0f, 0.0f);
+        ImGui::SliderFloat("Grass End", &p.grassEnd, -0.5f, 0.5f);
+        ImGui::SliderFloat("Snow Start", &p.snowStart, 0.0f, 1.0f);
+        ImGui::SliderFloat("Snow End", &p.snowEnd, 0.5f, 1.5f);
+        ImGui::SliderFloat("Rock Slope Start", &p.rockSlopeStart, 0.0f, 1.0f);
+        ImGui::SliderFloat("Rock Slope End", &p.rockSlopeEnd, 0.0f, 1.0f);
+        ImGui::SliderFloat("Detail Scale", &p.terrainDetailScale, 0.01f, 2.0f);
+        ImGui::SliderFloat("Detail Strength", &p.terrainDetailStrength, 0.0f, 1.0f);
+      }
+
       ImGui::End();
     }
     ImGui::Render();

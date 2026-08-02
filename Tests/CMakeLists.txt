@@ -45,7 +45,6 @@ add_executable(glgen_tests
   test_perlin_noise.cpp
   test_subsystem_manager.cpp
   test_project_config.cpp
-  test_terrain_brush.cpp
   test_editor_state.cpp
   test_gameplay_state.cpp
 
@@ -59,7 +58,7 @@ target_include_directories(glgen_tests PRIVATE
   "${ENGINE_DIR}"
   "${ENGINE_DIR}/Core"
   "${ENGINE_DIR}/ECS"
-  "${CMAKE_CURRENT_SOURCE_DIR}/../Runtime/Framework"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../VulkanRHI/runtime"
   "${THIRDPARTY_DIR}/include"      # json.hpp lives here
   "${THIRDPARTY_DIR}/imgui/include"
   "${THIRDPARTY_DIR}/glm/include"     # glm for GameplayState.h
