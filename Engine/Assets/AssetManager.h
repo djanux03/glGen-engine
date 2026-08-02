@@ -7,7 +7,6 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -96,18 +95,50 @@ public:
   GLTFHandle loadGLTF(const std::string &path);
   UFBXHandle loadUFBX(const std::string &path);
 
-  // Registers a caller-built GPU model (procedural meshes: terrain chunks,
-  // destruction shards). Ownership transfers to the AssetManager; requires a
-  // GPU backend with destroyOBJ for cleanup. Template so the unique_ptr is
-  // only instantiated at call sites, where OBJModel is a complete type.
-  template <typename ModelT>
-  OBJHandle registerRuntimeOBJ(const std::string &assetId,
-                               std::unique_ptr<ModelT> model) {
-    static_assert(std::is_same_v<ModelT, OBJModel>,
-                  "registerRuntimeOBJ takes an OBJModel");
-    return registerRuntimeOBJRaw(assetId, model.release());
-  }
-  OBJHandle registerRuntimeOBJRaw(const std::string &assetId, void *model);
+  // ---- Synthetic (in-memory) assets --------------------------------------
+  // Registers a caller-built CPU mesh under an id that is NOT a file path --
+  // procedurally generated content, by convention "gen://<generator>/<hash>".
+  // Ownership transfers here; the MeshData is KEPT (unlike the removed
+  // registerRuntimeOBJRaw, which stored only a GPU model and dropped the CPU
+  // data -- VulkanRenderSystem resolves meshes through getOBJData(), so a
+  // record without it is invisible to the renderer).
+  //
+  // Registering an id that already exists replaces it, exactly as
+  // replaceMeshData() would. Returns an invalid handle if `assetId` is empty
+  // or `data` is null.
+  //
+  // Registering over an id that was loaded from a FILE leaves that file's
+  // watch intact, so the next pollHotReload() re-parses the file and discards
+  // the supplied mesh. Use a synthetic id unless that is what you want.
+  OBJHandle registerMeshData(const std::string &assetId,
+                             std::unique_ptr<MeshData> data);
+
+  // Swaps in new geometry for an already-registered asset and bumps its
+  // content version, WITHOUT invalidating outstanding OBJHandles (see
+  // contentVersion's note below on why that distinction matters). Render
+  // systems poll assetContentVersion() to notice and re-upload. Returns false
+  // if `assetId` was never registered.
+  bool replaceMeshData(const std::string &assetId,
+                       std::unique_ptr<MeshData> data);
+
+  // Lookup-only counterpart to loadOBJ() for synthetic ids: never touches the
+  // filesystem or the cook cache. Returns an invalid handle if unregistered.
+  OBJHandle findMeshData(const std::string &assetId) const;
+
+  // Monotonic counter bumped every time an asset's CPU geometry changes
+  // (replaceMeshData, recenterOBJ, rotateOBJ, an OBJ hot reload). 0 = unknown
+  // asset; live assets start at 1. This is deliberately NOT
+  // AssetHandle::generation: that tracks handle IDENTITY (slot reuse, which
+  // must invalidate stale handles), while this tracks CONTENT (same asset,
+  // new bytes -- handles stay valid).
+  //
+  // OBJ/synthetic records only. glTF and FBX assets always report 0 ("never
+  // stale"); they have no equivalent counter yet, so a render system caching
+  // them will not notice a hot reload. Generated content is all
+  // OBJ-record-backed, so this is a gap for imported models, not for the
+  // generator pipeline.
+  uint32_t assetContentVersion(const std::string &assetId) const;
+
   bool releaseOBJ(const std::string &assetId);
 
   // GPU model access. Null when no GPU backend is installed (the CPU MeshData
@@ -132,6 +163,12 @@ public:
   // backend is installed). Idempotent; affects every instance of the asset.
   bool recenterOBJ(OBJHandle h, MeshData::Recenter mode);
 
+  // Bakes a fixed corrective Euler rotation (degrees) into an off-axis
+  // authored model (CPU data + GPU reload when a backend is installed) --
+  // e.g. a tree model whose trunk runs along local X instead of Y. NOT
+  // idempotent (unlike recenterOBJ); call once, before recenterOBJ.
+  bool rotateOBJ(OBJHandle h, glm::vec3 degXYZ);
+
   ShaderHandle registerShader(Shader *shader, const std::string &vertPath,
                               const std::string &fragPath);
 
@@ -149,6 +186,9 @@ private:
 
   struct OBJRecord {
     uint32_t generation = 1;
+    // See assetContentVersion(): bumped on in-place CPU geometry changes,
+    // independent of `generation`.
+    uint32_t contentVersion = 1;
     std::string sourcePath;
     std::vector<std::string> dependencies;
     std::filesystem::file_time_type watchedTime{};

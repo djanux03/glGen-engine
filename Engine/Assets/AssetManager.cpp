@@ -210,60 +210,76 @@ UFBXHandle AssetManager::loadUFBX(const std::string &path) {
   return UFBXHandle{idx, mUFBX[idx].generation};
 }
 
-OBJHandle AssetManager::registerRuntimeOBJRaw(const std::string &assetId,
-                                              void *model) {
-  if (assetId.empty() || !model)
+OBJHandle AssetManager::registerMeshData(const std::string &assetId,
+                                         std::unique_ptr<MeshData> data) {
+  if (assetId.empty() || !data)
     return {};
+  if (data->sourcePath.empty())
+    data->sourcePath = assetId;
 
-  auto destroyExisting = [&](void *gpu) {
-    if (gpu && mBackend.destroyOBJ)
-      mBackend.destroyOBJ(gpu);
-  };
-
+  // Already registered: this is a replace, so reuse the slot (and therefore
+  // keep outstanding handles valid) rather than minting a second record.
   const auto it = mOBJByPath.find(assetId);
-  if (it != mOBJByPath.end()) {
-    const uint32_t idx = it->second;
-    if (idx >= mOBJ.size())
-      return {};
-    auto &rec = mOBJ[idx];
-    rec.sourcePath = assetId;
-    rec.dependencies.clear();
-    rec.watchedTime = {};
-    rec.cpu.reset();
-    destroyExisting(rec.gpu);
-    rec.gpu = model;
-    rec.runtimeAsset = true;
-    return OBJHandle{idx, rec.generation};
+  if (it != mOBJByPath.end() && it->second < mOBJ.size()) {
+    auto &rec = mOBJ[it->second];
+    rec.cpu = std::move(data);
+    ++rec.contentVersion;
+    if (rec.gpu && mBackend.reloadOBJ)
+      mBackend.reloadOBJ(rec.gpu, *rec.cpu);
+    return OBJHandle{it->second, rec.generation};
   }
 
-  // Scan for a free (released) runtime slot to recycle instead of growing
-  // the vector unboundedly across terrain chunk load/unload cycles.
+  // Recycle a released slot rather than growing the vector unboundedly as
+  // generated assets are registered and dropped. A slot is only free when it
+  // holds neither GPU nor CPU data -- a synthetic asset carries CPU data with
+  // no GPU model, so testing `gpu` alone (as the removed registerRuntimeOBJRaw
+  // did) would hand out a live slot.
   for (uint32_t i = 0; i < (uint32_t)mOBJ.size(); ++i) {
     auto &slot = mOBJ[i];
-    if (!slot.gpu && slot.runtimeAsset) {
-      slot.sourcePath = assetId;
-      slot.dependencies.clear();
-      slot.watchedTime = {};
-      slot.cpu.reset();
-      slot.gpu = model;
-      // slot.runtimeAsset already true
-      mOBJByPath[assetId] = i;
-      return OBJHandle{i, slot.generation};
-    }
+    if (slot.gpu || slot.cpu || !slot.runtimeAsset)
+      continue;
+    slot.sourcePath = assetId;
+    slot.dependencies.clear();
+    slot.watchedTime = {};
+    slot.cpu = std::move(data);
+    ++slot.contentVersion;
+    mOBJByPath[assetId] = i;
+    return OBJHandle{i, slot.generation};
   }
 
-  // No free slot found — append as before
   OBJRecord rec;
   rec.sourcePath = assetId;
-  rec.dependencies.clear();
-  rec.watchedTime = {};
-  rec.gpu = model;
+  rec.cpu = std::move(data);
   rec.runtimeAsset = true;
 
   const uint32_t idx = (uint32_t)mOBJ.size();
   mOBJ.push_back(std::move(rec));
   mOBJByPath[assetId] = idx;
   return OBJHandle{idx, mOBJ[idx].generation};
+}
+
+bool AssetManager::replaceMeshData(const std::string &assetId,
+                                   std::unique_ptr<MeshData> data) {
+  if (!data)
+    return false;
+  const auto it = mOBJByPath.find(assetId);
+  if (it == mOBJByPath.end() || it->second >= mOBJ.size())
+    return false;
+  return registerMeshData(assetId, std::move(data)).valid();
+}
+
+OBJHandle AssetManager::findMeshData(const std::string &assetId) const {
+  const auto it = mOBJByPath.find(assetId);
+  if (it == mOBJByPath.end() || it->second >= mOBJ.size())
+    return {};
+  return OBJHandle{it->second, mOBJ[it->second].generation};
+}
+
+uint32_t AssetManager::assetContentVersion(const std::string &assetId) const {
+  const auto it = mOBJByPath.find(assetId);
+  if (it == mOBJByPath.end() || it->second >= mOBJ.size())
+    return 0;
+  return mOBJ[it->second].contentVersion;
 }
 
 bool AssetManager::releaseOBJ(const std::string &assetId) {
@@ -352,6 +368,24 @@ bool AssetManager::recenterOBJ(OBJHandle h, MeshData::Recenter mode) {
   if (rec.generation != h.generation || !rec.cpu)
     return false;
   rec.cpu->recenter(mode);
+  // These mutate the CPU mesh in place, so a render system that already
+  // uploaded this asset is now holding stale geometry -- bump the content
+  // version so it re-uploads. (Previously this only worked because every
+  // caller happened to run before the first frame.)
+  ++rec.contentVersion;
+  if (rec.gpu && mBackend.reloadOBJ)
+    return mBackend.reloadOBJ(rec.gpu, *rec.cpu);
+  return true;
+}
+
+bool AssetManager::rotateOBJ(OBJHandle h, glm::vec3 degXYZ) {
+  if (!h.valid() || h.index >= mOBJ.size())
+    return false;
+  auto &rec = mOBJ[h.index];
+  if (rec.generation != h.generation || !rec.cpu)
+    return false;
+  rec.cpu->rotateEulerDeg(degXYZ);
+  ++rec.contentVersion; // see recenterOBJ
   if (rec.gpu && mBackend.reloadOBJ)
     return mBackend.reloadOBJ(rec.gpu, *rec.cpu);
   return true;
@@ -469,6 +503,7 @@ std::vector<std::string> AssetManager::pollHotReload() {
       auto reparsed = parseMeshOBJ(loadPath);
       if (reparsed) {
         rec.cpu = std::move(reparsed);
+        ++rec.contentVersion; // or render systems keep the pre-edit geometry
         bool gpuOk = true;
         if (rec.gpu && mBackend.reloadOBJ)
           gpuOk = mBackend.reloadOBJ(rec.gpu, *rec.cpu);

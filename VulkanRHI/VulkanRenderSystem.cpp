@@ -36,7 +36,7 @@ bool entityAlive(Registry &registry, EntityId e) {
 
 // Resolves an entity's mesh to the engine's parsed CPU data, loading it
 // through the AssetManager if the component doesn't carry a handle yet
-// (also covers "__primitive_*" ids).
+// (also covers "__primitive_*" and generated "gen://*" ids).
 const ::MeshData *resolveMeshData(AssetManager &assets, MeshComponent &mc) {
   if (mc.objHandle.valid())
     if (const ::MeshData *d = assets.getOBJData(mc.objHandle))
@@ -47,6 +47,13 @@ const ::MeshData *resolveMeshData(AssetManager &assets, MeshComponent &mc) {
   if (mc.ufbxHandle.valid())
     if (const ::MeshData *d = assets.getUFBXData(mc.ufbxHandle))
       return d;
+
+  // Generated assets exist only in memory -- look them up, never fall through
+  // to the file/cook-cache path loadOBJ() would take for an unknown id.
+  if (mc.assetId.rfind("gen://", 0) == 0) {
+    mc.objHandle = assets.findMeshData(mc.assetId);
+    return assets.getOBJData(mc.objHandle);
+  }
 
   std::string ext =
       std::filesystem::path(mc.assetId).extension().string();
@@ -86,16 +93,32 @@ bool VulkanRenderSystem::update(Registry &registry, VulkanRenderer &renderer) {
     VulkanRenderer::MeshHandle handle;
     auto it = mMeshByAsset.find(mc.assetId);
     if (it != mMeshByAsset.end()) {
-      handle = it->second;
+      handle = it->second.handle;
+      // Re-upload in place if the asset's CPU geometry changed since this
+      // mesh was built. Version 0 means "not an AssetManager-tracked asset"
+      // (legacy no-AssetManager path), which never goes stale.
+      if (handle != UINT32_MAX && mAssets) {
+        const uint32_t version = mAssets->assetContentVersion(mc.assetId);
+        if (version != 0 && version != it->second.contentVersion) {
+          if (const ::MeshData *data = resolveMeshData(*mAssets, mc)) {
+            if (renderer.updateMeshFromData(handle, *data))
+              it->second.contentVersion = version;
+          }
+        }
+      }
     } else {
+      uint32_t version = 0;
       if (mAssets) {
         const ::MeshData *data = resolveMeshData(*mAssets, mc);
         handle = data ? renderer.createMeshFromData(*data, mc.assetId)
                       : UINT32_MAX;
+        // Read AFTER resolving: resolveMeshData() is what registers the
+        // asset, so querying first would always report 0.
+        version = mAssets->assetContentVersion(mc.assetId);
       } else {
         handle = renderer.createMeshFromObj(mc.assetId);
       }
-      mMeshByAsset[mc.assetId] = handle;
+      mMeshByAsset[mc.assetId] = CachedMesh{handle, version};
       if (handle != UINT32_MAX)
         meshesAdded = true;
     }

@@ -28,10 +28,20 @@ public:
   bool update(Registry &registry, VulkanRenderer &renderer);
 
 private:
+  // A resolved asset: its renderer mesh plus the AssetManager content version
+  // that mesh was built from. When the two diverge (a generated asset was
+  // regenerated, or recenterOBJ/rotateOBJ mutated the CPU mesh), the geometry
+  // is re-uploaded in place via VulkanRenderer::updateMeshFromData() -- the
+  // handle stays stable, so nothing else has to be told.
+  struct CachedMesh {
+    VulkanRenderer::MeshHandle handle = UINT32_MAX;
+    uint32_t contentVersion = 0;
+  };
+
   AssetManager *mAssets = nullptr;
-  // assetId -> renderer mesh; failures cached as UINT32_MAX so a missing
-  // file is only reported once.
-  std::unordered_map<std::string, VulkanRenderer::MeshHandle> mMeshByAsset;
+  // assetId -> renderer mesh; failures cached with handle == UINT32_MAX so a
+  // missing file is only reported once.
+  std::unordered_map<std::string, CachedMesh> mMeshByAsset;
 };
 
 } // namespace vkrhi
