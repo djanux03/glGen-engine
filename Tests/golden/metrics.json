@@ -1,0 +1,98 @@
+{
+  "grass/meadow_clump": {
+    "assetId": "gen://grass.v1/grass/meadow_clump",
+    "boundsMax": [
+      0.08661,
+      0.40399,
+      0.17121
+    ],
+    "boundsMin": [
+      -0.14986,
+      0,
+      -0.17439
+    ],
+    "submeshes": 1,
+    "triangles": 21,
+    "vertices": 42
+  },
+  "imported/wrench": {
+    "assetId": "gen://import.gltf/imported/wrench",
+    "boundsMax": [
+      0.05419,
+      0.03389,
+      0.19996
+    ],
+    "boundsMin": [
+      -0.05419,
+      0,
+      -0.19996
+    ],
+    "submeshes": 1,
+    "triangles": 8000,
+    "vertices": 3980
+  },
+  "prop/crate": {
+    "assetId": "gen://kitbash.v1/prop/crate",
+    "boundsMax": [
+      0.42785,
+      0.80474,
+      0.43031
+    ],
+    "boundsMin": [
+      -0.43628,
+      0.00381,
+      -0.43374
+    ],
+    "submeshes": 3,
+    "triangles": 84,
+    "vertices": 168
+  },
+  "rock/boulder": {
+    "assetId": "gen://rock.v1/rock/boulder",
+    "boundsMax": [
+      0.88284,
+      1.03295,
+      0.79451
+    ],
+    "boundsMin": [
+      -0.91071,
+      0,
+      -0.78635
+    ],
+    "submeshes": 1,
+    "triangles": 320,
+    "vertices": 960
+  },
+  "tree/oak_broad": {
+    "assetId": "gen://tree.v1/tree/oak_broad",
+    "boundsMax": [
+      6.04131,
+      18.0057,
+      6.53048
+    ],
+    "boundsMin": [
+      -9.26644,
+      -0.06939,
+      -10.52834
+    ],
+    "submeshes": 2,
+    "triangles": 2712,
+    "vertices": 3858
+  },
+  "tree/pine_tall": {
+    "assetId": "gen://tree.v1/tree/pine_tall",
+    "boundsMax": [
+      3.47324,
+      16.51233,
+      5.80435
+    ],
+    "boundsMin": [
+      -5.51473,
+      -0.00463,
+      -5.77187
+    ],
+    "submeshes": 2,
+    "triangles": 1206,
+    "vertices": 1528
+  }
+}
