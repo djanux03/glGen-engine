@@ -19,8 +19,8 @@
       "cullCellSize": 0.0,
       "density": 0.05000000074505806,
       "densityFalloffStart": 1000000.0,
+      "foliageSssStrength": 1.149999976158142,
       "groundOcclusion": 0.25,
-      "foliageSssStrength": 1.15,
       "heightScale": [
         0.9399999976158142,
         1.1200000047683716
@@ -41,8 +41,8 @@
       "patchThreshold": 0.3499999940395355,
       "randomYaw": true,
       "scale": [
-        1.25,
-        2.049999952316284
+        0.9,
+        1.5
       ],
       "sinkIntoGround": 0.0,
       "slopeMax": 0.44999998807907104,
@@ -75,8 +75,8 @@
       "cullCellSize": 0.0,
       "density": 0.07000000029802322,
       "densityFalloffStart": 1000000.0,
+      "foliageSssStrength": 1.0499999523162842,
       "groundOcclusion": 0.3499999940395355,
-      "foliageSssStrength": 1.05,
       "heightScale": [
         0.8999999761581421,
         1.0800000429153442
@@ -97,8 +97,8 @@
       "patchThreshold": 0.3499999940395355,
       "randomYaw": true,
       "scale": [
-        0.30000001192092896,
-        0.6499999761581421
+        0.28,
+        0.6
       ],
       "sinkIntoGround": 0.0,
       "slopeMax": 0.6000000238418579,
@@ -111,6 +111,62 @@
       "wind": true,
       "windSpeed": 0.800000011920929,
       "windStrength": 0.30000001192092896
+    },
+    {
+      "alignToNormal": 0.15000000596046448,
+      "alphaCutout": false,
+      "biomes": {
+        "forest": 0.55,
+        "meadow": 0.35,
+        "mountain": 0.04
+      },
+      "castRayShadow": true,
+      "clustering": {
+        "clearingChance": 0.3,
+        "outcrops": false,
+        "standRadius": 20.0,
+        "stands": true
+      },
+      "collision": "capsule",
+      "cullCellSize": 0.0,
+      "density": 0.03,
+      "densityFalloffStart": 1000000.0,
+      "foliageSssStrength": 1.149999976158142,
+      "groundOcclusion": 0.25,
+      "heightScale": [
+        0.9399999976158142,
+        1.1200000047683716
+      ],
+      "interactive": true,
+      "leanMaxDeg": 4.0,
+      "maxDrawDistance": 1000000.0,
+      "mesh": "assets/terraingeneratorassets/tree.obj",
+      "meshUpAxisFixDeg": [
+        0.0,
+        0.0,
+        90.0
+      ],
+      "minSpacing": 9.0,
+      "moistureMin": 0.30000001192092896,
+      "name": "broadleaf",
+      "patchScale": 0.0,
+      "patchThreshold": 0.3499999940395355,
+      "randomYaw": true,
+      "scale": [
+        0.8,
+        1.35
+      ],
+      "sinkIntoGround": 0.0,
+      "slopeMax": 0.44999998807907104,
+      "tint": [
+        1.02,
+        1.0,
+        0.9
+      ],
+      "type": "tree",
+      "wind": true,
+      "windSpeed": 0.3499999940395355,
+      "windStrength": 0.550000011920929
     },
     {
       "alignToNormal": 0.800000011920929,
@@ -131,8 +187,8 @@
       "cullCellSize": 0.0,
       "density": 0.004000000189989805,
       "densityFalloffStart": 1000000.0,
+      "foliageSssStrength": 0.3499999940395355,
       "groundOcclusion": 0.0,
-      "foliageSssStrength": 0.35,
       "heightScale": [
         1.0,
         1.0
@@ -187,8 +243,8 @@
       "cullCellSize": 8.0,
       "density": 1.2000000476837158,
       "densityFalloffStart": 55.0,
+      "foliageSssStrength": 0.699999988079071,
       "groundOcclusion": 0.6200000047683716,
-      "foliageSssStrength": 0.7,
       "heightScale": [
         0.800000011920929,
         1.2999999523162842
@@ -243,8 +299,8 @@
       "cullCellSize": 10.0,
       "density": 0.44999998807907104,
       "densityFalloffStart": 70.0,
+      "foliageSssStrength": 0.800000011920929,
       "groundOcclusion": 0.550000011920929,
-      "foliageSssStrength": 0.8,
       "heightScale": [
         1.2999999523162842,
         2.0

@@ -9,5 +9,10 @@ struct VkAppState;
 // lives in VkAppState and the gameplay system instances it owns.
 class VkCoreAppLayer {
 public:
-  static void update(VkAppState &state, float dt, bool simulate);
+  // `playerActive` gates the player character's mouse-look/movement -- true
+  // only while in play mode (and unpaused); the free-fly editor camera
+  // drives navigation otherwise, so the player entity must not also react
+  // to the same mouse/keyboard input.
+  static void update(VkAppState &state, float dt, bool simulate,
+                      bool playerActive);
 };

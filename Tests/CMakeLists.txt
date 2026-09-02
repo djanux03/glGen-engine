@@ -67,6 +67,8 @@ add_executable(glgen_tests
 
   # Engine sources needed by terrain noise/query/streaming/scatter tests
   "${ENGINE_DIR}/Terrain/TerrainNoise.cpp"
+  "${ENGINE_DIR}/Terrain/TerrainWater.cpp"
+  "${ENGINE_DIR}/Terrain/TerrainIslands.cpp"
   "${ENGINE_DIR}/Terrain/TerrainQuery.cpp"
   "${ENGINE_DIR}/Terrain/TerrainChunkMesher.cpp"
   "${ENGINE_DIR}/Terrain/TerrainChunkManager.cpp"
@@ -81,6 +83,7 @@ add_executable(glgen_tests
 
   # Procedural generator pipeline (AI_ASSET_PIPELINE_PLAN.md Phase 1).
   "${ENGINE_DIR}/Generators/MeshBuilder.cpp"
+  "${ENGINE_DIR}/Generators/CharacterModeling.cpp"
   "${ENGINE_DIR}/Generators/GeneratorSchema.cpp"
   "${ENGINE_DIR}/Generators/GeneratorRegistry.cpp"
   "${ENGINE_DIR}/Generators/AssetRecipe.cpp"
@@ -91,6 +94,11 @@ add_executable(glgen_tests
   "${ENGINE_DIR}/Generators/gen/GenRock.cpp"
   "${ENGINE_DIR}/Generators/gen/GenGrass.cpp"
   "${ENGINE_DIR}/Generators/gen/GenKitbash.cpp"
+  "${ENGINE_DIR}/Generators/gen/GenSculpt.cpp"
+  "${ENGINE_DIR}/Generators/gen/GenSweep.cpp"
+  "${ENGINE_DIR}/Generators/gen/GenRevolve.cpp"
+  "${ENGINE_DIR}/Generators/gen/GenPanel.cpp"
+  "${ENGINE_DIR}/Generators/gen/GenCharacter.cpp"
   "${ENGINE_DIR}/Generators/MeshDecimate.cpp"
   "${ENGINE_DIR}/Generators/MeshValidate.cpp"
   "${ENGINE_DIR}/Generators/gen/GenImport.cpp"

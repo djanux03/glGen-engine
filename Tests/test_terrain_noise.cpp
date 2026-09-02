@@ -189,6 +189,12 @@ TEST_CASE("TerrainQuery — slopeAt is in [0,1] and finite on real terrain") {
 TEST_CASE("TerrainQuery — slopeAt and normalAt on a synthetic flat field (heightScale=0)") {
   TerrainSettings settings;
   settings.heightScale = 0.0f;  // forces computeHeight() to 0 everywhere -> perfectly flat
+  // worldBounded shapes land toward landBaseHeight and sea toward
+  // -oceanFloorDepth in ABSOLUTE metres relative to sea level, so it is
+  // deliberately independent of heightScale: zeroing the relief amplitude
+  // no longer implies a flat world once the world has a shape. This test
+  // wants a synthetic flat field as a FIXTURE, so it opts out.
+  settings.worldBounded = false;
   TerrainNoiseSet noiseSet(5);
   TerrainQuery query(settings, noiseSet);
 
@@ -217,4 +223,82 @@ TEST_CASE("TerrainQuery — biomeWeightsAt matches sampleBiomeWeights at the sam
     CHECK(w.forest == doctest::Approx(expected.forest));
     CHECK(w.mountain == doctest::Approx(expected.mountain));
   }
+}
+
+// --- bounded world: continents and islands ---------------------------------
+// These pin the behaviour that made three older flat-field fixtures opt out of
+// world shaping (see the worldBounded=false notes above): with a bounded world,
+// height is no longer governed by heightScale alone.
+
+TEST_CASE("continentAt — unbounded world is land everywhere") {
+  TerrainSettings settings;
+  settings.worldBounded = false;
+  TerrainNoiseSet noiseSet(21);
+  CHECK(continentAt(noiseSet, settings, glm::vec2(0.0f)) == doctest::Approx(1.0f));
+  CHECK(continentAt(noiseSet, settings, glm::vec2(9999.0f, -9999.0f)) ==
+        doctest::Approx(1.0f));
+}
+
+TEST_CASE("continentAt — bounded world sinks everything past worldRadius") {
+  TerrainSettings settings;
+  settings.worldBounded = true;
+  TerrainNoiseSet noiseSet(21);
+  // Well outside the rim: no land can survive the falloff.
+  const float beyond = settings.worldRadius * 1.5f;
+  CHECK(continentAt(noiseSet, settings, glm::vec2(beyond, 0.0f)) ==
+        doctest::Approx(0.0f));
+  CHECK(continentAt(noiseSet, settings, glm::vec2(0.0f, -beyond)) ==
+        doctest::Approx(0.0f));
+}
+
+TEST_CASE("continentAt — the spawn island guarantees land at the origin") {
+  TerrainSettings settings;
+  settings.worldBounded = true;
+  for (uint32_t seed : {1u, 7u, 1337u, 90210u}) {
+    TerrainNoiseSet noiseSet(seed);
+    // 0.5 is the shoreline by construction, so this is "the origin is land".
+    CHECK(continentAt(noiseSet, settings, glm::vec2(0.0f)) > 0.5f);
+  }
+}
+
+TEST_CASE("IslandMap — segments a bounded world and grades it from spawn") {
+  TerrainSettings settings;
+  settings.worldBounded = true;
+  TerrainNoiseSet noiseSet(1337);
+  noiseSet.islands.build(noiseSet, settings);
+
+  REQUIRE(noiseSet.islands.valid());
+  const auto &isles = noiseSet.islands.islands();
+  CHECK(isles.size() > 1);
+
+  for (const IslandInfo &i : isles) {
+    CHECK(i.radius > 0.0f);
+    CHECK(i.areaSqM > 0.0f);
+    CHECK(i.reliefScale > 0.0f);
+    // Every island sits inside the bounded disc.
+    CHECK(glm::length(i.centroid) <= settings.worldRadius);
+  }
+
+  // The island under the origin is the gentle starting country.
+  const IslandInfo &spawn = noiseSet.islands.infoAt(glm::vec2(0.0f));
+  CHECK(spawn.id != kNoIsland);
+  CHECK(spawn.archetype == IslandArchetype::Meadows);
+
+  // Open ocean belongs to no island and resolves to the neutral default
+  // rather than needing a null check at every call site.
+  const float beyond = settings.worldRadius * 1.5f;
+  CHECK(noiseSet.islands.idAt(glm::vec2(beyond, beyond)) == kNoIsland);
+  CHECK(noiseSet.islands.infoAt(glm::vec2(beyond, beyond)).id == kNoIsland);
+}
+
+TEST_CASE("IslandMap — unbounded world produces no islands, and lookups stay safe") {
+  TerrainSettings settings;
+  settings.worldBounded = false;
+  TerrainNoiseSet noiseSet(1337);
+  noiseSet.islands.build(noiseSet, settings);
+
+  CHECK_FALSE(noiseSet.islands.valid());
+  CHECK(noiseSet.islands.idAt(glm::vec2(0.0f)) == kNoIsland);
+  // Neutral info, not a crash: the whole point of infoAt never returning null.
+  CHECK(noiseSet.islands.infoAt(glm::vec2(0.0f)).reliefScale == doctest::Approx(1.0f));
 }

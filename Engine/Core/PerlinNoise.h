@@ -14,8 +14,19 @@ public:
   explicit PerlinNoise(uint32_t seed = 0) {
     p.resize(256);
     std::iota(p.begin(), p.end(), 0);
+    // Fisher-Yates with a deterministic modular reduction instead of
+    // std::shuffle, which delegates to std::uniform_int_distribution
+    // whose mapping varies across stdlib implementations (MSVC vs
+    // libstdc++ vs libc++), violating the engine's cross-platform
+    // determinism invariant.
     std::mt19937 rng(seed);
-    std::shuffle(p.begin(), p.end(), rng);
+    for (int i = 255; i > 0; --i) {
+      // Lemire-style nearly-unbiased reduction: the bias is < 1/2^32
+      // which is negligible for a 256-element permutation.
+      const uint32_t r = rng();
+      const int j = static_cast<int>((static_cast<uint64_t>(r) * static_cast<uint64_t>(i + 1)) >> 32);
+      std::swap(p[i], p[j]);
+    }
     p.insert(p.end(), p.begin(), p.end()); // duplicate for overflow
   }
 

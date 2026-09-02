@@ -1,5 +1,7 @@
 #include "TerrainNoise.h"
 
+#include "TerrainWater.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -46,6 +48,58 @@ float erodedFbm(const PerlinNoise &n, float x, float z, int octaves,
 
 } // namespace
 
+float continentAt(const TerrainNoiseSet &n, const TerrainSettings &settings,
+                  glm::vec2 worldXZ) {
+  if (!settings.worldBounded)
+    return 1.0f;
+  const float worldX = worldXZ.x, worldZ = worldXZ.y;
+
+  // Warped at its OWN (large) scale rather than reusing the terrain warp: a
+  // coastline warped at chunk scale just gets a fuzzy edge, whereas warping at
+  // continent scale is what produces peninsulas, bays and offshore islands
+  // instead of circular blobs.
+  const float contFreq = 1.0f / std::max(settings.continentScale, 50.0f);
+  const float cwx = n.warp.noise(worldX * contFreq * 0.6f + 813.0f,
+                                 worldZ * contFreq * 0.6f - 411.0f);
+  const float cwz = n.warp.noise(worldX * contFreq * 0.6f - 129.0f,
+                                 worldZ * contFreq * 0.6f + 767.0f);
+  const float warpAmpC = settings.continentScale * 0.55f;
+  const float cx = worldX + cwx * warpAmpC;
+  const float cz = worldZ + cwz * warpAmpC;
+
+  float field = n.erosion.fbm(cx * contFreq + 55.0f, cz * contFreq - 91.0f,
+                              4, 2.0f, 0.5f) * 0.5f + 0.5f;
+
+  // Spawn island: guarantee land at the origin. ADDED to the raw field before
+  // the coverage remap, not max()'d over the finished mask -- a max clamps a
+  // whole neighbourhood to one value and stamps a visibly perfect circle into
+  // the map (it did, and you could see it). Adding lets the continent noise
+  // keep modulating inside the lift, so the island gets an irregular coast
+  // like every other one.
+  const float r0 = std::sqrt(worldX * worldX + worldZ * worldZ);
+  if (settings.spawnIslandRadius > 1.0f) {
+    const float lift = 1.0f - smooth01(settings.spawnIslandRadius * 0.25f,
+                                       settings.spawnIslandRadius * 1.35f, r0);
+    field += lift * 0.42f;
+  }
+
+  // Remap so `landCoverage` lands on the 0.5 shoreline: a coverage of 0.42
+  // should mean 42% of the LAND-CAPABLE disc (inside worldRadius minus the
+  // edge falloff) is above water. Measured over the full worldRadius it reads
+  // lower, because the rim ring below is forced to ocean.
+  const float land = saturate01(settings.landCoverage);
+  const float thr = 1.0f - land;
+  field = (field < thr) ? (field / std::max(thr, 1e-4f)) * 0.5f
+                        : 0.5f + (field - thr) / std::max(1.0f - thr, 1e-4f) * 0.5f;
+
+  // Rim: everything sinks past worldRadius, so the map has an outside.
+  const float rim =
+      1.0f - smooth01(std::max(settings.worldRadius - settings.worldEdgeFalloff, 0.0f),
+                      std::max(settings.worldRadius, 1.0f), r0);
+  field *= rim;
+  return saturate01(field);
+}
+
 TerrainMacroSample sampleMacro(const TerrainNoiseSet &n, glm::vec2 worldXZ,
                                 const TerrainSettings &settings) {
   const float worldX = worldXZ.x;
@@ -67,6 +121,24 @@ TerrainMacroSample sampleMacro(const TerrainNoiseSet &n, glm::vec2 worldXZ,
   const float warpZ = n.warp.noise(worldX * warpFreq - 53.1f, worldZ * warpFreq + 22.8f);
   s.warpedX = worldX + warpX * warpAmp;
   s.warpedZ = worldZ + warpZ * warpAmp;
+
+  // Landmass field. Factored into continentAt() because TerrainIslands has to
+  // segment the world from it BEFORE any island can influence anything else --
+  // if this lived inline here and consulted island data, that would be a cycle.
+  s.continent = continentAt(n, settings, worldXZ);
+
+  // Island identity. Faded in just inland of the shoreline: the label grid is
+  // coarse (it classifies landmasses, not coastlines), so near the water its
+  // answer and the continuous continent field can disagree by a cell. Ramping
+  // the influence from the 0.5 shore contour means that disagreement lands
+  // where the influence is still ~0 and cannot show.
+  if (n.islands.valid()) {
+    const IslandInfo &isle = n.islands.infoAt(worldXZ);
+    s.islandInfluence = smooth01(0.50f, 0.64f, s.continent);
+    s.islandWeightBias = isle.weightBias;
+    s.islandReliefScale = isle.reliefScale;
+    s.islandTreelineOffset = isle.treelineOffset;
+  }
 
   // --- moisture (feeds forest weight + later turf lushness) ---
   const float climateFreq = regionFreq * 1.6f;
@@ -137,9 +209,9 @@ TerrainMacroSample sampleMacro(const TerrainNoiseSet &n, glm::vec2 worldXZ,
   return s;
 }
 
-float computeHeight(const TerrainMacroSample &sample, const TerrainNoiseSet &n,
-                    glm::vec2 worldXZ, const TerrainSettings &settings,
-                    const HeightOffsetGrid *edits) {
+float computeBaseHeight(const TerrainMacroSample &sample, const TerrainNoiseSet &n,
+                        glm::vec2 worldXZ, const TerrainSettings &settings,
+                        const HeightOffsetGrid *edits) {
   const float hs = settings.heightScale;
   const float macroStrength = std::max(0.0f, settings.macroStrength);
 
@@ -177,11 +249,43 @@ float computeHeight(const TerrainMacroSample &sample, const TerrainNoiseSet &n,
       std::max(0.0f, settings.microReliefStrength) * (1.0f - macroValley * 0.6f);
   h += (micro + fine) * hs * microStrength;
 
+  // --- continent shaping -------------------------------------------------
+  // Everything above is RELIEF -- the shape of ground, centred near zero. The
+  // continent mask decides whether there is ground here at all, and how high
+  // its base sits. Relief is faded out below the waterline as well as offset,
+  // so the sea floor is a smooth basin instead of the same mountain range
+  // continuing underwater.
+  if (settings.worldBounded) {
+    const float cont = saturate01(sample.continent);
+    const float shore = cont - 0.5f; // >0 land, <0 sea, 0 the coastline
+    const float reliefFade = smooth01(0.36f, 0.72f, cont);
+    // Per-island relief. This is most of what makes one island read as
+    // different country from another across the water: a Highland island's
+    // skyline is genuinely taller, not just differently tinted.
+    const float relief =
+        glm::mix(1.0f, std::max(sample.islandReliefScale, 0.05f),
+                 sample.islandInfluence);
+    h *= reliefFade * relief;
+    h += (shore > 0.0f) ? shore * 2.0f * std::max(settings.landBaseHeight, 0.0f)
+                        : shore * 2.0f * std::max(settings.oceanFloorDepth, 0.0f);
+  }
+
   if (edits) {
     h += edits->sampleBilinear(worldXZ, settings.chunkWorldSize, settings.chunkResolution);
   }
 
-  return h;
+  // Applied last, AFTER brush edits, so it is a pure world-space shift of the
+  // finished surface rather than something the noise or the edits compensate
+  // for. See TerrainSettings::heightOffset.
+  return h - settings.heightOffset;
+}
+
+float computeHeight(const TerrainMacroSample &sample, const TerrainNoiseSet &n,
+                    glm::vec2 worldXZ, const TerrainSettings &settings,
+                    const HeightOffsetGrid *edits, WaterCellCache *cache) {
+  const float base = computeBaseHeight(sample, n, worldXZ, settings, edits);
+  const LakeSample lake = sampleLake(n, settings, worldXZ, edits, cache);
+  return applyWaterToHeight(base, lake, settings);
 }
 
 BiomeWeights sampleBiomeWeights(const TerrainMacroSample &sample,
@@ -189,7 +293,7 @@ BiomeWeights sampleBiomeWeights(const TerrainMacroSample &sample,
   // Mountain weight: the region driver, softened on valley floors inside
   // mountain country so they shade/scatter like lowland (plan §4b': "a
   // mountain-region valley floor has low wMountain").
-  const float wMountain = saturate01(sample.macroMountain) *
+  float wMountain = saturate01(sample.macroMountain) *
                           (1.0f - saturate01(sample.macroValley) * 0.6f);
 
   // Forest weight: coverage-gated noise field x moisture bias x treeline
@@ -200,8 +304,12 @@ BiomeWeights sampleBiomeWeights(const TerrainMacroSample &sample,
   const float forestMask =
       smooth01(forestThreshold - 0.18f, forestThreshold + 0.18f, forestSignal);
   const float transition = std::max(1.0f, settings.treelineTransition);
-  const float treeline =
-      1.0f - smooth01(settings.treelineHeight, settings.treelineHeight + transition, height);
+  // Per-island treeline: a Highland island goes bare far lower than a Meadows
+  // one, which is what stops every island's tree line sitting at the same
+  // contour and giving the world away as one noise field.
+  const float treelineH =
+      settings.treelineHeight + sample.islandTreelineOffset * sample.islandInfluence;
+  const float treeline = 1.0f - smooth01(treelineH, treelineH + transition, height);
   float wForest = forestMask * (1.0f - wMountain) * treeline;
 
   float wMeadow = 1.0f - wForest - wMountain;
@@ -210,7 +318,44 @@ BiomeWeights sampleBiomeWeights(const TerrainMacroSample &sample,
     // than let a consumer see weights that don't sum to 1.
     const float total = wForest + wMountain;
     wForest /= total;
+    wMountain /= total;  // Was missing -- without this the weights don't
+                         // sum to 1 in forest/mountain overlap zones.
     wMeadow = 0.0f;
+  }
+
+  // --- island archetype -------------------------------------------------
+  // The weights above are three independent noise fields, which means every
+  // island is statistically the SAME island: same mix, same rate, everywhere.
+  // Biasing them toward the owning landmass's archetype is what makes a map
+  // legible and makes sailing somewhere else worth doing.
+  //
+  // MULTIPLIED, not replaced. Replacing them would flatten each island into a
+  // single material and throw away the clearings, rocky tops and moisture
+  // variation the noise is there to provide; scaling keeps all of that and
+  // just changes which of the three tends to win. Renormalised after, because
+  // every consumer downstream (material splat, biome lighting, scatter gates)
+  // assumes the three sum to 1.
+  if (sample.islandInfluence > 0.001f) {
+    const glm::vec3 bias =
+        glm::mix(glm::vec3(1.0f), sample.islandWeightBias, sample.islandInfluence);
+    wMeadow *= bias.x;
+    wForest *= bias.y;
+    float wm = wMountain * bias.z;
+    const float total = wMeadow + wForest + wm;
+    if (total > 1e-4f) {
+      wMeadow /= total;
+      wForest /= total;
+      wm /= total;
+    } else {
+      wMeadow = 1.0f;
+      wForest = 0.0f;
+      wm = 0.0f;
+    }
+    BiomeWeights wi;
+    wi.meadow = wMeadow;
+    wi.forest = wForest;
+    wi.mountain = wm;
+    return wi;
   }
 
   BiomeWeights w;
@@ -234,13 +379,19 @@ void sampleHeightGrid(const TerrainNoiseSet &n, const TerrainSettings &settings,
 
   const float denom = (samplesPerEdge > 1) ? static_cast<float>(samplesPerEdge - 1) : 1.0f;
 
+  // One cache for the whole grid. A chunk spans far less than a lake cell, so
+  // this turns the per-cell flatness probes (several base-height evaluations
+  // each) from a per-sample cost into a per-chunk one. Stack-local, so chunk
+  // builds on different worker threads never share it.
+  WaterCellCache waterCache;
+
   for (uint32_t j = 0; j < samplesPerEdge; ++j) {
     for (uint32_t i = 0; i < samplesPerEdge; ++i) {
       glm::vec2 worldXZ = chunkOrigin + glm::vec2(static_cast<float>(i) / denom,
                                                   static_cast<float>(j) / denom) *
                                             chunkWorldSize;
       TerrainMacroSample sample = sampleMacro(n, worldXZ, settings);
-      const float h = computeHeight(sample, n, worldXZ, settings, edits);
+      const float h = computeHeight(sample, n, worldXZ, settings, edits, &waterCache);
       outHeights.push_back(h);
       if (outFields) {
         TerrainGroundFields f;

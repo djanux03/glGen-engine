@@ -130,6 +130,10 @@ struct GLTFParseContext {
 
       const tinygltf::Accessor &posAccessor =
           model.accessors[posAttrIt->second];
+      if (posAccessor.bufferView < 0) {
+        LOG_WARN("Asset", "Skipping primitive: POSITION accessor has no bufferView (sparse accessors unsupported)");
+        continue;
+      }
       const tinygltf::BufferView &posView =
           model.bufferViews[posAccessor.bufferView];
       const tinygltf::Buffer &posBuffer = model.buffers[posView.buffer];
@@ -148,14 +152,16 @@ struct GLTFParseContext {
       if (normalIt != primitive.attributes.end()) {
         const tinygltf::Accessor &normAccessor =
             model.accessors[normalIt->second];
-        const tinygltf::BufferView &normView =
-            model.bufferViews[normAccessor.bufferView];
-        const tinygltf::Buffer &normBuffer = model.buffers[normView.buffer];
-        normals = normBuffer.data.data() + normView.byteOffset +
-                  normAccessor.byteOffset;
-        normStride = normAccessor.ByteStride(normView);
-        if (normStride <= 0)
-          normals = nullptr;
+        if (normAccessor.bufferView >= 0) {
+          const tinygltf::BufferView &normView =
+              model.bufferViews[normAccessor.bufferView];
+          const tinygltf::Buffer &normBuffer = model.buffers[normView.buffer];
+          normals = normBuffer.data.data() + normView.byteOffset +
+                    normAccessor.byteOffset;
+          normStride = normAccessor.ByteStride(normView);
+          if (normStride <= 0)
+            normals = nullptr;
+        }
       }
 
       // Get UVs (if available)
@@ -164,13 +170,15 @@ struct GLTFParseContext {
       auto uvIt = primitive.attributes.find("TEXCOORD_0");
       if (uvIt != primitive.attributes.end()) {
         const tinygltf::Accessor &uvAccessor = model.accessors[uvIt->second];
-        const tinygltf::BufferView &uvView =
-            model.bufferViews[uvAccessor.bufferView];
-        const tinygltf::Buffer &uvBuffer = model.buffers[uvView.buffer];
-        uvs = uvBuffer.data.data() + uvView.byteOffset + uvAccessor.byteOffset;
-        uvStride = uvAccessor.ByteStride(uvView);
-        if (uvStride <= 0)
-          uvs = nullptr;
+        if (uvAccessor.bufferView >= 0) {
+          const tinygltf::BufferView &uvView =
+              model.bufferViews[uvAccessor.bufferView];
+          const tinygltf::Buffer &uvBuffer = model.buffers[uvView.buffer];
+          uvs = uvBuffer.data.data() + uvView.byteOffset + uvAccessor.byteOffset;
+          uvStride = uvAccessor.ByteStride(uvView);
+          if (uvStride <= 0)
+            uvs = nullptr;
+        }
       }
 
       // Build vertices
@@ -208,6 +216,10 @@ struct GLTFParseContext {
       if (primitive.indices >= 0) {
         const tinygltf::Accessor &indexAccessor =
             model.accessors[primitive.indices];
+        if (indexAccessor.bufferView < 0) {
+          LOG_WARN("Asset", "Skipping primitive: Indices accessor has no bufferView");
+          continue;
+        }
         const tinygltf::BufferView &indexView =
             model.bufferViews[indexAccessor.bufferView];
         const tinygltf::Buffer &indexBuffer = model.buffers[indexView.buffer];

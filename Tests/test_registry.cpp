@@ -1,8 +1,7 @@
 #include <doctest/doctest.h>
+#include "Entity.h"
 #include "Registry.h"
 
-// Test components — local to this TU so componentId<> counters don't
-// interfere with other test files.
 namespace reg_test {
 struct Transform {
   float x = 0, y = 0, z = 0;
@@ -28,13 +27,17 @@ TEST_CASE("Registry — create returns unique IDs") {
   CHECK(a != c);
 }
 
-TEST_CASE("Registry — destroy recycles IDs") {
+TEST_CASE("Registry — destroy recycles index with new generation version") {
   Registry reg;
   EntityId a = reg.create();
   reg.destroy(a);
 
+  CHECK_FALSE(reg.valid(a)); // old handle is invalid
+
   EntityId b = reg.create();
-  CHECK(b == a);  // recycled
+  CHECK(b != a); // generation version differs
+  CHECK(EntityTraits::index(b) == EntityTraits::index(a)); // index recycled
+  CHECK(reg.valid(b));
 }
 
 TEST_CASE("Registry — emplace and get") {
@@ -42,7 +45,7 @@ TEST_CASE("Registry — emplace and get") {
   EntityId e = reg.create();
   reg.emplace<Transform>(e, Transform{1.0f, 2.0f, 3.0f});
 
-  auto& t = reg.get<Transform>(e);
+  auto &t = reg.get<Transform>(e);
   CHECK(t.x == doctest::Approx(1.0f));
   CHECK(t.y == doctest::Approx(2.0f));
   CHECK(t.z == doctest::Approx(3.0f));
@@ -77,7 +80,7 @@ TEST_CASE("Registry — view single component") {
   reg.emplace<Transform>(c);
   // b has no Transform
 
-  auto& entities = reg.view<Transform>();
+  auto &entities = reg.view<Transform>();
   CHECK(entities.size() == 2);
 }
 
@@ -102,7 +105,6 @@ TEST_CASE("Registry — viewAll multi-component") {
   }
 
   CHECK(result.size() == 2);
-  // a and c should be present
   CHECK(std::find(result.begin(), result.end(), a) != result.end());
   CHECK(std::find(result.begin(), result.end(), c) != result.end());
 }
@@ -148,7 +150,7 @@ TEST_CASE("Registry — componentView dense access") {
   reg.emplace<Health>(a, Health{10});
   reg.emplace<Health>(b, Health{20});
 
-  auto& healths = reg.componentView<Health>();
+  auto &healths = reg.componentView<Health>();
   REQUIRE(healths.size() == 2);
   CHECK(healths[0].hp == 10);
   CHECK(healths[1].hp == 20);
@@ -165,14 +167,15 @@ TEST_CASE("Registry — destroy removes all components") {
   CHECK_FALSE(reg.has<Health>(e));
 }
 
-TEST_CASE("Registry — create after destroy reuses ID") {
+TEST_CASE("Registry — create after destroy reuses index but not handle") {
   Registry reg;
   EntityId a = reg.create();
   EntityId b = reg.create();
 
   reg.destroy(a);
   EntityId c = reg.create();
-  CHECK(c == a);
+  CHECK(EntityTraits::index(c) == EntityTraits::index(a));
+  CHECK(c != a);
 
   // c is a fresh entity — should not have old components
   CHECK_FALSE(reg.has<Transform>(c));
@@ -180,6 +183,46 @@ TEST_CASE("Registry — create after destroy reuses ID") {
 
 TEST_CASE("Registry — view on empty pool returns empty") {
   Registry reg;
-  auto& entities = reg.view<Tag>();
+  auto &entities = reg.view<Tag>();
   CHECK(entities.empty());
+}
+
+TEST_CASE("CommandBuffer — queues and flushes operations") {
+  Registry reg;
+  CommandBuffer cmdBuf;
+
+  EntityId createdEntity = EntityTraits::NullEntity;
+  cmdBuf.create([&](EntityId id) { createdEntity = id; });
+  cmdBuf.flush(reg);
+
+  REQUIRE(reg.valid(createdEntity));
+
+  cmdBuf.emplace<Health>(createdEntity, Health{75});
+  cmdBuf.flush(reg);
+
+  CHECK(reg.has<Health>(createdEntity));
+  CHECK(reg.get<Health>(createdEntity).hp == 75);
+
+  cmdBuf.destroy(createdEntity);
+  cmdBuf.flush(reg);
+
+  CHECK_FALSE(reg.valid(createdEntity));
+}
+
+TEST_CASE("Entity wrapper class API") {
+  Registry reg;
+  EntityId id = reg.create();
+  Entity entity(id, &reg);
+
+  CHECK(entity.isValid());
+
+  entity.addComponent<Health>(Health{100});
+  CHECK(entity.hasComponent<Health>());
+  CHECK(entity.getComponent<Health>().hp == 100);
+
+  entity.removeComponent<Health>();
+  CHECK_FALSE(entity.hasComponent<Health>());
+
+  entity.destroy();
+  CHECK_FALSE(entity.isValid());
 }

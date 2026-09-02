@@ -6,29 +6,12 @@
 // checks findImage(path) BEFORE touching the filesystem, so a generated
 // texture never has to exist as a file and needs no renderer changes at all.
 //
-// What is generated, and what is not:
+// What is generated:
 //   albedo    sRGB, RGBA
 //   roughness linear, single-channel replicated to RGB
 //   ao        linear, optional
-//
-// Two deliberate omissions, both dictated by what the scene mesh pipeline
-// actually samples:
-//
-//   NO normal maps. mesh.frag reads texDiffusePath, texRoughnessPath,
-//   texMetallicPath and texAOPath; it has no normal-map binding (only the
-//   terrain material slots do). Generating one would burn memory and a
-//   bindless slot for something nothing reads.
-//
-//   Albedo alpha is WRITTEN BUT NOT USED YET. VulkanRenderer::DrawItem carries
-//   no alpha-cutoff and materialFlags has no alpha-test bit, so
-//   MaterialAsset::alphaCutoff is silently ignored and an alpha-masked quad
-//   renders as an opaque rectangle. Generators therefore put foliage
-//   silhouettes in GEOMETRY (MeshBuilder::addLeafCard, and grass blades'
-//   geometric taper), not in alpha. The alpha channel is still generated
-//   because it is correct data and costs nothing extra -- it starts working
-//   the day mesh.frag gains a cutout path.
-//
-// If either gap is closed in the renderer, this is the file to revisit.
+//   normal    linear RGB, derived from each generator's deterministic height
+//   alpha     honored by the renderer when MaterialAsset::alphaCutoff > 0
 
 #include "MeshData.h"
 #include "json.hpp"
@@ -43,6 +26,7 @@ struct TextureSet {
   std::string albedoKey;
   std::string roughnessKey;
   std::string aoKey;
+  std::string normalKey;
   bool valid() const { return !images.empty(); }
 };
 

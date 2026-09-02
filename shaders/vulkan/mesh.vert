@@ -22,7 +22,7 @@ layout(push_constant) uniform Push {
 void main() {
     vec4 world = pc.model * vec4(inPos, 1.0);
     gl_Position = uFrame.viewProj * world;
-    vNormalWS = mat3(pc.model) * inNormal;
+    vNormalWS = transpose(inverse(mat3(pc.model))) * inNormal;
     vUV = inUV;
     vWorldPos = world.xyz;
     vViewZ = -(uFrame.view * world).z; // positive distance in front of camera

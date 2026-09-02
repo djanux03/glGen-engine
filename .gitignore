@@ -99,6 +99,7 @@ install_manifest.txt
 /build.log
 
 /Build-tests/
+/Build-painterly/
 
 # Claude Code agent scaffolding (worktrees, local settings)
 
@@ -170,3 +171,35 @@ assets/fbxcamp/
 
 *.exr
 imgui_glgenvk.ini
+
+# ── Engine runtime artifacts ────────────────────────────────────────────────
+# Written by glGenVk while it runs. None of it is source: it is per-machine
+# UI layout, caches, logs and the editor's own session/backup files, and all
+# of it regenerates. Kept out so `git status` reflects real work.
+__pycache__/
+*.pyc
+
+imgui.ini
+*.ini.bak
+vk_pipeline_cache.bin
+cmake_config.log
+engine.log
+
+# Scatter-manifest migration backups (VkTerrainSubsystem writes .vN.bak when
+# terrain_scatter.json is older than the current defaults).
+terrain_scatter.json.v*.bak
+
+# Play-mode scene snapshot: written on Play, restored on Stop.
+assets/scenes/.vk_editor_playmode_snapshot.json
+
+# Editor session (which scene was open, whether terrain existed). Per-machine.
+assets/settings/editor_session.json
+
+# Captures are verification output, not source. Golden images live in
+# Tests/golden/ and ARE tracked.
+captures/
+smoke_test.png
+
+# Persistent MCP character-job artifacts: recipes, review frames and exported
+# GLBs are user-owned build output, not checked-in engine source.
+.glgen/jobs/

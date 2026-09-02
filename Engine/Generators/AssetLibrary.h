@@ -75,6 +75,7 @@ public:
   std::string assetIdOfRecipe(const std::string &recipeId) const;
   std::vector<std::string> recipeIds() const;
   size_t size() const { return mEntries.size(); }
+  void invalidate(const std::string &assetId);
 
 private:
   struct Entry {

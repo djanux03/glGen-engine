@@ -16,11 +16,10 @@
 // Phase 1 is one fixed static chunk, no streaming yet).
 // OpenGL has been fully removed from the repo -- this is the only renderer.
 //
-// The demo world: static props spawned through Scene::spawnFromFile, a
-// scripted player entity (compatibility-stub Lua script), plus a stack of
-// dynamic rigid bodies dropped onto a static floor — physics moves the
-// TransformComponents, VulkanRenderSystem resubmits them every frame, and
-// the per-frame TLAS rebuild keeps the ray-traced shadows tracking.
+// The engine boots to an EMPTY scene with an editor grid. Terrain, props and
+// a player are all things you create (Create menu / Terrain panel), not things
+// the runtime assumes. GLGEN_DEMO_SCENE=1 and GLGEN_TERRAIN_ON_START=1 bring
+// back content at startup for headless runs and quick visual checks.
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
@@ -33,8 +32,11 @@
 #include "imgui_impl_vulkan.h"
 
 #include "EditorCamera.h"
-#include "EditorTheme.h"
+#include "EditorGrid.h"
 #include "VkEditor.h"
+#include "ui/UIFonts.h"
+#include "ui/UITheme.h"
+#include "ui/UIWidgets.h"
 
 // EngineCore — the engine's real, GL-free systems.
 #include "Assets/AssetManager.h"
@@ -223,7 +225,11 @@ int main() {
     w = static_cast<uint32_t>(iw);
     h = static_cast<uint32_t>(ih);
   };
-  if (!renderer.init(ctx, surface, GLGEN_VK_SHADER_DIR, queryFbSize)) {
+  // The asset dir is passed so the renderer can load the volumetric cloud
+  // noise (assets/clouds/). Everything else it needs still arrives through
+  // the scene API.
+  if (!renderer.init(ctx, surface, GLGEN_VK_SHADER_DIR, queryFbSize,
+                     GLGEN_VK_ASSET_DIR)) {
     std::fprintf(stderr, "[glGenVk] renderer init failed\n");
     return 1;
   }
@@ -249,95 +255,29 @@ int main() {
     for (const std::string &m : messages)
       std::fprintf(stderr, "[glGenVk]   %s\n", m.c_str());
   }
-  const std::string rockPath = assetDir + "/terraingeneratorassets/rock.obj";
-  const std::string treePath = assetDir + "/terraingeneratorassets/tree.obj";
-  const std::string axePath = assetDir + "/playerassets/axe.obj";
-
-  // Static props through the real Scene::spawnFromFile path.
-  {
-    // tree.obj is authored with its trunk along local X instead of Y-up
-    // (see ScatterLayer::meshUpAxisFixDeg) -- correct that once, up front.
-    // AssetManager::loadOBJ dedupes by exact path string, and both tree
-    // props below share `treePath`, so rotating per-prop inside the loop
-    // would rotate the same cached mesh data twice (once per prop),
-    // compounding back to sideways -- rotate the shared handle exactly
-    // once here, before any prop spawns and hits that cache.
-    state.assets.rotateOBJ(state.assets.loadOBJ(treePath), glm::vec3(0.0f, 0.0f, 90.0f));
-
-    struct Prop {
-      const std::string *path;
-      glm::vec3 pos;
-      float yawDeg;
-      float size;
-    };
-    const Prop props[] = {
-        {&treePath, {-1.6f, -0.5f, -1.2f}, 20.0f, 1.6f},
-        {&treePath, {1.9f, -0.5f, 1.4f}, 240.0f, 1.4f},
-        {&axePath, {0.8f, -0.5f, -0.9f}, 130.0f, 0.7f},
-    };
-    for (const Prop &p : props) {
-      EntityId e = state.scene.spawnFromFile(*p.path);
+  // NO DEMO SCENE. The engine boots empty: an editor whose runtime hardcodes
+  // its own content is a demo, and every launch used to rebuild the same two
+  // trees, an axe, six falling rocks and a scripted player whether you wanted
+  // them or not. Terrain comes from Create > Terrain, props from the Create
+  // menu or the Assets panel, and a player from Create > Player.
+  //
+  // GLGEN_DEMO_SCENE=1 restores a minimal version for anyone who wants
+  // something in front of the camera immediately.
+  if (std::getenv("GLGEN_DEMO_SCENE")) {
+    // Baked by Tools/glgen-bake from assets/custom_trees/, like the scatter
+    // layers use. Authored Y-up, so no corrective rotation here -- the old
+    // tree.obj needed a 90-degree fix because its trunk ran along local X.
+    const std::string treePath = assetDir + "/trees/conifer_tall.obj";
+    for (const glm::vec3 &pos :
+         {glm::vec3(-1.6f, 0.0f, -1.2f), glm::vec3(1.9f, 0.0f, 1.4f)}) {
+      EntityId e = state.scene.spawnFromFile(treePath);
       if (e == 0)
         continue;
-      // These assets are authored off-origin; recenter so the pivot is the
-      // model's base and placement is straightforward.
       state.assets.recenterOBJ(reg.get<MeshComponent>(e).objHandle,
                                MeshData::Recenter::BaseY);
-      TransformComponent &t = reg.get<TransformComponent>(e);
-      t.position = p.pos; // y = floor top; base sits on it
-      t.rotation = glm::vec3(0.0f, p.yawDeg, 0.0f);
-      normalizeEntityScale(reg, state.assets, e, p.size);
+      reg.get<TransformComponent>(e).position = pos;
+      normalizeEntityScale(reg, state.assets, e, 1.6f);
     }
-  }
-
-  // Dynamic rocks: dropped from above, simulated by the engine's Jolt
-  // PhysicsSystem. Their transforms change every frame -> dynamic TLAS.
-  {
-    const glm::vec3 drops[] = {
-        {0.0f, 1.2f, 0.0f},  {0.25f, 2.0f, 0.15f}, {-0.2f, 2.8f, -0.1f},
-        {0.1f, 3.6f, 0.25f}, {-0.3f, 4.4f, 0.1f},  {0.35f, 5.2f, -0.2f},
-    };
-    for (const glm::vec3 &pos : drops) {
-      EntityId e = state.scene.spawnFromFile(rockPath);
-      if (e == 0)
-        continue;
-      // Fully centered so the mesh tumbles about the physics body's center.
-      state.assets.recenterOBJ(reg.get<MeshComponent>(e).objHandle,
-                               MeshData::Recenter::Center);
-      TransformComponent &t = reg.get<TransformComponent>(e);
-      t.position = pos;
-      normalizeEntityScale(reg, state.assets, e, 0.5f);
-      auto &rb = reg.emplace<RigidbodyComponent>(e);
-      rb.type = RigidbodyComponent::Type::Dynamic;
-      rb.mass = 2.0f;
-      rb.friction = 0.7f;
-      rb.restitution = 0.25f;
-      auto &col = reg.emplace<ColliderComponent>(e);
-      col.shape = ColliderComponent::Shape::Sphere;
-      col.dimensions = glm::vec3(0.25f);
-    }
-  }
-
-  // Scripted player entity -- gives ScriptSystem/PlayerControllerSystem
-  // something to drive (mirrors Runtime/Framework/App.cpp's
-  // initRuntimeSystems). Movement/aim is handled by
-  // VkPlayerControllerSystem/VkPlayerInteractionSystem in C++; the Lua
-  // script is a harmless compatibility stub.
-  {
-    state.gameplay.playerId = reg.create();
-    const EntityId playerId = state.gameplay.playerId;
-    reg.emplace<TransformComponent>(playerId).position =
-        glm::vec3(0.0f, 1.1f, 3.4f);
-    reg.emplace<RigidbodyComponent>(playerId).type =
-        RigidbodyComponent::Type::Kinematic;
-    reg.emplace<ColliderComponent>(playerId);
-    reg.emplace<CameraComponent>(playerId);
-    reg.emplace<NameComponent>(playerId, "Player");
-    reg.emplace<ScriptComponent>(playerId).scriptPath =
-        std::string(GLGEN_VK_SCRIPT_DIR) + "/fps_controller.lua";
-    reg.emplace<BoundsComponent>(playerId, BoundsComponent{1.0f});
-    reg.emplace<LifecycleComponent>(playerId);
-    reg.emplace<HierarchyComponent>(playerId);
   }
 
   vkrhi::VulkanRenderSystem renderSystem;
@@ -370,7 +310,10 @@ int main() {
   // Tab/arrow navigation through panels -- the keyboard's job in editor
   // mode is UI, not movement.
   ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  EditorTheme::applyAATheme(); // the old editor's dark theme
+  // New editor look: fonts first (the runtime used to load none at all and
+  // rendered everything in the 13px bitmap default), then the style.
+  UIFonts::load(assetDir);
+  UITheme::apply();
 
   // Gameplay input (ScriptBindings' Lua input.* API and
   // VkPlayerControllerSystem/VkPlayerInteractionSystem read these statics
@@ -428,9 +371,16 @@ int main() {
   // Command port: OFF unless a port is given. Anything that can connect can
   // run arbitrary Lua in this process, so it is opt-in and loopback-only.
   VkAgentBridge agentBridge;
-  if (const char *portEnv = std::getenv("GLGEN_AGENT_PORT")) {
-    const int port = std::atoi(portEnv);
-    if (port > 0 && port < 65536) {
+  {
+    // On by default now. It used to be opt-in, which meant opening the editor
+    // normally and then pointing an AI client at it silently started a SECOND
+    // engine instance -- the client edited a window you were not looking at.
+    // Loopback-only, and GLGEN_AGENT_PORT=0 turns it off.
+    const char *portEnv = std::getenv("GLGEN_AGENT_PORT");
+    const int port = portEnv ? std::atoi(portEnv) : 8787;
+    if (port == 0) {
+      std::fprintf(stderr, "[glGenVk] agent bridge disabled\n");
+    } else if (port > 0 && port < 65536) {
       if (agentBridge.start(state, static_cast<uint16_t>(port)))
         std::fprintf(stderr, "[glGenVk] agent bridge on 127.0.0.1:%d\n", port);
       else
@@ -458,9 +408,19 @@ int main() {
   // to assume near-0 height there.
   {
     vkrhi::VulkanRenderer::Params &p = renderer.params();
-    p.camPos = glm::vec3(0.0f, 1.1f, 3.4f);
-    p.camPos.y = terrain->heightAt(glm::vec2(p.camPos.x, p.camPos.z)) + 1.8f;
-    p.camPitchDeg = -14.0f;
+    if (terrain->hasTerrain()) {
+      // Standing on the ground, wherever the generator put it.
+      p.camPos = glm::vec3(0.0f, 1.1f, 3.4f);
+      p.camPos.y = terrain->heightAt(glm::vec2(p.camPos.x, p.camPos.z)) + 1.8f;
+      p.camPitchDeg = -14.0f;
+    } else {
+      // Empty scene: a three-quarter view down at the origin, far enough out
+      // that a few grid squares are visible and anything created at 0,0,0 is
+      // already in frame.
+      p.camPos = glm::vec3(6.0f, 4.5f, 8.0f);
+      p.camYawDeg = 216.0f;
+      p.camPitchDeg = -22.0f;
+    }
 
     // The player entity was created earlier (before terrain existed to
     // query) with the same hardcoded XZ and a placeholder Y -- correct it
@@ -566,6 +526,33 @@ int main() {
       p.camPos = glm::vec3(0.0f, 60.0f, 60.0f);
       p.camPitchDeg = 24.0f;
     }
+    // Camera pitched up into open sky, sun off to one side -- the pose the
+    // volumetric cloud layer actually needs, since every other preset here
+    // points at terrain and shows a sliver of sky at most. Value is the pitch
+    // in degrees (default 22); the sun sits ~35 degrees to the left of the
+    // view so lit tops and shadowed bases are both visible in one frame.
+    if (const char *skyview = std::getenv("GLGEN_SMOKE_SKYVIEW")) {
+      const float pitch = skyview[0] ? static_cast<float>(std::atof(skyview)) : 22.0f;
+      p.lightYawDeg = 35.0f;
+      p.lightPitchDeg = 24.0f;
+      // High enough to clear the tree canopy: at 60 m the scattered pines
+      // fill most of an upward-pitched frame and there is barely any sky to
+      // judge.
+      p.camPos = glm::vec3(0.0f, 260.0f, 60.0f);
+      p.camYawDeg = 180.0f;
+      p.camPitchDeg = pitch;
+      // Auto-exposure would chase the cloud cover: a mostly-clouded frame
+      // pushes exposure up and blows the clear sky out, so two captures of
+      // the same sky are not comparable. Pin it.
+      p.autoExposure = false;
+      p.exposure = 1.0f;
+    }
+    // Neutralizes the painterly sky wash (band quantization + palette pull).
+    // It is the engine's house look and it is applied to clouds too, which is
+    // correct -- but it makes the volumetric layer's own lighting impossible
+    // to judge, so this turns it off for a diagnostic capture.
+    if (std::getenv("GLGEN_SMOKE_NOWASH"))
+      p.style.skyGradeStrength = 0.0f;
     if (std::getenv("GLGEN_SMOKE_AUTOEXP"))
       p.autoExposure = true;
     // Force a debug view mode for a capture (e.g. 6 = NaN detector -- any
@@ -745,6 +732,11 @@ int main() {
   EditorCamera editorCam;
   editorCam.seed(renderer.params().camPos, renderer.params().camYawDeg,
                  renderer.params().camPitchDeg);
+
+  // Ground grid + origin axes, rebuilt every frame because the patch follows
+  // the camera (see EditorGrid.h).
+  EditorGridSettings gridSettings;
+  std::vector<vkrhi::VulkanRenderer::DebugLineVertex> debugLines;
   // Pose to restore when leaving play mode -- Stop reverts the scene from
   // its snapshot, so the camera going back to its pre-play pose keeps
   // "Stop undoes everything" consistent.
@@ -874,6 +866,15 @@ int main() {
         editorCam.addZoom(static_cast<float>(g_scrollY), groundY);
       g_scrollY = 0.0;
 
+      // render.setParams is processed after editor-camera input in a frame,
+      // while render.capture completes on a later frame. Without reseeding,
+      // EditorCamera restores its old smoothed target before that capture and
+      // MCP screenshots silently use the wrong viewpoint.
+      static uint64_t appliedExternalCameraRevision = 0;
+      if (appliedExternalCameraRevision != p.externalCameraRevision) {
+        editorCam.seed(p.camPos, p.camYawDeg, p.camPitchDeg);
+        appliedExternalCameraRevision = p.externalCameraRevision;
+      }
       editorCam.update(dt, p.camPos, p.camYawDeg, p.camPitchDeg);
     } else {
       g_scrollY = 0.0; // don't let dolly scroll build up while playing
@@ -928,6 +929,15 @@ int main() {
     // an entity spawned by a handler is drawn this frame rather than next.
     agentBridge.update();
 
+    // Editor overlay lines. Hidden in play mode and while the agent bridge is
+    // capturing for review -- a grid across a screenshot is noise in both.
+    debugLines.clear();
+    if (!inPlayMode && !agentBridge.wantsCleanFrame()) {
+      buildEditorGrid(gridSettings, renderer.params().camPos, debugLines);
+      renderer.setDebugLineFadeDistance(gridSettings.fadeDistance());
+    }
+    renderer.setDebugLines(debugLines);
+
     renderSystem.update(reg, renderer);
     // Must run AFTER renderSystem.update(), which clears+rebuilds
     // mInstances from the ECS each frame -- see VkTerrainSubsystem's header
@@ -976,12 +986,62 @@ int main() {
         smokePlayRequested = true;
       }
 
+      // Same entry/exit points, driven from Lua (game.play/game.stop) so a
+      // game assembled over the command port can start itself.
+      if (state.requestPlayMode) {
+        state.requestPlayMode = false;
+        editor.requestPlay(ectx);
+      }
+      if (state.requestStopMode) {
+        state.requestStopMode = false;
+        if (editor.isInPlayMode())
+          editor.stopPlayMode(ectx);
+      }
+
       // Skip the whole editor UI on frames the agent bridge is capturing for
       // a model: the panels cover roughly a third of the frame, and a review
       // shot should show the scene, not the tool. ImGui::Render() still runs
       // so the (now empty) draw data stays valid for the overlay callback.
       if (!agentBridge.wantsCleanFrame())
         editor.draw(ectx, view, proj);
+
+      // Session restore asked for the camera to be put on the restored
+      // ground; only EditorCamera can make that stick.
+      if (glm::vec3 seedPos; editor.takeCameraSeedRequest(seedPos)) {
+        p.camPos = seedPos;
+        editorCam.seed(p.camPos, p.camYawDeg, p.camPitchDeg);
+      }
+
+      // F: frame the selection. Handled here rather than in the editor
+      // because main.cpp owns the EditorCamera; the editor only records
+      // which entity was asked for.
+      if (const EntityId focus = editor.takeFocusRequest()) {
+        if (reg.valid(focus) && reg.has<TransformComponent>(focus)) {
+          const TransformComponent &t = reg.get<TransformComponent>(focus);
+          // Distance from the asset's own size so a pebble and a tree both
+          // fill a comparable share of the frame.
+          float radius = 1.0f;
+          if (reg.has<MeshComponent>(focus)) {
+            const MeshData *data =
+                state.assets.getOBJData(reg.get<MeshComponent>(focus).objHandle);
+            glm::vec3 mn, mx;
+            if (data && data->getGlobalBounds(mn, mx)) {
+              const glm::vec3 size = (mx - mn) * t.scale;
+              radius = std::max({size.x, size.y, size.z, 0.1f}) * 0.5f;
+            }
+          }
+          const float distance = std::max(radius * 3.0f, 1.5f);
+          const float yaw = glm::radians(p.camYawDeg);
+          const float pitch = glm::radians(p.camPitchDeg);
+          // Keep the current orientation and simply back off along it, so
+          // focusing does not also spin the view to some canned angle.
+          const glm::vec3 forward(std::cos(pitch) * std::sin(yaw),
+                                  std::sin(pitch), std::cos(pitch) * std::cos(yaw));
+          const glm::vec3 target = t.position + glm::vec3(0.0f, radius * 0.5f, 0.0f);
+          p.camPos = target - forward * distance;
+          editorCam.seed(p.camPos, p.camYawDeg, p.camPitchDeg);
+        }
+      }
     }
     ImGui::Render();
 

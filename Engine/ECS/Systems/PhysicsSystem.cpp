@@ -292,8 +292,9 @@ void ::PhysicsSystem::createBodies(Registry &registry) {
       const float radius =
           std::max(0.01f, collider.dimensions.x *
                               std::max(colliderScale.x, colliderScale.z));
+      const float scaledHeight = collider.dimensions.y * colliderScale.y;
       const float halfHeight =
-          std::max(0.02f, collider.dimensions.y * colliderScale.y * 0.5f);
+          std::max(0.05f, (scaledHeight - 2.0f * radius) * 0.5f);
       shape = new JPH::CapsuleShape(halfHeight, radius);
     } else {
       shape = new JPH::BoxShape(JPH::Vec3(0.5f, 0.5f, 0.5f));
@@ -469,4 +470,20 @@ void ::PhysicsSystem::removeBody(uint32_t bodyId) {
     bodyInterface.RemoveBody(id);
   }
   bodyInterface.DestroyBody(id);
+}
+
+using EnginePhysics = ::PhysicsSystem;
+
+void EnginePhysics::setGravity(glm::vec3 gravity) {
+  if (mPhysicsSystem) {
+    mPhysicsSystem->SetGravity(JPH::Vec3(gravity.x, gravity.y, gravity.z));
+  }
+}
+
+glm::vec3 EnginePhysics::getGravity() const {
+  if (mPhysicsSystem) {
+    JPH::Vec3 g = mPhysicsSystem->GetGravity();
+    return glm::vec3(g.GetX(), g.GetY(), g.GetZ());
+  }
+  return glm::vec3(0.0f, -9.81f, 0.0f);
 }

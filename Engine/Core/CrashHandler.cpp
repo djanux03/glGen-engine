@@ -8,6 +8,11 @@
 #include <mutex>
 #include <sstream>
 #include <thread>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace {
 std::string gReportPath = "crash_report.txt";
@@ -40,10 +45,18 @@ void onTerminate() {
 }
 
 void onSignal(int sig) {
-  writeReport("signal " + std::to_string(sig));
-  LOG_FATAL("Crash",
-            "Captured fatal signal " + std::to_string(sig) +
-                ". Report: " + gReportPath);
+  // Async-signal-safe: no allocations, no mutexes, no IO streams.
+  // std::to_string / LOG_FATAL / std::ofstream would deadlock or
+  // double-fault if the crash occurred during allocation or while
+  // holding the logger mutex.
+  static const char msg[] = "glGen: fatal signal caught\n";
+  // POSIX write() is async-signal-safe; on Windows _write() is the closest
+  // equivalent and is safe enough for a pre-exit handler.
+#ifdef _WIN32
+  _write(2, msg, sizeof(msg) - 1);
+#else
+  (void)::write(STDERR_FILENO, msg, sizeof(msg) - 1);
+#endif
   std::_Exit(128 + sig);
 }
 } // namespace

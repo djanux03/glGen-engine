@@ -2,6 +2,7 @@
 #include "Rendering/Material.h"
 #include <cstdint>
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <string>
 #include <utility>
 #include <vector>
@@ -14,6 +15,14 @@ struct MeshVertex {
   glm::vec3 pos;
   glm::vec2 uv;
   glm::vec3 normal;
+  // Terrain-only ground fields (curvature, rockMask, wForest, wMountain),
+  // all packed 0..1; zero/unused for every non-terrain mesh (props, OBJ/FBX/
+  // glTF imports never touch this). Widening the shared vertex here (rather
+  // than a second terrain-only vertex stream) was the R1 pragmatic call in
+  // MEADOW_TERRAIN_REVAMP_PLAN.md §5 -- costs 16 bytes/vertex engine-wide
+  // but needs zero new pipelines/upload paths, since non-terrain pipelines
+  // simply never declare a vertex attribute for it.
+  glm::vec4 terrainParams{0.0f};
 };
 
 // Decoded 8-bit image payload for textures that cannot be (re)read from disk
@@ -110,5 +119,47 @@ struct MeshData {
         ob.second.aabbMax += offset;
       }
     }
+  }
+
+  // Bakes a fixed corrective rotation (degrees, applied X then Y then Z)
+  // into every vertex position/normal -- for assets authored with a
+  // non-Y-up convention (e.g. a tree model whose trunk runs along local X)
+  // so every downstream placement transform can keep assuming local Y is
+  // up. Not idempotent like recenter() -- calling twice compounds the
+  // rotation. Call before recenter() so the base-at-y=0 shift applies to
+  // the corrected orientation.
+  void rotateEulerDeg(glm::vec3 degXYZ) {
+    if (glm::dot(degXYZ, degXYZ) < 1e-8f)
+      return;
+    glm::mat4 rot(1.0f);
+    rot = glm::rotate(rot, glm::radians(degXYZ.z), glm::vec3(0.0f, 0.0f, 1.0f));
+    rot = glm::rotate(rot, glm::radians(degXYZ.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    rot = glm::rotate(rot, glm::radians(degXYZ.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    const glm::mat3 rot3(rot);
+
+    auto rotateAabb = [&](glm::vec3 &mn, glm::vec3 &mx) {
+      glm::vec3 newMn(1e30f), newMx(-1e30f);
+      for (int i = 0; i < 8; ++i) {
+        const glm::vec3 corner((i & 1) ? mx.x : mn.x, (i & 2) ? mx.y : mn.y,
+                               (i & 4) ? mx.z : mn.z);
+        const glm::vec3 rc = rot3 * corner;
+        newMn = glm::min(newMn, rc);
+        newMx = glm::max(newMx, rc);
+      }
+      mn = newMn;
+      mx = newMx;
+    };
+
+    for (auto &sm : submeshes) {
+      for (auto &v : sm.vertices) {
+        v.pos = rot3 * v.pos;
+        v.normal = rot3 * v.normal;
+      }
+      if (sm.hasBounds)
+        rotateAabb(sm.aabbMin, sm.aabbMax);
+    }
+    for (auto &ob : objectBounds)
+      if (ob.second.hasBounds)
+        rotateAabb(ob.second.aabbMin, ob.second.aabbMax);
   }
 };

@@ -53,7 +53,6 @@ private:
   std::string mStatus;
   void *mEngineStorage = nullptr;
   ManagedSound *mAmbient = nullptr;
-  ManagedSound *mFootsteps = nullptr;
   bool mInitialized = false;
   bool mAudioAvailable = false;
   glm::vec3 mLastPlayerPos{0.0f};

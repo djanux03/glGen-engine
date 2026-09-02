@@ -64,6 +64,7 @@ public:
   struct PendingUpload {
     ChunkCoord coord;
     int lod = 0;
+    uint32_t jobGeneration = 0;
     MeshData mesh;
     // Chunk-average biome weights (mean over the sampled ground-field grid,
     // not a majority-vote single category -- there is no single category
@@ -83,6 +84,11 @@ public:
   std::vector<ChunkCoord> takePendingUnloads();
 
   const TerrainSettings &settings() const { return mSettings; }
+  // Mutable access, for the one value that can only be known after init():
+  // TerrainSettings::seaLevel, which resolveSeaLevel() derives from the
+  // initialised noise set. Must be set before any chunk builds -- every
+  // consumer (carve, scatter waterline, renderer water field) reads it.
+  TerrainSettings &settingsMutable() { return mSettings; }
 
   // Synchronously samples fixed-LOD0 (chunkResolution) heights for a
   // chunk's collision shape, independent of whatever LOD that chunk's
@@ -114,6 +120,10 @@ public:
   // VkTerrainSubsystem, referencing these two plus settings() -- all stable
   // for this manager's lifetime).
   const TerrainNoiseSet &noiseSet() const { return *mNoiseSet; }
+  // Mutable access for the one-time island segmentation at world creation
+  // (TerrainIslands). Must happen before any chunk builds; after that the
+  // noise set is read-only shared state across worker threads.
+  TerrainNoiseSet &noiseSetMutable() { return *mNoiseSet; }
   const HeightOffsetGrid &editsGrid() const { return mEdits; }
 
   // Paints a height-offset brush stroke (radial linear falloff, `strength`
@@ -143,6 +153,7 @@ public:
     // the distance the job was dispatched at, or chunks built at different
     // times would disagree.
     int chebyshev = 0;
+    uint32_t jobGeneration = 0;
   };
 
   // Pure helpers, public and static so tests can exercise the streaming
@@ -177,6 +188,8 @@ private:
     // distance instead of assuming 0, which would make an edited far chunk
     // sprout full-density grass.
     int chebyshev = 0;
+    uint32_t jobGeneration = 0;
+    bool dirtyAfterBuild = false;
   };
   std::unordered_map<ChunkCoord, TrackedChunk> mChunks;
   // Nearest-first desired set (with per-coord LOD bands) from the last

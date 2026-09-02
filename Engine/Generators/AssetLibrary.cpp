@@ -253,4 +253,15 @@ std::vector<std::string> AssetLibrary::recipeIds() const {
   return out;
 }
 
+void AssetLibrary::invalidate(const std::string &assetId) {
+  mEntries.erase(assetId);
+  for (auto it = mByRecipeId.begin(); it != mByRecipeId.end();) {
+    if (it->second == assetId) {
+      it = mByRecipeId.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 } // namespace gen

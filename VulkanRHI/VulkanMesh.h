@@ -15,6 +15,11 @@ struct MeshVertex {
   glm::vec3 pos;
   glm::vec3 normal;
   glm::vec2 uv;
+  // Terrain-only ground fields, copied from ::MeshVertex::terrainParams
+  // during buildMeshFromData()'s flatten step; zero/unused for every
+  // non-terrain mesh. See ::MeshVertex's own comment (Engine/Assets/
+  // MeshData.h) for why this exists on the CPU-side struct too.
+  glm::vec4 terrainParams{0.0f};
 };
 
 // A contiguous run of the index buffer that shares one material. Drawn with a

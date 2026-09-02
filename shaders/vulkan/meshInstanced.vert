@@ -44,9 +44,12 @@ layout(push_constant) uniform Push {
     uint roughnessIndex;
     uint metallicIndex;
     uint aoIndex;
+    uint normalIndex;
+    uint opacityIndex;
     float roughnessScalar;
     float metallicScalar;
     float aoScalar;
+    float alphaCutoff;
     uint materialFlags;
     // R5 wind. Declared here (past the fragment-only material block, which
     // this stage never reads) because push-constant members must be declared
@@ -119,7 +122,7 @@ void main() {
     }
 
     gl_Position = uFrame.viewProj * world;
-    vNormalWS = mat3(instanceModel) * inNormal;
+    vNormalWS = transpose(inverse(mat3(instanceModel))) * inNormal;
     vUV = inUV;
     vWorldPos = world.xyz;
     vViewZ = -(uFrame.view * world).z; // positive distance in front of camera

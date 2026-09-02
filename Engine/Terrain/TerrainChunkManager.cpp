@@ -188,6 +188,7 @@ void TerrainChunkManager::workerLoop() {
     PendingUpload result;
     result.coord = job.coord;
     result.lod = job.lod;
+    result.jobGeneration = job.jobGeneration;
     result.mesh = std::move(mesh);
     result.dominantWeights = avgWeights;
 
@@ -273,7 +274,8 @@ void TerrainChunkManager::streamUpdate(glm::vec3 cameraWorldPos) {
       continue;
     tracked.state = ChunkState::Building;
     tracked.chebyshev = j.chebyshev;
-    enqueueJob(Job{j.coord, tracked.desiredLod, j.chebyshev});
+    tracked.jobGeneration++;
+    enqueueJob(Job{j.coord, tracked.desiredLod, j.chebyshev, tracked.jobGeneration});
     ++dispatched;
   }
 
@@ -292,13 +294,21 @@ void TerrainChunkManager::streamUpdate(glm::vec3 cameraWorldPos) {
 
       auto found = mChunks.find(front.coord);
       if (found == mChunks.end() ||
-          found->second.state != ChunkState::Building)
+          found->second.state != ChunkState::Building ||
+          found->second.jobGeneration != front.jobGeneration)
         continue; // stale: unloaded/superseded since this job was dispatched
 
       found->second.state = ChunkState::ReadyToUpload;
       found->second.builtLod = front.lod;
       mUploadOut.push_back(std::move(front));
       ++taken;
+
+      if (found->second.dirtyAfterBuild) {
+        found->second.dirtyAfterBuild = false;
+        found->second.state = ChunkState::Building;
+        found->second.jobGeneration++;
+        enqueueJob(Job{found->first, found->second.desiredLod, found->second.chebyshev, found->second.jobGeneration});
+      }
     }
   }
 }
@@ -343,15 +353,22 @@ void TerrainChunkManager::applyHeightBrush(glm::vec2 worldXZ, float radius,
 
   for (const ChunkCoord &coord : mEdits.takeTouchedChunks()) {
     auto it = mChunks.find(coord);
+    if (it == mChunks.end())
+      continue;
+    if (it->second.state == ChunkState::Building) {
+      it->second.dirtyAfterBuild = true;
+      continue;
+    }
     // Not loaded, or already (un)loading/mid-rebuild: the edit is already
     // stored in mEdits and will be picked up automatically whenever this
     // chunk next builds (every sampleHeightGrid call site above now threads
     // &mEdits through) -- nothing further to do here.
-    if (it == mChunks.end() || it->second.state != ChunkState::ReadyToUpload)
+    if (it->second.state != ChunkState::ReadyToUpload)
       continue;
 
     it->second.state = ChunkState::Building;
-    enqueueJob(Job{coord, it->second.desiredLod, it->second.chebyshev});
+    it->second.jobGeneration++;
+    enqueueJob(Job{coord, it->second.desiredLod, it->second.chebyshev, it->second.jobGeneration});
   }
 }
 

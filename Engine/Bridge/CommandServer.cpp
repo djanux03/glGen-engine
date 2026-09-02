@@ -46,6 +46,7 @@ struct CommandServer::Impl {
   std::vector<Connection> connections;
   std::thread thread;
   uint64_t nextConnectionId = 1;
+  std::atomic<bool> stopping{false};
 #ifdef _WIN32
   bool wsaStarted = false;
 #endif
@@ -126,6 +127,7 @@ void CommandServer::stop() {
   if (!mRunning.exchange(false)) {
     return;
   }
+  mImpl->stopping = true;
   // Closing the listener wakes the select() in the socket thread.
   if (mImpl->listener != kInvalidSocket) {
     CLOSE_SOCKET(mImpl->listener);
@@ -148,15 +150,18 @@ void CommandServer::stop() {
 
 void CommandServer::socketLoop_() {
   while (mRunning.load()) {
+    socket_t listener = mImpl->listener;
+    if (mImpl->stopping) break;
+
     fd_set readSet;
     fd_set writeSet;
     FD_ZERO(&readSet);
     FD_ZERO(&writeSet);
 
     socket_t maxFd = 0;
-    if (mImpl->listener != kInvalidSocket) {
-      FD_SET(mImpl->listener, &readSet);
-      maxFd = std::max<socket_t>(maxFd, mImpl->listener);
+    if (listener != kInvalidSocket) {
+      FD_SET(listener, &readSet);
+      maxFd = std::max<socket_t>(maxFd, listener);
     }
     for (auto &c : mImpl->connections) {
       FD_SET(c.sock, &readSet);
@@ -191,9 +196,9 @@ void CommandServer::socketLoop_() {
       }
     }
 
-    if (ready > 0 && mImpl->listener != kInvalidSocket &&
-        FD_ISSET(mImpl->listener, &readSet)) {
-      const socket_t client = ::accept(mImpl->listener, nullptr, nullptr);
+    if (ready > 0 && listener != kInvalidSocket &&
+        FD_ISSET(listener, &readSet)) {
+      const socket_t client = ::accept(listener, nullptr, nullptr);
       if (client != kInvalidSocket) {
         Connection c;
         c.sock = client;

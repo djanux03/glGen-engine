@@ -85,12 +85,10 @@ public:
   // oval, 6 vertices and 4 triangles, base at the origin, bending forward
   // like addCard.
   //
-  // This exists because the scene mesh pipeline has no alpha cutout. mesh.frag
-  // reads diffuse/roughness/metallic/AO but DrawItem carries no alpha-cutoff
-  // and materialFlags has no alpha-test bit, so MaterialAsset::alphaCutoff is
-  // silently ignored and an alpha-masked quad renders as an opaque rectangle.
-  // Four triangles of real outline cost less than adding a cutout path to the
-  // renderer, and suit the engine's faceted look better besides.
+  // The raster path now honors alpha cutout, but ray-query shadows still see
+  // triangle geometry rather than material alpha. Keeping a cheap real outline
+  // avoids rectangular foliage shadows and remains more stable in the distance
+  // than a single nearly transparent quad.
   void addLeafCard(float width, float height, float bendDeg);
 
   // Surface of revolution about +Y. `profile` is a polyline of (radius,

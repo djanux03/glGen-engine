@@ -6,6 +6,11 @@
 #include "Assets/AssetManager.h"
 #include "ECS/Components.h"
 #include "TerrainScatter.h"
+#include "TerrainWater.h"
+#include "TerrainIslands.h"
+#include "TerrainNoise.h"
+
+#include <vector>
 
 #include <algorithm>
 #include <cctype>
@@ -152,29 +157,227 @@ bool VkTerrainSubsystem::initialize() {
     writeScatterManifest(manifestPath, mManifest);
   }
 
-  TerrainSettings settings; // defaults from TerrainSettings.h
+  // Staged settings only -- NO terrain is built here. The engine boots to an
+  // empty scene and terrain is something you create (Create > Terrain, or
+  // the Terrain Generator panel), the same way a mesh or a light is. What
+  // initialize() still does is the cheap groundwork the panel needs before
+  // any terrain exists: default material paths and the scatter manifest.
+  mPendingSettings = TerrainSettings{}; // defaults from TerrainSettings.h
   // Headless perf/verification override: lets smoke runs exercise large
   // view distances without touching the editor slider.
   if (const char *vd = std::getenv("GLGEN_VK_VIEWDIST")) {
     const int v = std::atoi(vd);
     if (v >= 1 && v <= 64)
-      settings.viewDistanceChunks = v;
+      mPendingSettings.viewDistanceChunks = v;
   }
   if (const char *hs = std::getenv("GLGEN_VK_HEIGHTSCALE")) {
     const float v = static_cast<float>(std::atof(hs));
     if (v > 0.0f)
-      settings.heightScale = v;
+      mPendingSettings.heightScale = v;
   }
+
+  // Headless runs and the existing smoke/showcase harnesses expect ground to
+  // exist without a UI to click, so one env var restores the old behaviour.
+  if (std::getenv("GLGEN_TERRAIN_ON_START"))
+    create(mPendingSettings);
+  return true;
+}
+
+bool VkTerrainSubsystem::create(const TerrainSettings &settings) {
+  if (mReady || !mState.renderer)
+    return false;
+
+  mPendingSettings = settings;
   mState.terrain.init(settings, mManifest);
+
+  // Resolve the absolute sea level from oceanCoverage before anything reads
+  // it: the carve, the scatter waterline and the renderer's water field all
+  // have to agree on one number, and chunks start building right after this.
+  // Needs the initialised noise set, hence after init() rather than on the
+  // settings copy above.
+  {
+    TerrainSettings &live = mState.terrain.settingsMutable();
+    live.seaLevel = resolveSeaLevel(mState.terrain.noiseSet(), live);
+    // Segment the world into landmasses before any chunk builds. Only legal
+    // because the world is bounded -- see TerrainIslands.h. Everything after
+    // this point (relief, treeline, biome weights, scatter) reads it.
+    mState.terrain.noiseSetMutable().islands.build(mState.terrain.noiseSet(), live);
+    {
+      const auto &isles = mState.terrain.noiseSet().islands.islands();
+      LOG_INFO("Terrain", "segmented " + std::to_string(isles.size()) + " islands");
+    }
+    mPendingSettings.seaLevel = live.seaLevel;
+    LOG_INFO("Terrain",
+             "sea level resolved to " + std::to_string(live.seaLevel) + " m (" +
+                 std::to_string(static_cast<int>(live.oceanCoverage * 100.0f)) +
+                 "% ocean target)");
+  }
+
   mQuery = std::make_unique<TerrainQuery>(mState.terrain.settings(),
                                           mState.terrain.noiseSet(),
                                           &mState.terrain.editsGrid());
   mState.renderer->params().farPlane = farPlaneForSettings(settings);
+  syncWaterToRenderer();
 
   loadLayerMeshes();
 
   mReady = true;
   return true;
+}
+
+const IslandInfo &VkTerrainSubsystem::islandAt(glm::vec2 worldXZ) const {
+  static const IslandInfo kNeutral{};
+  if (!mReady)
+    return kNeutral;
+  return mState.terrain.noiseSet().islands.infoAt(worldXZ);
+}
+
+void VkTerrainSubsystem::buildWorldMapRGBA(std::vector<unsigned char> &out,
+                                           int pixels, float extent) const {
+  const int n = std::clamp(pixels, 32, 2048);
+  out.assign(static_cast<size_t>(n) * n * 4, 0);
+  if (!mReady)
+    return;
+  const TerrainSettings &ts = mState.terrain.settings();
+  const TerrainNoiseSet &ns = mState.terrain.noiseSet();
+  const float span = extent > 1.0f ? extent : ts.worldRadius * 2.2f;
+  WaterCellCache cache;
+  for (int j = 0; j < n; ++j) {
+    for (int i = 0; i < n; ++i) {
+      const glm::vec2 xz((static_cast<float>(i) / (n - 1) - 0.5f) * span,
+                         (static_cast<float>(j) / (n - 1) - 0.5f) * span);
+      TerrainMacroSample macro = sampleMacro(ns, xz, ts);
+      const float h = computeHeight(macro, ns, xz, ts, nullptr, &cache);
+      const float w = waterSurfaceAt(ns, ts, xz, nullptr, &cache);
+      glm::vec3 c;
+      if (h < w) {
+        const float d = std::clamp((w - h) / 45.0f, 0.0f, 1.0f);
+        c = glm::vec3(0.157f - 0.11f * d, 0.43f - 0.27f * d, 0.667f - 0.27f * d);
+      } else if (h - w < 2.0f) {
+        c = glm::vec3(0.886f, 0.831f, 0.627f); // beach
+      } else {
+        // Tinted by ARCHETYPE: the point of the island pass is that landmasses
+        // differ, and a pure height ramp cannot show that.
+        const IslandInfo &isle = ns.islands.infoAt(xz);
+        glm::vec3 base(0.42f, 0.62f, 0.30f);
+        switch (isle.archetype) {
+        case IslandArchetype::Meadows:  base = glm::vec3(0.55f, 0.72f, 0.33f); break;
+        case IslandArchetype::Forest:   base = glm::vec3(0.19f, 0.44f, 0.22f); break;
+        case IslandArchetype::Highland: base = glm::vec3(0.52f, 0.50f, 0.48f); break;
+        case IslandArchetype::Marsh:    base = glm::vec3(0.40f, 0.44f, 0.26f); break;
+        default: break;
+        }
+        const float a = std::clamp(h / 90.0f, 0.0f, 1.0f);
+        c = base * (0.72f + 0.55f * a);
+        if (a > 0.55f)
+          c = glm::mix(c, glm::vec3(0.95f), (a - 0.55f) / 0.45f);
+      }
+      const size_t o = (static_cast<size_t>(j) * n + i) * 4;
+      out[o + 0] = static_cast<unsigned char>(std::clamp(c.x, 0.0f, 1.0f) * 255.0f);
+      out[o + 1] = static_cast<unsigned char>(std::clamp(c.y, 0.0f, 1.0f) * 255.0f);
+      out[o + 2] = static_cast<unsigned char>(std::clamp(c.z, 0.0f, 1.0f) * 255.0f);
+      out[o + 3] = 255;
+    }
+  }
+}
+
+void VkTerrainSubsystem::syncWaterToRenderer() {
+  if (!mReady || !mState.renderer)
+    return;
+  const TerrainSettings &s = mState.terrain.settings();
+  vkrhi::VulkanRenderer::Params &p = mState.renderer->params();
+
+  // The terrain decides whether there is water at all, and where its sea sits.
+  p.waterEnabled = s.oceanEnabled || s.lakesEnabled;
+  p.waterLevel = s.oceanEnabled ? s.seaLevel : -1.0e9f;
+  if (!p.waterEnabled)
+    return;
+
+  // Field extent covers the streamed disc with margin. 256 texels across ~1 km
+  // is ~4 m/texel -- finer than any lake shoreline needs, since a lake surface
+  // is flat and the field only has to say WHICH flat level applies here.
+  constexpr uint32_t kRes = 256;
+  const float span =
+      std::max(static_cast<float>(s.viewDistanceChunks) * s.chunkWorldSize * 2.4f, 512.0f);
+  const glm::vec3 cam = p.camPos;
+  const glm::vec2 centre(cam.x, cam.z);
+
+  // Rebuild only when the camera has left the comfortable middle of the
+  // current field. Sampling is a few tens of thousands of waterSurfaceAt()
+  // calls, which is cheap but not free, and the field is only consulted
+  // within its own footprint anyway.
+  if (mWaterFieldValid &&
+      glm::length(centre - mWaterFieldCentre) < span * 0.15f)
+    return;
+
+  mWaterFieldCentre = centre;
+  mWaterFieldValid = true;
+  const glm::vec2 origin = centre - glm::vec2(span * 0.5f);
+  mWaterFieldScratch.resize(static_cast<size_t>(kRes) * kRes);
+
+  WaterCellCache cache;
+  for (uint32_t j = 0; j < kRes; ++j) {
+    for (uint32_t i = 0; i < kRes; ++i) {
+      const glm::vec2 xz =
+          origin + glm::vec2(static_cast<float>(i), static_cast<float>(j)) *
+                       (span / static_cast<float>(kRes - 1));
+      float surface = waterSurfaceAt(mState.terrain.noiseSet(), s, xz,
+                                     &mState.terrain.editsGrid(), &cache);
+      // Store the sea level rather than a sentinel where there is no lake, so
+      // bilinear filtering across a shoreline ramps between two real water
+      // heights instead of into a huge negative number.
+      if (surface <= kNoWater * 0.5f)
+        surface = s.oceanEnabled ? s.seaLevel : -1.0e4f;
+      mWaterFieldScratch[static_cast<size_t>(j) * kRes + i] = surface;
+    }
+  }
+  mState.renderer->setWaterHeightField(mWaterFieldScratch.data(), kRes, origin, span);
+}
+
+void VkTerrainSubsystem::destroy() {
+  if (!mReady)
+    return;
+
+  // Same full teardown regenerate() performs -- chunk meshes, physics bodies
+  // and the ECS marker entities all have to go, or the Hierarchy keeps
+  // showing chunks for terrain that no longer exists.
+  releaseAllChunks();
+
+  mState.terrain.shutdown();
+  mQuery.reset();
+  mReady = false;
+
+  // Vegetation batches live in the renderer, not in mActive, so emptying the
+  // scatter set is not enough on its own: without this the last frame's
+  // grass and trees keep drawing over an empty world.
+  if (mState.renderer)
+    mState.renderer->setVegetationBatches({});
+}
+
+void VkTerrainSubsystem::releaseAllChunks() {
+  Registry &reg = mState.scene.registry();
+  for (const auto &[coord, data] : mActive) {
+    if (data.entityId != 0 && reg.valid(data.entityId))
+      reg.destroy(data.entityId);
+    if (data.physicsBodyId != 0xFFFFFFFF)
+      mState.physicsSystem.removeTerrainChunk(data.physicsBodyId);
+    if (data.meshHandle != UINT32_MAX && mState.renderer)
+      mState.renderer->destroyMesh(data.meshHandle);
+  }
+  for (const auto &[coord, trees] : mInteractiveTrees)
+    for (uint32_t entityId : trees)
+      if (reg.valid(entityId))
+        reg.destroy(entityId);
+  for (const auto &[coord, rocks] : mCollidableRocks)
+    for (uint32_t entityId : rocks)
+      if (reg.valid(entityId))
+        reg.destroy(entityId);
+
+  mActive.clear();
+  mScatterByChunk.clear();
+  mInteractiveTrees.clear();
+  mCollidableRocks.clear();
+  mVegDirty = true; // scatter set just emptied; batches must clear too
 }
 
 void VkTerrainSubsystem::loadLayerMeshes() {
@@ -258,34 +461,13 @@ void VkTerrainSubsystem::regenerate(const TerrainSettings &newSettings) {
   if (!mReady)
     return;
 
-  Registry &reg = mState.scene.registry();
-
   // Full teardown of every active chunk's render-side state -- more
   // thorough than shutdown() does (that skips ECS entity destruction since
   // the whole scene is going away with it; regenerate() keeps the app
   // running, so stale entities would otherwise linger in the Hierarchy
-  // forever). Mirrors the per-chunk unload branch in addFrameInstances(),
-  // just applied to everything currently active at once.
-  for (const auto &[coord, data] : mActive) {
-    if (data.entityId != 0)
-      reg.destroy(data.entityId);
-    if (data.physicsBodyId != 0xFFFFFFFF)
-      mState.physicsSystem.removeTerrainChunk(data.physicsBodyId);
-    if (data.meshHandle != UINT32_MAX)
-      mState.renderer->destroyMesh(data.meshHandle);
-  }
-  for (const auto &[coord, trees] : mInteractiveTrees)
-    for (uint32_t entityId : trees)
-      reg.destroy(entityId);
-  for (const auto &[coord, rocks] : mCollidableRocks)
-    for (uint32_t entityId : rocks)
-      reg.destroy(entityId);
-
-  mActive.clear();
-  mScatterByChunk.clear();
-  mInteractiveTrees.clear();
-  mCollidableRocks.clear();
-  mVegDirty = true; // scatter set just emptied; batches must clear too
+  // forever). Shared with destroy().
+  releaseAllChunks();
+  mPendingSettings = newSettings;
 
   mState.terrain.shutdown();
   mState.terrain.init(newSettings, mManifest);
@@ -304,6 +486,10 @@ void VkTerrainSubsystem::regenerate(const TerrainSettings &newSettings) {
 void VkTerrainSubsystem::addFrameInstances() {
   if (!mReady || !mState.renderer)
     return;
+
+  // Keep the renderer's water field centred on the camera. Cheap most frames:
+  // it early-outs unless the camera has left the middle of the current grid.
+  syncWaterToRenderer();
 
   Registry &reg = mState.scene.registry();
   const float chunkWorldSize = mState.terrain.settings().chunkWorldSize;
@@ -707,7 +893,9 @@ void VkTerrainSubsystem::promoteInteractiveTrees(glm::vec3 cameraWorldPos) {
       rb.type = RigidbodyComponent::Type::Static;
       auto &col = reg.emplace<ColliderComponent>(entity);
       col.shape = ColliderComponent::Shape::Capsule;
-      col.dimensions = glm::vec3(0.22f, 1.8f, 0.0f); // x=radius y=height
+      const float scaleXZ = glm::length(glm::vec3(s.transform[0]));
+      const float scaleY = glm::length(glm::vec3(s.transform[1]));
+      col.dimensions = glm::vec3(0.22f * scaleXZ, 1.8f * scaleY, 0.0f); // x=radius y=height
       promoted.push_back(entity);
     }
     // Recorded even if empty, so an in-range chunk with no eligible trees

@@ -285,7 +285,7 @@ size_t decimateSubmesh(MeshSubmeshData &submesh, size_t targetTriangles) {
   // --- rebuild ------------------------------------------------------------
   // Surviving welded vertices keep their representative original vertex's
   // attributes, with the position updated to wherever the collapses left it.
-  std::vector<uint32_t> weldedToNew(positions.size(), UINT32_MAX);
+  std::map<std::pair<uint32_t, uint32_t>, uint32_t> vertexKey;
   std::vector<MeshVertex> newVertices;
   std::vector<uint32_t> newIndices;
   newIndices.reserve(liveFaces * 3);
@@ -297,13 +297,22 @@ size_t decimateSubmesh(MeshSubmeshData &submesh, size_t targetTriangles) {
     bool ok = true;
     for (int k = 0; k < 3; ++k) {
       const uint32_t w = resolve(f.v[k]);
-      if (weldedToNew[w] == UINT32_MAX) {
-        MeshVertex v = submesh.vertices[weldedToOriginal[w]];
+      const uint32_t orig = f.v[k];  // original vertex index for attributes
+      auto key = std::make_pair(w, orig);
+      auto it = vertexKey.find(key);
+      if (it == vertexKey.end()) {
+        // Preserve the ORIGINAL vertex's attributes (UVs, normals) so UV
+        // seams are not destroyed by welding.  Only the position comes
+        // from the collapse chain.
+        MeshVertex v = submesh.vertices[orig];
         v.pos = positions[w];
-        weldedToNew[w] = static_cast<uint32_t>(newVertices.size());
+        uint32_t idx = static_cast<uint32_t>(newVertices.size());
+        vertexKey[key] = idx;
         newVertices.push_back(v);
+        tri[k] = idx;
+      } else {
+        tri[k] = it->second;
       }
-      tri[k] = weldedToNew[w];
     }
     if (tri[0] == tri[1] || tri[1] == tri[2] || tri[0] == tri[2])
       ok = false;

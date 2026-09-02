@@ -4,6 +4,7 @@
 #include "ScatterManifest.h"
 #include "TerrainChunkManager.h"
 #include "TerrainQuery.h"
+#include "TerrainIslands.h"
 #include "TerrainTypes.h"
 
 #include <cstdint>
@@ -88,6 +89,23 @@ public:
   bool initialize() override;
   void shutdown() override;
 
+  // --- terrain lifetime ---------------------------------------------------
+  // The engine boots with NO terrain: an empty scene is the honest starting
+  // point for an editor, and terrain is content you create rather than
+  // something the runtime assumes. initialize() only stages settings and
+  // loads the scatter manifest; these bring terrain in and out.
+  //
+  // (GLGEN_TERRAIN_ON_START=1 creates it at startup instead, for headless
+  // runs that need ground without a UI to click.)
+  bool create(const TerrainSettings &settings);
+  void destroy();
+  bool hasTerrain() const { return mReady; }
+
+  // Settings the next create() will use, and what the Terrain panel edits
+  // before any terrain exists. Once terrain is live, settings() is the
+  // authority.
+  const TerrainSettings &pendingSettings() const { return mPendingSettings; }
+
   // Called once per frame from main.cpp, AFTER VulkanRenderSystem::update()
   // (which clears+rebuilds mInstances from the ECS) so streamed terrain
   // instances survive into this frame's draw. Drains
@@ -126,6 +144,36 @@ private:
     uint32_t physicsBodyId = 0xFFFFFFFF; // Jolt body id; sentinel = none
   };
 
+  // Destroys every active chunk's mesh, physics body and marker entities.
+  // Shared by destroy() and regenerate(), which need exactly the same
+  // teardown for different reasons.
+  void releaseAllChunks();
+
+  // Pushes the terrain's water into the renderer: the resolved sea level, and
+  // a sampled grid of TerrainWater::waterSurfaceAt() covering the streamed
+  // region so lakes render at their own altitudes. Rebuilt when the camera
+  // leaves the area the current grid covers -- the terrain stays the single
+  // authority for where water is, exactly as it is for where the ground is.
+  void syncWaterToRenderer();
+
+public:
+  // Rasterises a top-down RGBA map of the whole world: ocean shaded by depth,
+  // land tinted by its island's archetype and shaded by altitude, beaches
+  // picked out. Island layout is a GLOBAL property and no in-engine camera can
+  // see it, which is why this exists at all. Shared by terrain.world_map()
+  // (writes a PNG) and the editor's World Map panel (uploads a texture).
+  void buildWorldMapRGBA(std::vector<unsigned char> &outRgba, int pixels,
+                         float extent) const;
+
+  // Which landmass covers a world XZ, and what kind of country it is. Never
+  // null: open ocean returns a neutral island.
+  const IslandInfo &islandAt(glm::vec2 worldXZ) const;
+
+private:
+  glm::vec2 mWaterFieldCentre{0.0f};
+  bool mWaterFieldValid = false;
+  std::vector<float> mWaterFieldScratch;
+
   void promoteInteractiveTrees(glm::vec3 cameraWorldPos);
   void promoteCollidableRocks(glm::vec3 cameraWorldPos);
   void updateTerrainCollision(glm::vec3 cameraWorldPos);
@@ -136,7 +184,12 @@ private:
   void loadLayerMeshes();
 
   VkAppState &mState;
+  // True only while terrain actually exists. Everything per-frame is gated
+  // on it, so "no terrain" costs nothing rather than streaming an empty world.
   bool mReady = false;
+  // What create() will use. Editable through the Terrain panel before any
+  // terrain exists, so settings survive create/destroy cycles.
+  TerrainSettings mPendingSettings;
 
   // Constructed in initialize() once mState.terrain is set up (references
   // its settings/noise set/edits grid, all stable for its lifetime).

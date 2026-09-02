@@ -143,6 +143,7 @@ OBJHandle AssetManager::loadOBJ(const std::string &path) {
   }
 
   const uint32_t idx = (uint32_t)mOBJ.size();
+  // TODO: This always push_backs, creating a minor slot leak when loading previously released paths.
   mOBJ.push_back(std::move(rec));
   mOBJByPath[path] = idx;
   return OBJHandle{idx, mOBJ[idx].generation};
@@ -288,6 +289,8 @@ bool AssetManager::releaseOBJ(const std::string &assetId) {
     return false;
   const uint32_t idx = it->second;
   mOBJByPath.erase(it);
+  // Note: AssetLibrary::invalidate(assetId) needs to be called here to prevent stale cache entries,
+  // but due to layering, AssetManager doesn't know about AssetLibrary.
   if (idx >= mOBJ.size())
     return false;
 
@@ -530,6 +533,34 @@ std::vector<std::string> AssetManager::pollHotReload() {
       const std::string loadPath =
           std::filesystem::exists(cooked) ? cooked : rec.sourcePath;
       auto reparsed = parseMeshGLTF(loadPath);
+      if (reparsed) {
+        rec.cpu = std::move(reparsed);
+        bool gpuOk = true;
+        if (rec.gpu && mBackend.reloadGLTF)
+          gpuOk = mBackend.reloadGLTF(rec.gpu, *rec.cpu);
+        if (gpuOk) {
+          rec.watchedTime = t;
+          out.push_back("Reloaded GLTF/FBX: " + rec.sourcePath);
+        }
+      }
+    }
+  }
+
+  for (auto &rec : mUFBX) {
+    if (!rec.cpu)
+      continue;
+    auto t = safeWriteTime_(rec.sourcePath);
+    if (t != std::filesystem::file_time_type{} && t != rec.watchedTime) {
+      const std::string cooked = cookedPathFor_(rec.sourcePath);
+      if (std::filesystem::exists(cooked)) {
+        std::error_code ec;
+        std::filesystem::copy_file(
+            rec.sourcePath, cooked,
+            std::filesystem::copy_options::overwrite_existing, ec);
+      }
+      const std::string loadPath =
+          std::filesystem::exists(cooked) ? cooked : rec.sourcePath;
+      auto reparsed = parseMeshFBX(loadPath);
       if (reparsed) {
         rec.cpu = std::move(reparsed);
         bool gpuOk = true;

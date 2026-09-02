@@ -223,23 +223,30 @@ void MeshBuilder::addIcosphere(const glm::vec3 &center, float radius,
     tris.swap(next);
   }
 
-  // Per-triangle emission with a dominant-axis planar UV. Sharing vertices
-  // here would force a single global UV mapping, which on a sphere means
-  // either a seam or pole stretching -- neither survives displacement well.
+  // Per-triangle emission lets us unwrap the longitude seam locally.  The old
+  // dominant-axis projection changed basis from one triangle to the next; a
+  // continuous texture consequently looked like dark zebra strokes across a
+  // rock.  Spherical UVs have a little compression near the poles, but retain
+  // a coherent material scale over the whole displaced surface.
   for (const glm::ivec3 &tri : tris) {
     const glm::vec3 n0 = verts[tri.x], n1 = verts[tri.y], n2 = verts[tri.z];
-    const glm::vec3 faceN = glm::normalize(n0 + n1 + n2);
-    const glm::vec3 a = glm::abs(faceN);
-    auto planarUV = [&](const glm::vec3 &p) -> glm::vec2 {
-      if (a.x >= a.y && a.x >= a.z)
-        return glm::vec2(p.z, p.y) * 0.5f + 0.5f;
-      if (a.y >= a.z)
-        return glm::vec2(p.x, p.z) * 0.5f + 0.5f;
-      return glm::vec2(p.x, p.y) * 0.5f + 0.5f;
+    auto sphericalUV = [](const glm::vec3 &p) -> glm::vec2 {
+      constexpr float invTwoPi = 0.15915494309189535f;
+      constexpr float invPi = 0.31830988618379067f;
+      return glm::vec2(std::atan2(p.z, p.x) * invTwoPi + 0.5f,
+                       std::asin(std::clamp(p.y, -1.0f, 1.0f)) * invPi + 0.5f);
     };
-    const uint32_t i0 = emit_(center + n0 * radius, n0, planarUV(n0));
-    emit_(center + n1 * radius, n1, planarUV(n1));
-    emit_(center + n2 * radius, n2, planarUV(n2));
+    glm::vec2 uv0 = sphericalUV(n0), uv1 = sphericalUV(n1), uv2 = sphericalUV(n2);
+    const float minU = std::min({uv0.x, uv1.x, uv2.x});
+    const float maxU = std::max({uv0.x, uv1.x, uv2.x});
+    if (maxU - minU > 0.5f) {
+      if (uv0.x < 0.5f) uv0.x += 1.0f;
+      if (uv1.x < 0.5f) uv1.x += 1.0f;
+      if (uv2.x < 0.5f) uv2.x += 1.0f;
+    }
+    const uint32_t i0 = emit_(center + n0 * radius, n0, uv0);
+    emit_(center + n1 * radius, n1, uv1);
+    emit_(center + n2 * radius, n2, uv2);
     tri_(i0, i0 + 1, i0 + 2);
   }
 }

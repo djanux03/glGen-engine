@@ -1,6 +1,7 @@
 #include "VkPlayerControllerSystem.h"
 
 #include "VkAppState.h"
+#include "subsystems/VkTerrainSubsystem.h"
 
 #include "ECS/Components.h"
 #include "Keyboard.h"
@@ -14,10 +15,17 @@
 #include <algorithm>
 #include <cmath>
 
-// No CPU TerrainSystem in glGenVk yet (Phase 1 scope) -- glGenVk has a
-// separate, GPU mesh-shader terrain path. Ground detection here relies on
-// the physics raycast only, same as the old app does when its TerrainSystem
-// is disabled (isEnabled() == false -> ground candidate ignored).
+// Ground detection combines two candidates, same "take the higher one" shape
+// as the old app's TerrainSystem-height + physics-raycast blend: the
+// procedural terrain height (VkTerrainSubsystem::heightAt(), a pure noise
+// sample -- always correct immediately, independent of whether a chunk's
+// Jolt heightfield has streamed in yet) and the physics raycast (catches
+// props/platforms standing above the terrain, which should win over bare
+// ground). Relying on the raycast alone left the player able to fall
+// through: terrain chunks only get a Jolt collider within
+// collisionChunkRadius of the CAMERA and that streams in asynchronously, so
+// a raycast can legitimately find nothing under the player for the first
+// several frames after spawn or a teleport.
 
 namespace {
 bool isAlive(Registry &reg, uint32_t entity) {
@@ -50,7 +58,7 @@ void VkPlayerControllerSystem::reset() {
   mLastPlayerId = 0;
 }
 
-void VkPlayerControllerSystem::update(VkAppState &state, float dt) {
+void VkPlayerControllerSystem::update(VkAppState &state, float dt, bool active) {
   if (dt <= 0.0f)
     return;
 
@@ -69,6 +77,9 @@ void VkPlayerControllerSystem::update(VkAppState &state, float dt) {
     mGrounded = false;
     mLastPlayerId = state.gameplay.playerId;
   }
+
+  if (!active)
+    return;
 
   auto &tr = reg.get<TransformComponent>(state.gameplay.playerId);
 
@@ -135,21 +146,29 @@ void VkPlayerControllerSystem::update(VkAppState &state, float dt) {
     return;
   }
 
-  constexpr float kGroundClearance = 0.55f;
+  float groundClearance = 1.65f;
+  if (reg.has<ColliderComponent>(state.gameplay.playerId)) {
+    const auto &col = reg.get<ColliderComponent>(state.gameplay.playerId);
+    groundClearance = col.dimensions.y * 0.9f;
+  }
   constexpr float kGroundSnap = 1.2f;
   constexpr float kGravity = -9.8f;
   constexpr float kJumpSpeed = 4.5f;
   constexpr float kMaxFallSpeed = -25.0f;
 
   mGrounded = false;
-  float groundY = -3.402823466e+38F; // no CPU TerrainSystem in Phase 1
+  float groundY = -3.402823466e+38F;
 
   PhysicsRaycastResult groundHit = state.physicsSystem.raycast(
       tr.position, glm::vec3(0.0f, -1.0f, 0.0f), 5.0f, state.gameplay.playerId);
-  if (groundHit.hit)
-    groundY = std::max(groundY, groundHit.position.y);
+  if (groundHit.hit) {
+    groundY = groundHit.position.y;
+  } else if (state.terrainSubsystem) {
+    groundY = state.terrainSubsystem->heightAt(
+        glm::vec2(tr.position.x, tr.position.z));
+  }
 
-  const float desiredY = groundY + kGroundClearance;
+  const float desiredY = groundY + groundClearance;
   if (groundY > -3.0e+38f && tr.position.y <= desiredY + kGroundSnap &&
       mVerticalVelocity <= 0.0f) {
     tr.position.y = desiredY;

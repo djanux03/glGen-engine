@@ -212,43 +212,370 @@ Chunk meshes reuse the **existing standard mesh vertex shader** (ordinary indexe
 - **"Terrain Brush"** (new): enabled toggle, mode radio, radius/strength/scatterCount, species dropdown.
 - **Statistics panel addition**: active chunk count / pending jobs / vegetation instance count / physics body count — cheap, useful for verifying streaming budgets during development.
 
+## Terrain Generator Panel Implementation Notes (learned while building it, post-Phase-6)
+
+Delivered as a standalone follow-up after all 6 phases, not as its own
+numbered phase — closes the one substantial gap §7 above left open (the
+Brush panel was already built in Phase 5; Statistics panel additions and a
+Vegetation-specific panel are still not done).
+
+**`TerrainChunkManager::shutdown()` + `init(newSettings)` turned out to
+already be the exact "full teardown + rebuild" primitive needed** — no new
+engine-core reset machinery was required. `shutdown()` was already
+thread-safe (joins every worker thread before touching shared state) since
+it's what the destructor itself calls.
+
+**A real gap found before writing the reset code**: `VkTerrainSubsystem`'s
+own `shutdown()` does *not* destroy ECS entities for active chunks (only
+removes physics bodies) — fine for a real app shutdown (the whole scene is
+going away with it), but wrong for `regenerate()`, which keeps the app
+running. `regenerate()` needed a more thorough teardown loop (destroying
+`mActive`/`mInteractiveTrees` entities too), mirroring the per-chunk unload
+branch in `addFrameInstances()` rather than `shutdown()`'s lighter version.
+
+**Brush edits are wiped on regenerate** via a new `HeightOffsetGrid::clear()`
+(didn't exist before), called automatically from inside
+`TerrainChunkManager::init()` itself rather than left for the caller to
+remember — harmless no-op on first-ever startup.
+
+**Self-verified live** (headless capture can't click UI buttons, so a
+temporary debug env-var trigger was wired into `main.cpp`, exercised, then
+fully reverted — confirmed via `git diff`): triggered `regenerate()`
+mid-run with a new seed/heightScale/`singleBiomeOnly=false`. Confirmed no
+crash, the terrain visibly changed shape (taller/steeper), entity count
+stayed exactly the same (no duplication/leak — since the camera hadn't
+moved, the new chunk manager re-requested the same coords, which correctly
+hit `VkTerrainSubsystem`'s existing `updateMeshFromData()` in-place-refresh
+branch rather than creating new mesh handles), and the 9 vegetation species
+meshes refreshed cleanly (`VulkanAccel` log confirmed `Updated BLAS N in
+place` for all of them). **Not verified**: actually clicking the panel's UI
+controls live, or a regenerate where the camera *has* moved (a case more
+likely to hit the accepted "orphaned mesh cache entry" limitation).
+
+## Phase 1 Implementation Notes (learned while building it)
+
+`registerRuntimeOBJRaw` turned out not to be usable as originally envisioned: it stores an opaque, already-GPU-uploaded `void*` and explicitly discards the CPU `MeshData` (`rec.cpu.reset()`), but `VulkanRenderSystem::update()` — the only code that turns an ECS `MeshComponent` into a draw — only ever reads the CPU side (`AssetManager::getOBJData()`), never `AssetManager::getOBJ()`. No `ModelGpuBackend` is registered anywhere in `VulkanRHI` either. So a mesh registered via `registerRuntimeOBJRaw` is invisible to the normal per-frame ECS→render path; it would need either a new `ModelGpuBackend` (nontrivial, not attempted here) or a `VulkanRenderSystem` special-case.
+
+For Phase 1's single static chunk, `VkTerrainSubsystem` instead calls `VulkanRenderer::createMeshFromData()`/`addInstance()` directly — the same low-level calls `VulkanRenderSystem` itself makes per entity — and tracks the returned `MeshHandle` itself. Because `VulkanRenderer::addInstance()` is called every frame after `VulkanRenderSystem::update()` (which clears+rebuilds `mInstances` from the ECS each frame), `VkTerrainSubsystem::addFrameInstance()` is called right after it in `main.cpp`'s loop to re-add the terrain instance before `drawFrame()`. An ECS entity (`TerrainChunk_0_0`, `MeshComponent{isTerrain=true}`) is still created for Hierarchy/Inspector visibility, but it's otherwise inert for rendering.
+
+Terrain routing to `terrainChunk.frag` was implemented via a `bool isTerrain` flag on `VulkanRenderer::Instance` (not `registerRuntimeOBJRaw`/`AssetManager`) — set by `addInstance(mesh, transform, isTerrain)`'s new third parameter, and used in `drawFrame()`'s main pass to partition `mInstances` into two draw loops (`mScenePipeline` vs. the new `mTerrainChunkPipeline`). The depth prepass needed no changes at all: terrain chunks share `mesh.vert`'s vertex layout, so the existing generic `mDepthPrepassPipeline` loop over all instances already covers them — the old mesh-shader terrain's separate `mDepthPrepassTerrainPipeline` was deleted outright rather than adapted.
+
+`FrameDataGpu`'s `terrain`/`terrain2` vec4s (amplitude/frequency/octaves/seed/lacunarity/gain/heightOffset/warp — the fbm generator params, meaningless now that height comes from the CPU) were deleted from the C++ struct and from `mesh.vert`/`mesh.frag`'s GLSL declarations, shifting `mesh.frag`'s explicit `camPosWS` offset from 336 to 304. `terrainMat1`/`terrainMat2`/the 4 `terrainColor*` fields were deliberately **kept** (still packed from `VulkanRenderer::Params`) since `terrainChunk.frag` reuses them verbatim for its height/slope material blend — this means the existing "Terrain Materials" editor panel in `VkEditor.cpp` needed no changes at all; only the "Terrain Generator" (noise) panel was removed, since Phase 1 has no noise-generator UI yet (that's Phase 2+, once `TerrainChunkManager`/`TerrainSettings` are reachable from the editor).
+
+Registered future work for Phase 2+: revisit whether `registerRuntimeOBJRaw` should be wired up properly (new `ModelGpuBackend` + `VulkanRenderSystem` change) once streaming needs it for load/unload lifecycle bookkeeping, or whether `VkTerrainSubsystem`'s direct-renderer-call pattern should just be extended to `TerrainChunkManager` wholesale (bypassing `AssetManager` for terrain permanently). The direct-call pattern already works and is simpler; the plan's original assumption that Phase 1 would exercise `registerRuntimeOBJRaw` was wrong and is corrected here.
+
+## Phase 2 Implementation Notes (learned while building it)
+
+**Unplanned renderer fix, found during design rather than assumed up front:** `VulkanRenderer::finalizeScene()` is not incremental — every call does `vkDeviceWaitIdle` + tears down **all** existing acceleration structures + rebuilds **one BLAS per mesh for every mesh ever created** (`VulkanRenderer.cpp`). Phase 1 only called it once at startup so this never surfaced. Naively calling it once per streamed-in chunk (or even once per frame that any chunk completed) would have meant a full-device-stall + full-BLAS-set rebuild every time, growing more expensive the longer a session ran — incompatible with "fly around and watch chunks stream in smoothly." Fixed by adding `VulkanAccel::appendBlas()` (builds BLAS only for the new tail meshes, no teardown, no stall) and `VulkanRenderer::growScene()` (the incremental counterpart to `finalizeScene()`, used by streaming instead of it). The per-frame instance/TLAS path was already fine as-is — `VulkanAccel::recordTlasBuild()` already rebuilds only the TLAS from the current instance list every frame, cheaply; only BLAS *creation* needed the incremental path. Also bumped the TLAS's initial instance capacity from a `max(2x, 256)` heuristic to `max(2x, 4096)` so streamed-in chunk instances (up to `(2*viewDistanceChunks+1)²` ≈ 169 at default settings) never force a TLAS recreate mid-stream. Verified live: smoke-run logs show `[VulkanAccel] Appended 4 BLAS (total 7)` / `(total 11)` rather than a full rebuild.
+
+**Chunk coordinate convention fixed, not just extended:** Phase 1's single chunk passed `chunkOrigin=(0,0)` to `sampleHeightGrid` (which treats it as the chunk's *min corner* in world space) while placing the resulting chunk-local mesh (centered at its own origin, spanning `[-half, +half]`) with an *identity* transform — i.e., visually centered at world `(0,0)` while sampled as if its min corner were at world `(0,0)`. For one static chunk nobody could tell; for multiple tiling chunks this would have desynced height sampling from mesh placement and broken seams. Fixed by adding `chunkMinCorner()`/`chunkCenterWorld()`/`chunkCoordFromWorldXZ()` to `TerrainTypes.h` as the single source of truth for the convention (chunk `(x,z)` occupies world cell `[x*size,(x+1)*size) × [z*size,(z+1)*size)`), used consistently by both `TerrainChunkManager` (samples at the min corner) and `VkTerrainSubsystem` (places the instance transform at the center).
+
+**Scope actually built, matching the plan's steps 1–3 and 5** (step 4, collision, is Phase 4 and was skipped): `TerrainChunkManager` owns a fixed-size `std::thread` worker pool (none existed anywhere in `Engine/` to reuse — confirmed by grep) and a `ChunkCoord → ChunkState` table; `streamUpdate()` does the boundary-cross early-out, Chebyshev-disc desired-set diff (nearest-first, 5 LOD bands via `((chunkResolution-1) >> lod) + 1` = 33/17/9/5/3), budgeted dispatch/drain, and unload queueing. A real concurrency bug was caught and fixed before it shipped: a chunk marked `Unloading` while its build job was still in flight would otherwise have its stale completed mesh pushed into the upload queue anyway (instancing it right after tearing it down) — the drain step now drops any completed result whose chunk isn't still `Building`. `TerrainChunkMesher` gained skirt geometry (a downward-facing curtain around the outer ring, wound to face outward using the same `edge1×edge2` convention as the top face) to hide LOD/seam cracks without cross-chunk vertex sharing, matching the plan's design.
+
+**Known limitation, deliberately deferred:** unloading a chunk stops rendering it and destroys its ECS entity, but there's still no `destroyMesh()`/BLAS-removal path in `VulkanRenderer`, so the GPU mesh is never freed. Mitigated by caching mesh handles per `(ChunkCoord, lod)` in `VkTerrainSubsystem` so revisiting terrain reuses the existing mesh instead of rebuilding it — growth is bounded by distinct chunk+LOD combinations visited per session, not by load/unload event count. Full reclamation (index-stable BLAS compaction) is real work and was explicitly scoped out of Phase 2; flagged here as the next thing to tackle if long sessions show GPU memory growth.
+
+**Not yet verified:** an actual interactive fly-around watching for visual popping/LOD seams/hitches at speed — automated headless smoke runs and the 79/79 test suite confirm the mechanics (correct chunk coordinates, incremental BLAS append, clean worker-pool shutdown over 300 frames) but can't drive live keyboard/mouse input. Do this manually via `run-glgenvk.bat` before considering Phase 2 fully closed out.
+
+## Phase 3 Implementation Notes (learned while building it)
+
+**Scope grew beyond the original design at the user's direction, not by drift.**
+The original plan assumed vegetation would reuse `InstancedMeshComponent` (a
+GL-era leftover with `unsigned int instanceVBO` fields, never read by any
+Vulkan code) for per-species-per-chunk instancing. Investigation found **no
+GPU-instanced draw path existed anywhere in the renderer** — every draw was
+`vkCmdDrawIndexed(..., instanceCount=1, ...)`. Given that, and given
+`TreeComponent`/`ColliderComponent`/`RigidbodyComponent` already existing with
+a generic physics sync loop independent of Phase 4's terrain-heightfield work,
+the user chose to build real GPU instancing now and include interactive trees
+in this pass, rather than defer both. See the two `AskUserQuestion` decisions
+at the start of this phase for the reasoning.
+
+**Real GPU instancing added additively**, following the same pattern Phase 1/2
+already established (new parallel pipeline, not a rewrite of the existing
+one): `shaders/vulkan/meshInstanced.vert` is `mesh.vert` with the model matrix
+sourced from a 2nd vertex binding (`VK_VERTEX_INPUT_RATE_INSTANCE`, 4 `vec4`
+attributes) instead of the push constant; `mesh.frag` is reused verbatim.
+`VulkanRenderer` gained `mVegetationPipeline`/`mVegetationDepthPrepassPipeline`
+(structurally identical to `mScenePipeline`/`mDepthPrepassPipeline`, just the
+new shader + vertex input) and a `VegSpeciesBuffer` per species (host-visible,
+persistently-mapped, grows geometrically like a `std::vector`, never shrinks).
+`setVegetationBatches()` is called once per frame; `drawFrame()` gained one
+instanced draw call per species per submesh in both the depth prepass and
+color pass — draw-call count is independent of placement count. Each
+placement still gets a `VulkanAccel::InstanceInput` in the TLAS-instance list
+(referencing its species' shared BLAS) so ray-traced shadows stay correct;
+that only changes rasterization draw-call count, not the ray-tracing path.
+
+**Found and fixed a real correctness gap, not introduced by this phase:**
+`MaterialAsset::baseColor` was never consumed anywhere in
+`VulkanRenderer.cpp` — `createMeshFromData()` only ever resolved
+`textureIndex` from `texDiffusePath`, falling back to `mDefaultTexIndex` (a
+visible **checkerboard** placeholder texture, not a flat color) whenever a
+submesh had no texture path. This affected every procedural mesh in the
+renderer already (terrain chunks, `MeshPrimitives.cpp`'s primitives), not just
+vegetation — it just became visible once vegetation needed distinguishable
+per-species colors. Fixed by synthesizing a cached 1×1 solid-color texture
+from `baseColor` when `texDiffusePath` is empty (`VulkanRenderer.cpp`'s
+`textureFor` lambda). Side effect: terrain chunks (which never set
+`baseColor`, defaulting to white) now render their detail-texture layer as
+flat white instead of the checkerboard placeholder — a visible but incidental
+improvement, not a regression (the checkerboard was never an intentional
+terrain look).
+
+**Vegetation data flow matches the plan exactly**: `scatterVegetation()` hooks
+into `TerrainChunkManager`'s worker job right after the dominant-biome
+majority vote, using the same `heights`/noise set already in scope. One
+deviation from the plan's literal signature: height per placement candidate
+is resolved via a fresh `computeHeight()` call (not bilinear interpolation of
+the already-sampled mesh grid) — candidate density per chunk is low enough
+(tens to ~200) that this is cheap on the worker thread, and it keeps
+`computeHeight()` as the exact single height authority rather than an
+approximation of it. Vegetation is only scattered for LOD 0 (finest) chunks —
+distant chunks don't need per-plant detail, matching the "no impostor mesh"
+simplicity already called for.
+
+**Interactive trees, without a rendering special-case**: a promoted tree gets
+no `MeshComponent` at all — it stays purely visual as part of its species'
+batch (so it isn't drawn twice, and doesn't need `AssetManager` mesh
+resolution, sidestepping the exact dead-end Phase 1 hit with
+`registerRuntimeOBJRaw`). Promotion spawns a co-located marker entity
+(`TransformComponent` + `TreeComponent` + `RigidbodyComponent{Static}` +
+`ColliderComponent{Capsule}`) picked up by `PhysicsSystem`'s existing generic
+`view<RigidbodyComponent>()` sync loop — confirmed to already handle Capsule
+shapes (`dimensions.x`=radius, `dimensions.y`=full height) independent of the
+terrain-heightfield API. ~20% of eligible (Pine/Oak/Birch) instances within
+`interactiveTreeChunkRadius` chunks of the camera are promoted (a fixed
+1-in-5 stride rather than a random 22%, close enough to the plan's figure and
+simpler); demoted on the same per-frame pass once their chunk falls out of
+range or unloads.
+
+**Not yet verified**: an actual interactive fly-around confirming forests
+visually populate per-biome and that walking into a promoted tree collides —
+same limitation as Phase 2, automated headless smoke runs and the 86/86 test
+suite confirm the mechanics but can't drive live keyboard/mouse input.
+
+## Phase 4 Implementation Notes (learned while building it)
+
+**The scaffolding was already correct — the risk was in how it'd be
+called, not in the API itself.** `PhysicsSystem::addTerrainChunk`/
+`removeTerrainChunk` (`Engine/ECS/Systems/PhysicsTerrainChunk.cpp`) have had
+zero call sites since Phase 2. Investigation confirmed the implementation
+itself needs no changes — the risk flagged in this plan (a min-corner vs.
+center mismatch) was about the *call site*, not the API: `chunkOrigin` is
+Jolt's heightfield min-corner (`inOffset`), matching `TerrainTypes.h`'s
+`chunkMinCorner()`, not `chunkCenterWorld()` (which `VkTerrainSubsystem`'s
+nearby render-transform code uses for the same chunk). Both return a
+`glm::vec2` of identical shape, so this was a real copy-paste trap, not a
+theoretical one — the actual `updateTerrainCollision()` call site uses
+`chunkMinCorner()` explicitly.
+
+**Collision was decoupled from the mesh streaming pipeline entirely, by
+design, not by oversight.** The original design's "step 4" implied slotting
+collision into the same per-chunk load/unload event stream as mesh
+upload. But `collisionChunkRadius` (2) is smaller than `viewDistanceChunks`
+(6), so a chunk's collision eligibility changes as the camera moves *within*
+the already-loaded view radius — an event with no natural home in
+`TerrainChunkManager`'s upload/unload queues, which only fire once per
+chunk's full lifecycle. Instead, `VkTerrainSubsystem::updateTerrainCollision()`
+re-evaluates every currently-active chunk's distance to the camera every
+frame, structured identically to Phase 3's `promoteInteractiveTrees()`
+(demote pass, then promote pass, one shared `collisionUpdatesPerFrame`
+budget counter) — proven to generalize cleanly to a second, unrelated
+distance-gated per-chunk behavior. `TerrainChunkManager` gained exactly one
+method, `sampleCollisionHeights()`, a synchronous main-thread-callable
+wrapper around the same `sampleHeightGrid()` the worker jobs already use —
+confirmed safe to call off the worker-thread pipeline since the noise set is
+read-only per call. This keeps `TerrainChunkManager` fully physics-free, as
+its own design comment already required.
+
+**Confirmed, not assumed: Jolt's `HeightFieldShapeSettings` has no hard
+constraint that would have blocked using the fixed `chunkResolution` (33)**
+regardless of a chunk's visual LOD — only `sampleCount/blockSize >= 2` is
+enforced (33/2=16), and Jolt pads internally to a block-size multiple,
+transparent to the caller.
+
+**Terrain bodies are confirmed structurally invisible to the generic
+`RigidbodyComponent` physics sync** used by props and Phase 3's interactive
+trees — `addTerrainChunk` never touches the ECS at all, so
+`view<RigidbodyComponent>()` cannot iterate over a terrain body by
+construction, not merely by convention.
+
+**Scope came in smaller than the plan doc's original wording implied**: the
+"remove ... the `terrainAmplitude=0.12` flatness hack" item turned out to be
+stale — that value/hack no longer exists anywhere in `main.cpp` (the doc's
+own cited line number pointed at unrelated camera-sensitivity code in the
+current file). Only the placeholder `Floor` entity (a static Box collider
+standing in for terrain) needed removing.
+
+**Not yet verified**: an actual live walk/fall onto real terrain confirming
+the physics shape matches the visual mesh, and flying near the
+`collisionChunkRadius` boundary to watch for add/remove churn — same
+limitation as Phases 2 and 3, automated headless smoke runs and the 88/88
+test suite confirm the mechanics but can't drive live keyboard/mouse input.
+
+## Phase 5 Implementation Notes (learned while building it)
+
+**Scope was narrowed at the user's direction, not by drift**: height
+sculpting (Raise/Lower) only this pass; vegetation Add/RemoveVegetation
+brush modes are deferred (vegetation is fully procedural today, so
+"painting" it needs its own persistence cache — `PaintedInstanceCache` — a
+separable, similarly-sized follow-up). The `TerrainBrushSettings::Mode` enum
+only has 2 values for now but is structured to extend without reshuffling.
+
+**No dirty-chunk rebuild mechanism existed anywhere, confirmed by reading
+the full state machine.** `TerrainChunkManager` only ever dispatched a job
+for `ChunkState::Unloaded` chunks; there was no way to force an
+already-`ReadyToUpload` chunk to rebuild short of a full unload/reload
+round-trip. `TerrainChunkManager::applyHeightBrush()` fills this gap by
+bypassing the `Unloaded`-only dispatch gate directly for touched chunks
+found in that state, recomputing their LOD the same way `streamUpdate()`
+does (from `mLastCameraChunk`).
+
+**Investing in a real mesh/BLAS update-in-place API paid off cleanly,
+per the user's decision**: it turned out simpler than a general free-list/
+destroy system would have been, because a rebuild always reuses the *same*
+handle — there's no "is this slot free for someone unrelated" bookkeeping to
+build. `VulkanRenderer::updateMeshFromData()` was implemented by extracting
+the existing `createMeshFromData()` body into a shared `buildMeshFromData()`
+helper (used by both), and `VulkanAccel::updateBlas()` mirrors
+`appendBlas()`'s existing `buildOneBlas()` reuse pattern but destroys-then-
+rebuilds a single existing slot instead of appending. One real
+synchronization risk found and handled: unlike `appendBlas()` (pure
+addition, touches nothing existing), `updateBlas()` destroys a BLAS a prior
+in-flight frame's TLAS might still reference — so, unlike every other
+Phase 2/3 addition to this file, `updateBlas()` does call
+`vkDeviceWaitIdle()` first (same justification `finalizeScene()`'s own
+teardown already uses: rare, user-interaction-paced, a stall is acceptable
+here).
+
+**Confirmed the existing Jolt raycast is the wrong tool for brush picking,
+not just "a different one would be nicer":** `PhysicsSystem::raycast()`
+only hits chunks within `collisionChunkRadius` (smaller than the
+editable/visible range), reports `entityId=0` for any terrain hit (no
+`SetUserData` call in `addTerrainChunk`), and can't reflect a brush edit
+until the next budgeted collision-rebuild pass. `TerrainQuery::raycast()`
+(a fixed-step march against `heightAt()`, refined with one bisection pass)
+works uniformly everywhere at full precision, reflecting edits the instant
+they're applied. Also confirmed: **no screen-to-world ray reconstruction
+existed anywhere in the codebase** (gameplay raycasts all use camera-forward
+rays, never a mouse-position-derived one) — built from scratch in
+`VkEditor::updateTerrainBrush()` using standard inverse-view-projection
+unprojection, accounting for `GLM_FORCE_DEPTH_ZERO_TO_ONE` (defined
+project-wide) putting the near plane at NDC z=0, not the OpenGL-default -1.
+
+**An edit applied to an already-collision-active chunk needs its own
+refresh path**, independent of `updateTerrainCollision()`'s distance-based
+promote/demote pass (which only reacts to chunks crossing the
+`collisionChunkRadius` boundary, never ones edited in place while already
+inside it). Handled directly in `addFrameInstances()`'s upload loop: if a
+rebuilt chunk already has a `physicsBodyId`, it's unconditionally
+removed-and-re-added with fresh `sampleCollisionHeights()` output, since
+Jolt heightfields are immutable (confirmed already in Phase 4).
+
+**Not yet verified**: an actual live sculpting session — open the Terrain
+Brush panel, raise/lower terrain near the player, confirm the mesh updates
+within a frame or two, confirm collision follows, and confirm an edit
+survives flying away (unloading the chunk) and back. Same limitation as
+every prior phase: automated headless smoke runs and the 94/94 test suite
+confirm the mechanics but can't drive live mouse/keyboard input.
+
+## Phase 6 Implementation Notes (learned while building it — final phase)
+
+**Confirmed before writing any shader code: no specular/roughness term
+exists anywhere in `terrainChunk.frag`'s lighting** — it's exactly
+`albedo * (ambient + (1-ambient)*direct)`, pure Lambertian, confirmed by
+reading `main()` in full. The plan's original "per-layer roughness" field
+was dropped rather than added as dead data — per this session's decision,
+adding a real specular term would be a lighting-model change, not material
+polish, and stayed out of scope.
+
+**`vUV.y` (the biome band) really was already fully plumbed and just
+unread** — `TerrainChunkMesher.cpp` has encoded it per-vertex since Phase 1
+(`int(biome)/5.0f`), and the shader already declared it as an unused
+varying with a comment pointing at this exact phase. No mesher/vertex-
+shader changes were needed at all; only `terrainChunk.frag`'s `main()`
+needed the decode-and-tint step.
+
+**`FrameDataGpu`'s append-only extension pattern (established Phase 1,
+reused Phases 2-3) held up for a 4th addition with zero friction**: one
+`terrainMat3` vec4 appended after `skyAmbientParams`, only
+`terrainChunk.frag` declares it, `mesh.vert`/`mesh.frag`/
+`meshInstanced.vert` untouched.
+
+**Self-verification method**: rather than waiting for a live editor session
+to confirm the shader math renders correctly, temporarily flipped the new
+defaults on (`terrainBiomeTintEnabled=true`, amplified macro/rock strength)
+plus `TerrainSettings::singleBiomeOnly=false` (to get real biome variety
+across chunks, not just a uniform Plains band), rebuilt, captured a headless
+smoke screenshot, confirmed no crashes/validation errors and a real state
+change (entity/body counts jumped 18/7 → 43/32, confirming multi-biome
+vegetation actually kicked in), then reverted every default back exactly
+and rebuilt again — confirmed via `git diff` showing only the intended
+`false`/`0.35`/`0.15`/`0.3` defaults remain. This doesn't replace an actual
+live visual check (grazing camera angle in the headless capture made the
+terrain surface itself hard to judge), but it did rule out shader
+compilation/runtime errors and confirmed the data plumbing (`Params` →
+`FrameDataGpu` → shader) is live end-to-end.
+
+**Not yet verified**: an actual live visual tuning pass — open the Terrain
+Materials panel, toggle Biome Tint on with `singleBiomeOnly` disabled,
+adjust Macro Variation and Rock Detail sliders, and take the plan's own
+"before/after screenshots" for this phase's demo goal. Same limitation as
+every prior phase: headless smoke runs confirm the mechanics but can't
+judge the actual visual result the way a human eye can.
+
 ## 8. Phased Delivery Plan
 
 | Phase | Scope | Risk | Demo |
 |---|---|---|---|
-| 0 — Foundation | `TerrainNoise`, `TerrainQuery` (no raycast yet), no ECS/renderer dependency | Low | Debug-print `heightAt()` samples, validate curve shape |
-| 1 — Static single chunk | `TerrainChunkMesher` builds one fixed 128×128 chunk via `registerRuntimeOBJRaw`, rendered with `terrainChunk.frag`. Delete `terrain.task/mesh`, `createTerrainPipeline()`, `kTerrainPatches`, terrain `Params` fields | Medium (first real use of `registerRuntimeOBJRaw` + `isTerrain` routing) | Visual parity with current terrain, now CPU-mesh-based |
-| 2 — Streaming + LOD | `TerrainChunkManager` worker pool, chunk state machine, budgets, `VkTerrainSubsystem` wiring, LOD + skirts | **Highest** (first multithreaded subsystem touching ECS/AssetManager — main-thread-only mutation boundary must hold) | Fly around, watch chunks stream with visible LOD, no seam cracks |
-| 3 — Vegetation | `TerrainVegetation`, `VegetationPrimitives`, per-species instancing, no interactive trees yet | Medium | Biome-driven forests/deserts populate and clean up without entity leaks |
-| 4 — Collision | Wire `addTerrainChunk`/`removeTerrainChunk`, remove placeholder floor + flatness hack | Medium (Jolt heightfield cost, immutable-shape-on-edit) | Walk/fall on real terrain shape |
-| 5 — Brush editing | `HeightOffsetGrid`, `PaintedInstanceCache`, `TerrainQuery::raycast()`, editor Brush panel, dirty-chunk rebuild | Medium-high (streaming/edit concurrency edge cases) | Sculpt + plant/remove vegetation live, edits survive unload/reload |
-| 6 — Material polish | Multi-biome blend toggle, macro-variation, optional Worley jitter for rocks | Low | Before/after screenshots |
+| 0 — Foundation ✅ | `TerrainNoise`, `TerrainQuery` (no raycast yet), no ECS/renderer dependency | Low | Done: `Tests/test_terrain_noise.cpp`, 10 cases, all passing |
+| 1 — Static single chunk ✅ | `TerrainChunkMesher` builds one fixed 128×128 chunk, rendered with `terrainChunk.frag` via `VkTerrainSubsystem`. Deleted `terrain.task/mesh/frag`, `createTerrainPipeline()`, `kTerrainPatches`, mesh-shader-only `Params`/`FrameDataGpu` fields | Medium | Done: headless smoke run, `TerrainChunk_0_0` renders with correct shading/shadows/materials, 73/73 tests still pass |
+| 2 — Streaming + LOD ✅ | `TerrainChunkManager` worker pool, chunk state machine, budgets, `VkTerrainSubsystem` wiring, LOD + skirts. Also required an unplanned renderer fix: incremental BLAS append (`VulkanAccel::appendBlas`/`VulkanRenderer::growScene`) | **Highest** (first multithreaded subsystem touching ECS/AssetManager — main-thread-only mutation boundary must hold) | Done: 79/79 tests pass, headless smoke runs confirm chunks stream in with correct coords and incremental (non-stalling) BLAS append; **live interactive fly-around not yet done** (needs a human at the keyboard) |
+| 3 — Vegetation ✅ | `TerrainVegetation`, `VegetationPrimitives`, real GPU instancing (not planned originally), interactive trees included | Medium (became higher: no GPU instancing existed anywhere in the renderer beforehand) | Done: 86/86 tests pass, headless smoke confirms 9 species meshes register + instance/appended BLAS correctly, stable over a 300-frame run; **live interactive fly-around and tree-collision check not yet done** |
+| 4 — Collision ✅ | Wire `addTerrainChunk`/`removeTerrainChunk` (were fully implemented, zero callers, since Phase 2), remove placeholder floor (the `terrainAmplitude` flatness hack the original doc cites no longer exists in `main.cpp`) | Medium (Jolt heightfield cost, immutable-shape-on-edit) | Done: 88/88 tests pass, headless smoke confirms the Floor entity is gone and no crashes over a 300-frame run; **live walk/fall-on-terrain check not yet done** |
+| 5 — Brush editing (height only) ✅ | `HeightOffsetGrid`, `TerrainQuery::raycast()`, editor Brush panel, dirty-chunk rebuild, real mesh/BLAS update-in-place API (not planned originally). `PaintedInstanceCache`/vegetation brush modes deferred as a separable follow-up | Medium-high (streaming/edit concurrency edge cases; became higher: no mesh/BLAS replace-in-place path existed anywhere in the renderer) | Done: 94/94 tests pass, headless smoke confirms no regressions over a 300-frame run; **live sculpt/collision/persistence check not yet done** |
+| 6 — Material polish ✅ | Biome-tint multiply (decodes the existing `vUV.y` biome band), macro-variation (smooth value noise), rock Worley detail. Per-layer roughness dropped (no specular/roughness term exists anywhere in this shader's lighting model to consume it) | Low | Done: builds clean, headless smoke confirms no regressions at defaults (tint off) and no crashes/artifacts with all 3 effects at amplified strength + real multi-biome variety enabled (self-verified: entity/body counts correctly jumped 18/7 → 43/32 under `singleBiomeOnly=false`, then reverted); **live visual tuning/before-after screenshots not yet done** |
 
 ## 9. New/Modified Files (execution checklist, for later)
 
+*Status as of end of Phase 6 (all 6 phases in the delivery table done):
+everything below is done (✅) except vegetation brush modes
+(`PaintedInstanceCache`, deferred as a separable follow-up) and the
+streaming-settings/"Terrain Generator" editor panel (§7's noise/seed/
+regenerate-all controls — never built; explicitly out of every phase's
+scope as written, would be its own follow-up). `VulkanRHI/VulkanAccel.h/.cpp`
+(Phase 2), `shaders/vulkan/meshInstanced.vert` + vegetation pipeline
+additions (Phase 3), `VulkanRenderer`'s `updateMeshFromData()`/
+`VulkanAccel::updateBlas()` (Phase 5), and `FrameDataGpu`'s `terrainMat3`
+(Phase 6) weren't anticipated when this checklist was first written — see
+the per-phase Implementation Notes above for each. Phase 4 needed no new
+files at all.*
+
 **New:**
 ```
-Engine/Terrain/TerrainTypes.h
-Engine/Terrain/TerrainSettings.h
-Engine/Terrain/TerrainNoise.h/.cpp
-Engine/Terrain/HeightOffsetGrid.h/.cpp
-Engine/Terrain/TerrainChunkMesher.h/.cpp
-Engine/Terrain/VegetationPrimitives.h/.cpp
-Engine/Terrain/TerrainVegetation.h/.cpp
-Engine/Terrain/TerrainQuery.h/.cpp
-Engine/Terrain/TerrainChunkManager.h/.cpp
-VulkanRHI/runtime/subsystems/VkTerrainSubsystem.h/.cpp
-shaders/vulkan/terrainChunk.frag
+Engine/Terrain/TerrainTypes.h            ✅ (Phase 0/2/3)
+Engine/Terrain/TerrainSettings.h         ✅ (Phase 0/3)
+Engine/Terrain/TerrainNoise.h/.cpp       ✅ (Phase 0)
+Engine/Terrain/HeightOffsetGrid.h/.cpp   ✅ (Phase 0 stub, real implementation Phase 5)
+Engine/Terrain/TerrainChunkMesher.h/.cpp ✅ (Phase 1, skirts added Phase 2)
+Engine/Terrain/VegetationPrimitives.h/.cpp ✅ (Phase 3)
+Engine/Terrain/TerrainVegetation.h/.cpp  ✅ (Phase 3)
+Engine/Terrain/TerrainQuery.h/.cpp       ✅ (Phase 0, raycast() added Phase 5)
+Engine/Terrain/TerrainChunkManager.h/.cpp ✅ (Phase 2, vegetation hook added Phase 3, sampleCollisionHeights() added Phase 4, applyHeightBrush() added Phase 5)
+VulkanRHI/runtime/subsystems/VkTerrainSubsystem.h/.cpp ✅ (Phase 1, rewritten Phase 2, vegetation/trees added Phase 3, collision promote/demote added Phase 4, brush passthrough added Phase 5)
+shaders/vulkan/terrainChunk.frag         ✅ (Phase 1, biome-tint/macro-variation/rock-detail added Phase 6)
+shaders/vulkan/meshInstanced.vert        ✅ (Phase 3, not originally planned)
 ```
 
 **Modified:**
 ```
-VulkanRHI/runtime/VkEditor.h/.cpp           — Context gains terrain ref; new/rebound panels
-VulkanRHI/runtime/VkAppState.h              — add Terrain::TerrainChunkManager member; fix stale comment
-VulkanRHI/runtime/subsystems/VkCoreAppLayer.cpp — add state.terrain.streamUpdate(...) call
-VulkanRHI/runtime/main.cpp                  — register VkTerrainSubsystem; remove placeholder floor (Phase 4); remove terrain Params defaults (Phase 1)
-VulkanRHI/VulkanRenderer.h/.cpp             — remove kTerrainPatches/terrain* Params/createTerrainPipeline/mesh-shader draw calls; add isTerrain pipeline routing
-Engine/ECS/Components.h                     — no struct changes; isTerrain/useTerrainShading/TreeComponent get first real callers
+VulkanRHI/runtime/VkEditor.h/.cpp           — Context gains terrain ref ✅ (Phase 5); Terrain Brush panel ✅ (Phase 5); biome-tint/macro-variation/rock-detail sliders in Terrain Materials ✅ (Phase 6); streaming-settings/"Terrain Generator" panel still not done (§7, no phase claims it)
+VulkanRHI/runtime/VkAppState.h              — add TerrainChunkManager member; fix stale comment ✅ (Phase 2)
+VulkanRHI/runtime/subsystems/VkCoreAppLayer.cpp — add state.terrain.streamUpdate(...) call ✅ (Phase 2)
+VulkanRHI/runtime/main.cpp                  — register VkTerrainSubsystem ✅ (Phase 1); remove placeholder floor ✅ (Phase 4); addFrameInstances() ✅ (Phase 2); pass terrainSubsystem into editor Context ✅ (Phase 5)
+VulkanRHI/VulkanRenderer.h/.cpp             — remove kTerrainPatches/terrain* Params/createTerrainPipeline/mesh-shader draw calls ✅ (Phase 1); add isTerrain pipeline routing ✅ (Phase 1); add growScene()/bump TLAS capacity ✅ (Phase 2, not originally planned); add instanced pipelines/setVegetationBatches()/baseColor-fallback-texture fix ✅ (Phase 3, not originally planned); add updateMeshFromData() ✅ (Phase 5, not originally planned); add biome-tint/macro-variation/rock-detail Params + terrainMat3 ✅ (Phase 6)
+VulkanRHI/VulkanAccel.h/.cpp                — add appendBlas() ✅ (Phase 2, not originally planned); add updateBlas() ✅ (Phase 5, not originally planned)
+Engine/ECS/Components.h                     — no struct changes needed; isTerrain ✅ (Phase 1), TreeComponent/ColliderComponent/RigidbodyComponent get first real callers ✅ (Phase 3); useTerrainShading (InstancedMeshComponent) still unused -- Phase 3 used real GPU instancing instead, not this GL-era component
 ```
 
 **Critical files to re-read before implementation starts:** `Engine/Terrain/TerrainChunkManager.h/.cpp` (once it exists — highest-risk piece), `Engine/Assets/AssetManager.h` (`registerRuntimeOBJRaw`), `Engine/ECS/Systems/PhysicsTerrainChunk.cpp` (`addTerrainChunk`/`removeTerrainChunk`), `VulkanRHI/runtime/subsystems/VkPhysicsSubsystem.h/.cpp` (pattern to clone), `VulkanRHI/VulkanRenderer.h/.cpp` (terrain code to delete + pipeline routing to add).

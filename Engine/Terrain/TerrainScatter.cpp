@@ -1,4 +1,5 @@
 #include "TerrainScatter.h"
+#include "TerrainWater.h"
 
 #include <algorithm>
 #include <cmath>
@@ -272,6 +273,11 @@ void scatterLayers(const ScatterManifest &manifest, const TerrainNoiseSet &noise
   const float chunkCameraDist =
       static_cast<float>(std::max(chunkChebyshevDist, 0)) * chunkWorldSize;
 
+  // Shared by every layer's waterline test below. Chunk-local and on the
+  // stack: scatter runs on worker threads, one chunk each, so this must not
+  // be shared between them.
+  WaterCellCache waterCache;
+
   for (size_t li = 0; li < manifest.layers.size(); ++li) {
     const ScatterLayer &layer = manifest.layers[li];
     const bool isGrass = layer.type == ScatterLayerType::Grass;
@@ -378,6 +384,20 @@ void scatterLayers(const ScatterManifest &manifest, const TerrainNoiseSet &noise
                     return;
                   if (sample.moisture < layer.moistureMin)
                     return;
+
+                  // Waterline. Nothing is planted below the local water
+                  // surface -- an ocean's or a lake's, whichever covers this
+                  // point -- plus a dry margin, so a shoreline reads as a
+                  // beach the vegetation stops at rather than as a forest
+                  // standing in the shallows. This runs per candidate rather
+                  // than per cell because the surface differs between lakes.
+                  {
+                    const float surface = waterSurfaceAt(noiseSet, settings, pos,
+                                                         /*edits=*/nullptr, &waterCache);
+                    if (surface > kNoWater * 0.5f &&
+                        h < surface + settings.shoreScatterMargin)
+                      return;
+                  }
 
                   if (layer.type == ScatterLayerType::Rock && layer.clustering.outcrops) {
                     // Bias acceptance toward the ground field's rockNoise

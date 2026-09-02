@@ -18,6 +18,15 @@ struct TerrainSettings {
   uint32_t chunkResolution = 129;
 
   float heightScale = 18.0f;
+  // Metres subtracted from every sampled height. Terrain is built from a sum
+  // of non-negative noise terms, so without this it can only ever sit ABOVE
+  // y=0 -- typically 1-2x heightScale up, which buries the world origin and
+  // the editor grid underground. VkTerrainSubsystem::create() measures the
+  // generated mean and sets this so the terrain straddles y=0 instead.
+  float heightOffset = 0.0f;
+  // Measure and apply heightOffset automatically at creation. Turn off to
+  // pin terrain at an explicit absolute height.
+  bool autoCenterHeight = true;
   float noiseFrequency = 0.01f;
   int octaves = 5;
   float lacunarity = 2.0f;
@@ -47,6 +56,71 @@ struct TerrainSettings {
   float forestCoverage = 0.45f;      // 0..1, how much of non-mountain land is forest
   float treelineHeight = 30.0f;      // world-height meters where trees stop
   float treelineTransition = 8.0f;   // meters over which trees fade out approaching treeline
+
+  // --- World shape: a bounded map of islands, or endless terrain ---
+  //
+  // The generator streams chunks around the camera either way -- bounding the
+  // world does NOT mean loading it all at once, and could not: a 4 km radius
+  // at 64 m chunks is ~12,000 chunks. What `worldBounded` changes is the
+  // SHAPE: a continent mask carves the land into discrete islands separated
+  // by real ocean, and a radial falloff sinks everything past worldRadius, so
+  // the map has an outside. Turn it off for the original endless noise field.
+  bool worldBounded = true;
+  float worldRadius = 4000.0f;     // metres from origin to open ocean
+  float worldEdgeFalloff = 1100.0f; // metres over which the rim sinks
+  // Metres per continent feature. This is the single most character-defining
+  // number here: small values give an archipelago of many little islands,
+  // large values give a few big landmasses with long coastlines.
+  float continentScale = 1500.0f;
+  // Fraction of the bounded disc that ends up above water. The continent mask
+  // is shaped so 0.5 on its field IS the shoreline, so this reads directly.
+  float landCoverage = 0.42f;
+  float oceanFloorDepth = 45.0f;  // metres below sea level out in open water
+  float landBaseHeight = 14.0f;   // metres above sea level a continent core sits
+  // Guaranteed land around the origin, so a spawn is never in open sea.
+  // 0 disables it and lets the mask decide.
+  float spawnIslandRadius = 300.0f;
+
+  // --- Water (Engine/Terrain/TerrainWater.h) ---
+  // Sea level and inland lakes. Both feed one authority, waterSurfaceAt(),
+  // which the generator carves against, the scatter system refuses to plant
+  // below, and the renderer samples into a height field to shade.
+  bool oceanEnabled = true;
+  // The ABSOLUTE sea level, in world metres. Resolved at terrain creation
+  // from oceanCoverage below unless autoSeaLevel is off -- everything
+  // downstream (carving, scatter, the renderer's water field) reads this one
+  // number, so there is a single answer to "where is the sea".
+  float seaLevel = 0.0f;
+  // Fraction of the world the ocean should cover. This is the dial to author
+  // with: an absolute sea level means nothing until you know what heightScale,
+  // seed and mountainHeightScale did to the terrain, and those interact.
+  // (autoCenterHeight/heightOffset, which the comment above them claims
+  // recentres the terrain on y=0, are declared but read by nothing -- so the
+  // generated range is wherever the noise puts it, typically far above 0.)
+  bool autoSeaLevel = true;
+  float oceanCoverage = 0.35f;
+  // Vertical band around the sea line over which relief is compressed. This
+  // is what makes beaches: without it the waterline is an arbitrary contour
+  // across ordinary hillside and every coast is a cliff.
+  float shoreFlatten = 5.0f;
+
+  bool lakesEnabled = true;
+  // Cell size of the lake grid, in metres -- one lake per cell at most, so
+  // this is also the closest two lakes can be.
+  float lakeScale = 260.0f;
+  // Fraction of cells that become lakes, BEFORE the valley bias and the
+  // flatness test reject those on slopes. Effective coverage is a good deal
+  // lower than this, which is why the number looks high.
+  float lakeCoverage = 0.70f;
+  // How deep a basin is carved below its surface. Also gates the flatness
+  // test: ground varying by more than ~1.35x this across a cell is a
+  // hillside, not a basin, and gets no lake.
+  float lakeDepth = 7.0f;
+
+  // Metres of dry margin above the waterline that scatter leaves clear, so
+  // trees and grass stop short of the shore instead of standing in the
+  // shallows.
+  float shoreScatterMargin = 0.6f;
 
   // --- Phase 2+ (streaming) ---
   int viewDistanceChunks = 6;

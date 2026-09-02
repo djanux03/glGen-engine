@@ -48,6 +48,10 @@ schemas** at connect time, one `glgen_create_<generator>` per generator.
 | `glgen_scene_query` / `glgen_scene_clear` | inspect / tidy |
 | `glgen_set_render_params` | camera, sun, exposure, fog |
 | `glgen_eval_lua` | escape hatch for anything else |
+| `glgen_character_begin` | start a persistent text-to-humanoid job |
+| `glgen_character_edit` | apply one semantic body/clothing/material edit |
+| `glgen_character_review` | return three fixed turntable views |
+| `glgen_character_status` / `glgen_character_finalize` | inspect history or write recipe + GLB |
 
 Because a generated tool's `inputSchema` **is** the engine's validation schema,
 the model reads `tree.v1`'s real bounds (`height: 0.3 … 40`, `canopy:
@@ -73,6 +77,16 @@ in the scene updates too. That is what makes iteration cheap.
 Feedback arrives on two channels and both matter: the **image** shows
 proportion and silhouette, while **text warnings** carry what an image cannot —
 clamped parameters, poly budgets, material slots that matched nothing.
+
+## Text-to-character jobs
+
+`character.v1` is a deterministic, static humanoid generator. The character
+tools persist every prompt, semantic operation, review image, recipe and GLB
+under `.glgen/jobs/<jobId>/`, so an agent can safely continue after an MCP or
+engine restart. A job accepts eight edits and three reviews by default; this
+keeps the modelâ†’renderâ†’critique loop bounded instead of silently spending an
+unlimited amount of work. `glgen_character_finalize` refuses an invalid asset,
+an asset above its requested triangle target, or one without material regions.
 
 ## Notes
 

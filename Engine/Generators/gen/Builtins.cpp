@@ -16,6 +16,11 @@ void registerTreeGenerator();
 void registerRockGenerator();
 void registerGrassGenerator();
 void registerKitbashGenerator();
+void registerSculptGenerator();
+void registerSweepGenerator();
+void registerRevolveGenerator();
+void registerPanelGenerator();
+void registerCharacterGenerator();
 void registerImportGenerator();
 
 void registerBuiltinGenerators() {
@@ -23,6 +28,11 @@ void registerBuiltinGenerators() {
   registerRockGenerator();
   registerGrassGenerator();
   registerKitbashGenerator();
+  registerSculptGenerator();
+  registerSweepGenerator();
+  registerRevolveGenerator();
+  registerPanelGenerator();
+  registerCharacterGenerator();
   registerImportGenerator();
 }
 

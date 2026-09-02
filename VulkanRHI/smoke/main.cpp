@@ -291,11 +291,13 @@ int main() {
         ImGui::SliderInt("Shadow Samples", &p.shadowSamples, 1, 16);
       }
 
-      if (ImGui::CollapsingHeader("Sky & Ambient")) {
-        ImGui::SliderFloat("Sun Disc Intensity", &p.sunDiscIntensity, 0.0f, 50.0f);
-        ImGui::SliderFloat("Sun Glow Intensity", &p.sunGlowIntensity, 0.0f, 5.0f);
-        ImGui::SliderFloat("Night Sky Brightness", &p.nightSkyBrightness, 0.0f, 2.0f);
-        ImGui::SliderFloat("Dusk Strength", &p.duskStrength, 0.0f, 2.0f);
+      if (ImGui::CollapsingHeader("Atmosphere & Sky")) {
+        ImGui::SliderFloat("Haze (Mie)", &p.atmosphereHaze, 0.0f, 1.0f);
+        ImGui::SliderFloat("Sky Brightness", &p.skyBrightness, 0.0f, 3.0f);
+        ImGui::SliderFloat("Sun Disc Intensity", &p.sunDiscIntensity, 0.0f, 100.0f);
+        ImGui::SliderFloat("Stars", &p.starIntensity, 0.0f, 3.0f);
+        ImGui::SliderFloat("Moonlight", &p.moonIntensity, 0.0f, 4.0f);
+        ImGui::SliderFloat("Night Sky Glow", &p.nightSkyBrightness, 0.0f, 3.0f);
       }
 
       if (ImGui::CollapsingHeader("Volumetrics & Fog")) {
@@ -307,7 +309,7 @@ int main() {
 
       if (ImGui::CollapsingHeader("Post-Processing & Tonemapping", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SliderFloat("Exposure", &p.exposure, 0.1f, 5.0f);
-        const char* tonemapModes[] = { "ACES", "Reinhard", "Linear" };
+        const char* tonemapModes[] = { "Painterly", "ACES", "Reinhard", "Linear" };
         ImGui::Combo("Tonemap Mode", &p.tonemapMode, tonemapModes, IM_ARRAYSIZE(tonemapModes));
         ImGui::SliderFloat("Gamma", &p.gamma, 1.0f, 3.0f);
         ImGui::SliderFloat("Saturation", &p.saturation, 0.0f, 2.0f);
@@ -315,21 +317,9 @@ int main() {
         ImGui::SliderFloat("Vignette", &p.vignette, 0.0f, 1.0f);
       }
 
-      if (ImGui::CollapsingHeader("Terrain Generator")) {
-        ImGui::Checkbox("Draw terrain", &p.drawTerrain);
-        ImGui::SliderFloat("Amplitude", &p.terrainAmplitude, 0.0f, 3.0f);
-        ImGui::SliderFloat("Frequency", &p.terrainFrequency, 0.05f, 1.5f);
-        ImGui::SliderFloat("Octaves", &p.terrainOctaves, 1.0f, 8.0f, "%.0f");
-        ImGui::SliderFloat("Lacunarity", &p.terrainLacunarity, 1.0f, 4.0f);
-        ImGui::SliderFloat("Gain", &p.terrainGain, 0.1f, 1.0f);
-        ImGui::SliderFloat("Height Offset", &p.terrainHeightOffset, -2.0f, 2.0f);
-        ImGui::SliderFloat("Warp", &p.terrainWarp, 0.0f, 2.0f);
-        if (ImGui::Button("Randomize seed"))
-          p.terrainSeed = static_cast<float>(std::rand() % 1000);
-        ImGui::SameLine();
-        ImGui::Text("seed %.0f", p.terrainSeed);
-      }
-
+      // Terrain is now a CPU-built chunk mesh owned by glGenVk's
+      // VkTerrainSubsystem (TERRAIN_GENERATOR_PLAN.md); this standalone
+      // smoke app has no terrain of its own to configure anymore.
       if (ImGui::CollapsingHeader("Terrain Materials")) {
         ImGui::ColorEdit3("Sand Color", &p.terrainColorSand.x);
         ImGui::ColorEdit3("Grass Color", &p.terrainColorGrass.x);

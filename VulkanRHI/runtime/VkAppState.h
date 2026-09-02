@@ -67,6 +67,15 @@ struct VkAppState {
   enum class PlayState { Stopped, Playing, Paused };
   PlayState playState = PlayState::Playing;
 
+  // Deferred play-mode requests (game.play() / game.stop() from Lua, and so
+  // the command port by extension). Entering play mode snapshots the scene
+  // and touches the editor's state, which is only safe at the point in the
+  // frame where main.cpp already builds a VkEditor::Context -- so a script
+  // raises a flag here and main.cpp acts on it there, rather than the script
+  // reaching into the editor mid-update.
+  bool requestPlayMode = false;
+  bool requestStopMode = false;
+
   // Ported gameplay systems (VulkanRHI/runtime/gameplay/) -- logic-only,
   // adapted from Runtime/Gameplay/* to run against VkAppState instead of the
   // GL app's AppState.

@@ -62,10 +62,16 @@ struct EntityProxy {
 };
 
 // Register all script API bindings into a sol::state
+// `groundHeight` answers "what is the terrain height at (x, z)". Supplied by
+// the Vulkan runtime, because EngineCore cannot see the terrain subsystem.
+// Null means no terrain, and onGround becomes a no-op.
+using ScriptGroundHeightFn = std::function<float(float, float)>;
+
 inline void registerScriptBindings(sol::state &lua, Registry &registry,
                                    PhysicsSystem *physics,
                                    Scene *scene = nullptr,
-                                   gen::AssetLibrary *assetLibrary = nullptr) {
+                                   gen::AssetLibrary *assetLibrary = nullptr,
+                                   ScriptGroundHeightFn groundHeight = nullptr) {
   // ── Vec3 type ──────────────────────────────────────────────────────
   auto vec3Type = lua.new_usertype<glm::vec3>(
       "Vec3", sol::constructors<glm::vec3(), glm::vec3(float, float, float)>(),
@@ -87,54 +93,58 @@ inline void registerScriptBindings(sol::state &lua, Registry &registry,
   };
 
   entityType["get_position"] = [](const EntityProxy &e) -> glm::vec3 {
-    if (e.reg && e.reg->has<TransformComponent>(e.id))
+    if (e.reg && e.reg->valid(e.id) && e.reg->has<TransformComponent>(e.id))
       return e.reg->get<TransformComponent>(e.id).position;
     return glm::vec3(0.0f);
   };
 
   entityType["set_position"] = [](const EntityProxy &e, float x, float y,
                                   float z) {
-    if (e.reg && e.reg->has<TransformComponent>(e.id))
+    if (e.reg && e.reg->valid(e.id) && e.reg->has<TransformComponent>(e.id))
       e.reg->get<TransformComponent>(e.id).position = {x, y, z};
   };
 
   entityType["get_rotation"] = [](const EntityProxy &e) -> glm::vec3 {
-    if (e.reg && e.reg->has<TransformComponent>(e.id))
+    if (e.reg && e.reg->valid(e.id) && e.reg->has<TransformComponent>(e.id))
       return e.reg->get<TransformComponent>(e.id).rotation;
     return glm::vec3(0.0f);
   };
 
   entityType["set_rotation"] = [](const EntityProxy &e, float x, float y,
                                   float z) {
-    if (e.reg && e.reg->has<TransformComponent>(e.id))
+    if (e.reg && e.reg->valid(e.id) && e.reg->has<TransformComponent>(e.id))
       e.reg->get<TransformComponent>(e.id).rotation = {x, y, z};
   };
 
   entityType["get_forward"] = [](const EntityProxy &e) -> glm::vec3 {
-    if (e.reg && e.reg->has<TransformComponent>(e.id)) {
-      const auto &tr = e.reg->get<TransformComponent>(e.id);
-      const float yaw = glm::radians(tr.rotation.y);
-      const float pitch = glm::radians(tr.rotation.x);
-      glm::vec3 front;
-      front.x = -sin(yaw) * cos(pitch);
-      front.y = sin(pitch);
-      front.z = -cos(yaw) * cos(pitch);
-      return glm::normalize(front);
-    }
-    if (e.reg && e.reg->has<CameraComponent>(e.id)) {
-      return e.reg->get<CameraComponent>(e.id).front;
+    if (e.reg && e.reg->valid(e.id)) {
+      if (e.reg->has<CameraComponent>(e.id)) {
+        return e.reg->get<CameraComponent>(e.id).front;
+      }
+      if (e.reg->has<TransformComponent>(e.id)) {
+        const auto &tr = e.reg->get<TransformComponent>(e.id);
+        const float yaw = glm::radians(tr.rotation.y);
+        const float pitch = glm::radians(tr.rotation.x);
+        glm::vec3 front;
+        front.x = -sin(yaw) * cos(pitch);
+        front.y = sin(pitch);
+        front.z = -cos(yaw) * cos(pitch);
+        return glm::normalize(front);
+      }
     }
     return glm::vec3(0.0f, 0.0f, -1.0f);
   };
 
   entityType["get_forward_flat"] = [](const EntityProxy &e) -> glm::vec3 {
     glm::vec3 f(0.0f, 0.0f, -1.0f);
-    if (e.reg && e.reg->has<TransformComponent>(e.id)) {
-      const auto &tr = e.reg->get<TransformComponent>(e.id);
-      const float yaw = glm::radians(tr.rotation.y);
-      f = glm::vec3(-sin(yaw), 0.0f, -cos(yaw));
-    } else if (e.reg && e.reg->has<CameraComponent>(e.id)) {
-      f = e.reg->get<CameraComponent>(e.id).front;
+    if (e.reg && e.reg->valid(e.id)) {
+      if (e.reg->has<CameraComponent>(e.id)) {
+        f = e.reg->get<CameraComponent>(e.id).front;
+      } else if (e.reg->has<TransformComponent>(e.id)) {
+        const auto &tr = e.reg->get<TransformComponent>(e.id);
+        const float yaw = glm::radians(tr.rotation.y);
+        f = glm::vec3(-sin(yaw), 0.0f, -cos(yaw));
+      }
     }
     f.y = 0.0f;
     if (glm::length(f) < 1e-4f)
@@ -144,12 +154,14 @@ inline void registerScriptBindings(sol::state &lua, Registry &registry,
 
   entityType["get_right_flat"] = [](const EntityProxy &e) -> glm::vec3 {
     glm::vec3 f = glm::vec3(0.0f, 0.0f, -1.0f);
-    if (e.reg && e.reg->has<TransformComponent>(e.id)) {
-      const auto &tr = e.reg->get<TransformComponent>(e.id);
-      const float yaw = glm::radians(tr.rotation.y);
-      f = glm::vec3(-sin(yaw), 0.0f, -cos(yaw));
-    } else if (e.reg && e.reg->has<CameraComponent>(e.id)) {
-      f = e.reg->get<CameraComponent>(e.id).front;
+    if (e.reg && e.reg->valid(e.id)) {
+      if (e.reg->has<CameraComponent>(e.id)) {
+        f = e.reg->get<CameraComponent>(e.id).front;
+      } else if (e.reg->has<TransformComponent>(e.id)) {
+        const auto &tr = e.reg->get<TransformComponent>(e.id);
+        const float yaw = glm::radians(tr.rotation.y);
+        f = glm::vec3(-sin(yaw), 0.0f, -cos(yaw));
+      }
     }
     f.y = 0.0f;
     if (glm::length(f) < 1e-4f)
@@ -160,38 +172,58 @@ inline void registerScriptBindings(sol::state &lua, Registry &registry,
   };
 
   entityType["get_scale"] = [](const EntityProxy &e) -> glm::vec3 {
-    if (e.reg && e.reg->has<TransformComponent>(e.id))
+    if (e.reg && e.reg->valid(e.id) && e.reg->has<TransformComponent>(e.id))
       return e.reg->get<TransformComponent>(e.id).scale;
     return glm::vec3(1.0f);
   };
 
   entityType["set_scale"] = [](const EntityProxy &e, float x, float y,
                                float z) {
-    if (e.reg && e.reg->has<TransformComponent>(e.id))
+    if (e.reg && e.reg->valid(e.id) && e.reg->has<TransformComponent>(e.id))
       e.reg->get<TransformComponent>(e.id).scale = {x, y, z};
   };
 
   entityType["get_name"] = [](const EntityProxy &e) -> std::string {
-    if (e.reg && e.reg->has<NameComponent>(e.id))
+    if (e.reg && e.reg->valid(e.id) && e.reg->has<NameComponent>(e.id))
       return e.reg->get<NameComponent>(e.id).name;
     return "";
   };
 
   entityType["set_name"] = [](const EntityProxy &e, const std::string &name) {
-    if (e.reg && e.reg->has<NameComponent>(e.id))
+    if (e.reg && e.reg->valid(e.id) && e.reg->has<NameComponent>(e.id))
       e.reg->get<NameComponent>(e.id).name = name;
+  };
+
+  // entity:attach_script("assets/scripts/foo.lua")
+  //
+  // Without this, a ScriptComponent could only be added from C++ (the
+  // editor's Create > Player) so a whole game had to be authored in the
+  // engine rather than driven in over the command port. Setting initialized
+  // = false makes an existing script reload and re-run on_spawn, so this
+  // doubles as hot-reload for a running entity.
+  entityType["attach_script"] = [](const EntityProxy &e,
+                                   const std::string &path) -> bool {
+    if (e.id == 0 || e.reg == nullptr || !e.reg->valid(e.id) || path.empty())
+      return false;
+    if (!e.reg->has<ScriptComponent>(e.id))
+      e.reg->emplace<ScriptComponent>(e.id);
+    auto &sc = e.reg->get<ScriptComponent>(e.id);
+    sc.scriptPath = path;
+    sc.initialized = false;
+    sc.envRef = -1;
+    return true;
   };
 
   entityType["apply_impulse"] = [](const EntityProxy &e, float x, float y,
                                    float z) {
-    if (e.reg && e.reg->has<RigidbodyComponent>(e.id)) {
+    if (e.reg && e.reg->valid(e.id) && e.reg->has<RigidbodyComponent>(e.id)) {
       e.reg->get<RigidbodyComponent>(e.id).pendingImpulse += glm::vec3(x, y, z);
     }
   };
 
   entityType["set_velocity"] = [](const EntityProxy &e, float x, float y,
                                   float z) {
-    if (e.reg && e.reg->has<RigidbodyComponent>(e.id)) {
+    if (e.reg && e.reg->valid(e.id) && e.reg->has<RigidbodyComponent>(e.id)) {
       auto &rb = e.reg->get<RigidbodyComponent>(e.id);
       rb.pendingLinearVelocity = glm::vec3(x, y, z);
       rb.setLinearVelocity = true;
@@ -199,7 +231,7 @@ inline void registerScriptBindings(sol::state &lua, Registry &registry,
   };
 
   entityType["get_velocity"] = [](const EntityProxy &e) -> glm::vec3 {
-    if (e.reg && e.reg->has<RigidbodyComponent>(e.id)) {
+    if (e.reg && e.reg->valid(e.id) && e.reg->has<RigidbodyComponent>(e.id)) {
       return e.reg->get<RigidbodyComponent>(e.id).linearVelocity;
     }
     return glm::vec3(0.0f);
@@ -318,11 +350,17 @@ inline void registerScriptBindings(sol::state &lua, Registry &registry,
 
   // world.spawn(assetId, { pos={x,y,z}, rot={x,y,z}, scale=n|{x,y,z},
   //                        name="", collider="none"|"box"|"sphere"|"capsule",
-  //                        dynamic=false, mass=1 })
+  //                        dynamic=false, mass=1, onGround=false })
+  //
+  // onGround snaps Y to the terrain surface. It mirrors the command port's
+  // scene.spawn, which had it while this did not -- the same call through two
+  // front ends behaving differently is exactly the kind of gap that makes an
+  // API untrustworthy.
   // The general spawner: unlike spawn_primitive/spawn_rock it takes any asset
   // id, including the "gen://" ids the generator pipeline produces.
-  worldTable["spawn"] = [&registry](const std::string &assetId,
-                                    sol::optional<sol::table> optsOpt) -> EntityProxy {
+  worldTable["spawn"] = [&registry, groundHeight](
+                            const std::string &assetId,
+                            sol::optional<sol::table> optsOpt) -> EntityProxy {
     if (assetId.empty())
       return EntityProxy{0, &registry};
     const sol::table opts = optsOpt ? *optsOpt : sol::table{};
@@ -351,6 +389,9 @@ inline void registerScriptBindings(sol::state &lua, Registry &registry,
         }
       }
     }
+
+    if (opts.valid() && opts.get_or("onGround", false) && groundHeight)
+      tr.position.y = groundHeight(tr.position.x, tr.position.z);
 
     registry.emplace<MeshComponent>(id).assetId = assetId;
     registry.emplace<NameComponent>(

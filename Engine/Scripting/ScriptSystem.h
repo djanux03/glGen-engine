@@ -30,10 +30,12 @@ public:
   // console a remote shell. Nothing in scripts/ used them.
   void initialize(Registry &registry, class PhysicsSystem *physics = nullptr,
                   class Scene *scene = nullptr,
-                  gen::AssetLibrary *assetLibrary = nullptr) {
+                  gen::AssetLibrary *assetLibrary = nullptr,
+                  ScriptGroundHeightFn groundHeight = nullptr) {
     mLua.open_libraries(sol::lib::base, sol::lib::math, sol::lib::string,
                         sol::lib::table);
-    registerScriptBindings(mLua, registry, physics, scene, assetLibrary);
+    registerScriptBindings(mLua, registry, physics, scene, assetLibrary,
+                           std::move(groundHeight));
     for (auto &hook : mBindingHooks)
       hook(mLua);
     mInitialized = true;
@@ -110,13 +112,36 @@ public:
   // Direct access for hooks that need to push state after initialize().
   sol::state &lua() { return mLua; }
 
+  // Erase per-entity script environment when script component or entity is destroyed
+  void cleanupEntity(EntityId entity) {
+    mScriptEnvs.erase(entity);
+  }
+
   // Run all scripts for entities with ScriptComponent.
   // Called once per frame from CoreAppLayer::update().
   void update(Registry &registry, float dt) {
     if (!mInitialized)
       return;
 
-    for (auto entity : registry.view<ScriptComponent>()) {
+    // Erase script environments for entities that are no longer valid or no longer have ScriptComponent
+    for (auto it = mScriptEnvs.begin(); it != mScriptEnvs.end();) {
+      if (!registry.valid(it->first) || !registry.has<ScriptComponent>(it->first)) {
+        it = mScriptEnvs.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    // Snapshot the view so that scripts calling self:destroy() during
+    // on_update don't mutate the sparse set under iteration (swap-and-pop
+    // would silently skip the entity moved into the destroyed slot).
+    const auto &liveView = registry.view<ScriptComponent>();
+    std::vector<EntityId> snapshot(liveView.begin(), liveView.end());
+    for (auto entity : snapshot) {
+      // The entity may have been destroyed by an earlier script this frame.
+      if (!registry.valid(entity) || !registry.has<ScriptComponent>(entity))
+        continue;
+
       if (registry.has<LifecycleComponent>(entity)) {
         auto s = registry.get<LifecycleComponent>(entity).state;
         if (s != EntityLifecycleState::Alive)

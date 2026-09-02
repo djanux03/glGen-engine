@@ -19,8 +19,10 @@ set(ENGINE_CORE_SOURCES
     Assets/MeshParseGLTF.cpp
     Assets/MeshParseFBX.cpp
     Assets/MeshPrimitives.cpp
+    Assets/MeshExportGLTF.cpp
     Bridge/CommandServer.cpp
     Generators/MeshBuilder.cpp
+    Generators/CharacterModeling.cpp
     Generators/GeneratorSchema.cpp
     Generators/GeneratorRegistry.cpp
     Generators/AssetRecipe.cpp
@@ -30,6 +32,11 @@ set(ENGINE_CORE_SOURCES
     Generators/gen/GenRock.cpp
     Generators/gen/GenGrass.cpp
     Generators/gen/GenKitbash.cpp
+    Generators/gen/GenSculpt.cpp
+    Generators/gen/GenSweep.cpp
+    Generators/gen/GenRevolve.cpp
+    Generators/gen/GenPanel.cpp
+    Generators/gen/GenCharacter.cpp
     Generators/MeshDecimate.cpp
     Generators/MeshValidate.cpp
     Generators/gen/GenImport.cpp
@@ -37,6 +44,8 @@ set(ENGINE_CORE_SOURCES
     ECS/Systems/PhysicsSystem.cpp
     ECS/Systems/PhysicsTerrainChunk.cpp
     Terrain/TerrainNoise.cpp
+    Terrain/TerrainWater.cpp
+    Terrain/TerrainIslands.cpp
     Terrain/TerrainQuery.cpp
     Terrain/TerrainChunkMesher.cpp
     Terrain/TerrainChunkManager.cpp

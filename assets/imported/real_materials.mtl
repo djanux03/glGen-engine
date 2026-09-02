@@ -1,0 +1,17 @@
+newmtl PolyhavenConcrete
+Kd 1 1 1
+Ks 0.05 0.05 0.05
+map_Kd ../textures/concrete_diff.jpg
+map_Ns ../textures/concrete_rough.jpg
+
+newmtl PolyhavenAsphalt
+Kd 1 1 1
+Ks 0.02 0.02 0.02
+map_Kd ../textures/asphalt_diff.jpg
+map_Ns ../textures/asphalt_rough.jpg
+
+newmtl PolyhavenRust
+Kd 1 1 1
+Ks 0.3 0.3 0.3
+map_Kd ../textures/rust_diff.jpg
+map_Ns ../textures/rust_rough.jpg

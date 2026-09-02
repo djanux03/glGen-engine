@@ -335,11 +335,16 @@ void updateGrab(VkAppState &state, Registry &reg, float dt, const glm::vec3 &fro
   const glm::vec3 oldPos = grabTr.position;
   const glm::vec3 delta = targetPos - oldPos;
   const float invDt = dt > 0.0001f ? 1.0f / dt : 0.0f;
-  state.gameplay.grab.grabbedReleaseVelocity = delta * invDt;
+  glm::vec3 releaseVel = delta * invDt;
+  constexpr float kMaxReleaseSpeed = 25.0f;
+  if (glm::length(releaseVel) > kMaxReleaseSpeed) {
+    releaseVel = glm::normalize(releaseVel) * kMaxReleaseSpeed;
+  }
+  state.gameplay.grab.grabbedReleaseVelocity = releaseVel;
 
   if (reg.has<RigidbodyComponent>(state.gameplay.grab.grabbedEntityId)) {
     auto &rb = reg.get<RigidbodyComponent>(state.gameplay.grab.grabbedEntityId);
-    rb.pendingLinearVelocity = delta * invDt * 0.85f;
+    rb.pendingLinearVelocity = releaseVel * 0.85f;
     rb.setLinearVelocity = true;
   }
 
@@ -427,7 +432,8 @@ void VkPlayerInteractionSystem::update(VkAppState &state, float dt) {
 
   const bool secondaryDown =
       Mouse::button(GLFW_MOUSE_BUTTON_RIGHT) ||
-      glfwGetMouseButton(state.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+      (state.window != nullptr &&
+       glfwGetMouseButton(state.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
   if (secondaryDown && mCraterCooldown <= 0.0f) {
     constexpr float kToolDistance = 100.0f;
     GameplayHit hit = gameplayRaycast(state, camTr.position, front,

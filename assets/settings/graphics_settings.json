@@ -1,32 +1,196 @@
 {
   "ambientIntensity": 2.0,
   "aoBias": 0.042100001126527786,
-  "aoRadius": 0.7160000205039978,
+  "aoRadius": 1.3580000400543213,
   "aoStrength": 0.5910000205039978,
-  "atmosphereHaze": 0.33500000834465027,
+  "atmosphereHaze": 0.6380000114440918,
   "autoExposure": true,
   "autoExposureMax": 4.419000148773193,
   "autoExposureMin": 0.6980000138282776,
   "autoExposureSpeed": 0.02800000086426735,
-  "bloomIntensity": 0.18199999630451202,
-  "contrast": 1.0,
-  "exposure": 1.1125530004501343,
+  "bloomIntensity": 0.17599999904632568,
+  "contrast": 1.0770000219345093,
+  "exposure": 0.6980010271072388,
+  "fogAerialStrength": 135.0,
+  "fogAnisotropy": 0.8140000104904175,
+  "fogDayColor": [
+    0.7200000286102295,
+    0.7900000214576721,
+    0.8999999761581421
+  ],
+  "fogDensity": 0.02070000022649765,
+  "fogHeightFalloff": 0.10700000077486038,
+  "fogHeightRef": 16.0,
+  "fogMaxOpacity": 0.9810000061988831,
+  "fogNightColor": [
+    0.09000000357627869,
+    0.11999999731779099,
+    0.20000000298023224
+  ],
+  "fogNoiseScale": 0.030799999833106995,
+  "fogNoiseStrength": 0.3230000138282776,
+  "fogNoiseWindSpeed": 1.3760000467300415,
+  "fogSkyStrength": 1.0,
+  "fogStart": 143.0,
+  "fogSunInscatter": 3.322000026702881,
   "gamma": 2.200000047683716,
-  "iblSpecularIntensity": 1.2929999828338623,
-  "lightPitchDeg": 7.0,
-  "lightYawDeg": 226.0,
+  "iblSpecularIntensity": 0.9829999804496765,
+  "lightPitchDeg": 30.0,
+  "lightYawDeg": 259.0,
   "moonGlowIntensity": 0.07999999821186066,
   "moonIntensity": 1.0,
   "nightSkyBrightness": 1.0,
-  "saturation": 1.5369999408721924,
+  "saturation": 1.75600004196167,
   "shadowSamples": 6,
   "shadowSoftness": 0.014999999664723873,
   "shadowStrength": 1.0,
-  "skyBrightness": 1.0,
+  "skyBrightness": 3.0,
   "starIntensity": 1.0,
-  "sunDiscIntensity": 15.730999946594238,
-  "sunIntensity": 1.2979999780654907,
-  "terrainSkyReflectIntensity": 0.9150000214576721,
+  "style": {
+    "autumnAmount": 0.6200000047683716,
+    "cloudBase": [
+      0.38999998569488525,
+      0.4300000071525574,
+      0.5199999809265137
+    ],
+    "cloudCoverage": 0.32199999690055847,
+    "cloudDeckHeight": 8000.0,
+    "cloudFeatureScale": 6000.0,
+    "cloudLit": [
+      1.0,
+      0.8799999952316284,
+      0.6800000071525574
+    ],
+    "cloudMid": [
+      0.7099999785423279,
+      0.7200000286102295,
+      0.7300000190734863
+    ],
+    "cloudOpticalDensity": 1.6150000095367432,
+    "cloudSoftness": 0.17000000178813934,
+    "cloudSunOcclusion": 1.1510000228881836,
+    "cloudWind": [
+      0.012000000104308128,
+      0.006000000052154064
+    ],
+    "facetStrength": 0.7799999713897705,
+    "fxaaEnabled": true,
+    "outlineColor": [
+      0.07500000298023224,
+      0.08500000089406967,
+      0.11999999731779099
+    ],
+    "outlineDepthThreshold": 0.012000000104308128,
+    "outlineDistance": 220.0,
+    "outlineNormalThreshold": 0.2199999988079071,
+    "outlineStrength": 0.0,
+    "outlineWidth": 0.9259999990463257,
+    "screenPaperStrength": 0.014000000432133675,
+    "skyBandSoftness": 0.30000001192092896,
+    "skyBands": 5.0,
+    "skyGradeStrength": 0.6200000047683716,
+    "skyHorizon": [
+      1.0,
+      0.550000011920929,
+      0.2800000011920929
+    ],
+    "skyZenith": [
+      0.20000000298023224,
+      0.46000000834465027,
+      0.6200000047683716
+    ],
+    "splitBalance": 0.47999998927116394,
+    "splitHighlight": [
+      1.0,
+      0.7699999809265137,
+      0.47999998927116394
+    ],
+    "splitShadow": [
+      0.800000011920929,
+      0.8600000143051147,
+      1.0
+    ],
+    "sunSoftness": 0.44999998807907104,
+    "terrain": [
+      {
+        "lit": [
+          0.3499999940395355,
+          0.5799999833106995,
+          0.20000000298023224
+        ],
+        "mottleScale": 10.800000190734863,
+        "overlayStrength": 0.0,
+        "shade": [
+          0.12999999523162842,
+          0.28999999165534973,
+          0.17000000178813934
+        ]
+      },
+      {
+        "lit": [
+          0.25,
+          0.3799999952316284,
+          0.1599999964237213
+        ],
+        "mottleScale": 7.0,
+        "overlayStrength": 0.0,
+        "shade": [
+          0.10000000149011612,
+          0.20000000298023224,
+          0.1599999964237213
+        ]
+      },
+      {
+        "lit": [
+          0.47999998927116394,
+          0.3400000035762787,
+          0.20000000298023224
+        ],
+        "mottleScale": 6.0,
+        "overlayStrength": 0.0,
+        "shade": [
+          0.25,
+          0.1899999976158142,
+          0.18000000715255737
+        ]
+      },
+      {
+        "lit": [
+          0.47999998927116394,
+          0.5,
+          0.550000011920929
+        ],
+        "mottleScale": 9.0,
+        "overlayStrength": 0.0,
+        "shade": [
+          0.25,
+          0.30000001192092896,
+          0.38999998569488525
+        ]
+      },
+      {
+        "lit": [
+          0.550000011920929,
+          0.5199999809265137,
+          0.4699999988079071
+        ],
+        "mottleScale": 8.0,
+        "overlayStrength": 0.0,
+        "shade": [
+          0.28999999165534973,
+          0.3100000023841858,
+          0.36000001430511475
+        ]
+      }
+    ],
+    "version": 1,
+    "vibrance": 0.15000000596046448,
+    "washEdgeDarkening": 0.18000000715255737,
+    "worldPaperStrength": 0.04500000178813934
+  },
+  "sunDiscIntensity": 100.0,
+  "sunIntensity": 1.1239999532699585,
+  "terrainSkyReflectIntensity": 1.2120000123977661,
   "timeOfDayEnabled": false,
   "timeOfDaySpeed": 3.0,
   "tonemapMode": 0,
@@ -37,5 +201,31 @@
   "volumetricEnabled": true,
   "volumetricIntensity": 9.878000259399414,
   "volumetricMaxDist": 250.0,
-  "volumetricSteps": 32
+  "volumetricSteps": 32,
+  "waterClarity": 6.0,
+  "waterDeepColor": [
+    0.019999999552965164,
+    0.09000000357627869,
+    0.14000000059604645
+  ],
+  "waterEnabled": true,
+  "waterFoamDepth": 0.44999998807907104,
+  "waterFoamStrength": 0.699999988079071,
+  "waterLevel": 0.0,
+  "waterReflectionStrength": 1.0,
+  "waterRoughness": 0.05999999865889549,
+  "waterShallowColor": [
+    0.2199999988079071,
+    0.4399999976158142,
+    0.41999998688697815
+  ],
+  "waterSsrSteps": 40,
+  "waterSsrThickness": 0.699999988079071,
+  "waveAmplitude": 0.2199999988079071,
+  "waveDirection": [
+    1.0,
+    0.3499999940395355
+  ],
+  "waveScale": 0.3499999940395355,
+  "waveSpeed": 0.550000011920929
 }

@@ -68,13 +68,11 @@ struct VkAudioSubsystem::ManagedSound {
 
 VkAudioSubsystem::VkAudioSubsystem(VkAppState &state) : mState(state) {
   mAmbient = new ManagedSound();
-  mFootsteps = new ManagedSound();
 }
 
 VkAudioSubsystem::~VkAudioSubsystem() {
   shutdown();
   delete mAmbient;
-  delete mFootsteps;
 }
 
 bool VkAudioSubsystem::initialize() { return initEngine_(); }
@@ -82,8 +80,6 @@ bool VkAudioSubsystem::initialize() { return initEngine_(); }
 void VkAudioSubsystem::shutdown() {
   if (mAmbient)
     unloadSound_(*mAmbient);
-  if (mFootsteps)
-    unloadSound_(*mFootsteps);
 
   if (mInitialized && mEngineStorage) {
     auto *holder = static_cast<EngineHolder *>(mEngineStorage);
@@ -441,26 +437,51 @@ void VkAudioSubsystem::refreshFootstepClipPool_() {
   mFootstepClipPaths.clear();
   mFootstepClipIndex = 0;
 
-  const fs::path assetRoot = fs::path(mState.projectConfig.assetPath(""));
-  if (!fs::exists(assetRoot) || !fs::is_directory(assetRoot))
-    return;
-
   const std::string ambientResolved = resolvePath_(mSettings.ambientPath);
 
-  for (const auto &entry : fs::directory_iterator(assetRoot)) {
-    if (!entry.is_regular_file())
-      continue;
-    std::string ext = entry.path().extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return (char)std::tolower(c); });
-    if (ext == ".ogg" || ext == ".oga") {
-      const std::string clipPath = entry.path().lexically_normal().string();
-      if (!ambientResolved.empty() && clipPath == ambientResolved)
+  auto scanDirectory = [&](const fs::path &dir) {
+    if (!fs::exists(dir) || !fs::is_directory(dir))
+      return;
+    std::error_code ec;
+    for (const auto &entry : fs::recursive_directory_iterator(dir, ec)) {
+      if (ec)
+        break;
+      if (!entry.is_regular_file())
         continue;
-      mFootstepClipPaths.push_back(clipPath);
+      std::string ext = entry.path().extension().string();
+      std::transform(ext.begin(), ext.end(), ext.begin(),
+                     [](unsigned char c) { return (char)std::tolower(c); });
+      if (ext == ".ogg" || ext == ".oga" || ext == ".wav") {
+        const std::string clipPath = entry.path().lexically_normal().string();
+        if (!ambientResolved.empty() && clipPath == ambientResolved)
+          continue;
+        mFootstepClipPaths.push_back(clipPath);
+      }
+    }
+  };
+
+  if (!mSettings.footstepPath.empty()) {
+    const std::string resolved = resolvePath_(mSettings.footstepPath);
+    if (!resolved.empty() && fs::exists(resolved)) {
+      if (fs::is_regular_file(resolved)) {
+        if (ambientResolved.empty() || resolved != ambientResolved) {
+          mFootstepClipPaths.push_back(fs::path(resolved).lexically_normal().string());
+        }
+      } else if (fs::is_directory(resolved)) {
+        scanDirectory(fs::path(resolved));
+      }
     }
   }
+
+  if (mFootstepClipPaths.empty()) {
+    const fs::path assetRoot = fs::path(mState.projectConfig.assetPath(""));
+    scanDirectory(assetRoot);
+  }
+
   std::sort(mFootstepClipPaths.begin(), mFootstepClipPaths.end());
+  mFootstepClipPaths.erase(
+      std::unique(mFootstepClipPaths.begin(), mFootstepClipPaths.end()),
+      mFootstepClipPaths.end());
 }
 
 std::string VkAudioSubsystem::nextFootstepClip_() {

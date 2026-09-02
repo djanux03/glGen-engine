@@ -28,9 +28,14 @@ namespace vkrhi {
 // flight so the two in-flight frames never alias.
 class VulkanRenderer {
 public:
+  // assetDir is the engine asset root (the runtime's GLGEN_VK_ASSET_DIR).
+  // Only the volumetric cloud noise is loaded from it, and only optionally:
+  // pass "" (the default, which the smoke test does) and the cloud passes are
+  // skipped, leaving the sky exactly as it renders without them.
   bool init(VulkanContext &ctx, VkSurfaceKHR surface,
             const std::string &shaderDir,
-            std::function<void(uint32_t &, uint32_t &)> queryFramebufferSize);
+            std::function<void(uint32_t &, uint32_t &)> queryFramebufferSize,
+            const std::string &assetDir = std::string());
 
   // --- engine-drivable scene API ---------------------------------------
   // Build the scene after init(): create meshes, place instances, then call
@@ -134,6 +139,25 @@ public:
   // Call when the scatter set CHANGES (chunk with vegetation streamed in/
   // out), not per frame -- uploads and TLAS-input caching key off it.
   void setVegetationBatches(const std::vector<VegBatch> &batches);
+
+  // --- editor debug lines ------------------------------------------------
+  // Depth-tested world-space lines: the editor grid, origin axes, collider
+  // outlines, anything that has to sit IN the scene rather than on top of it.
+  //
+  // This exists because the editor's overlays were all CPU-projected into
+  // ImGui's foreground draw list, which cannot depth test -- every line drew
+  // through terrain and geometry. A grid drawn that way reads as broken
+  // immediately, since the one thing a grid must do is lie on the ground.
+  struct DebugLineVertex {
+    glm::vec3 pos;
+    glm::vec4 color; // alpha is modulated by distance fade in the shader
+  };
+  // Replaces the whole line set; call once per frame with everything to draw.
+  // Depth-tested against the scene but does NOT write depth, so lines never
+  // occlude geometry drawn after them.
+  void setDebugLines(const std::vector<DebugLineVertex> &lines);
+  // Distance at which lines have faded to nothing. 0 disables the fade.
+  void setDebugLineFadeDistance(float metres) { mDebugLineFade = metres; }
   bool finalizeScene();
   // Incremental counterpart to finalizeScene(): builds BLAS only for meshes
   // added since the last finalizeScene()/growScene() call (via
@@ -190,10 +214,74 @@ public:
       float skyGradeStrength = 0.62f, skyBands = 5.0f;
       float skyBandSoftness = 0.30f, sunSoftness = 0.45f;
       float cloudCoverage = 0.47f, cloudSoftness = 0.18f;
+      // Deck geometry + density. cloudDeckHeight is the BOTTOM of the cloud
+      // layer in meters; the volumetric marcher (clouds.frag) extends it up
+      // by cloudLayerThickness, and sky.frag's analytic deck -- which now
+      // only draws into the environment cubemap -- treats it as its single
+      // deck altitude. cloudFeatureScale and cloudOpticalDensity are used by
+      // that analytic deck alone; the volumetric pass has its own scales
+      // below. sunOcclusion is shared: both scale their toward-the-sun
+      // extinction by it.
+      float cloudDeckHeight = 1500.0f;
+      float cloudFeatureScale = 1500.0f;
+      float cloudOpticalDensity = 1.0f;
+      float cloudSunOcclusion = 1.0f;
       glm::vec2 cloudWind{0.012f, 0.006f};
       glm::vec3 cloudLit{1.0f, 0.88f, 0.68f};
       glm::vec3 cloudMid{0.71f, 0.72f, 0.73f};
       glm::vec3 cloudBase{0.39f, 0.43f, 0.52f};
+
+      // --- volumetric cloudscape (clouds.frag) ---------------------------
+      // A Nubis-style raymarch: Perlin-Worley profile x height gradient x
+      // weather map, eroded by the four-channel Nubis detail noise, lit with
+      // the Nubis2/3 light-energy model. Half-resolution, composited over the
+      // sky before geometry.
+      bool cloudVolumetricEnabled = true;
+      // 0..1 fade for the whole layer. 0 leaves the sky bare (and skips the
+      // pass entirely), 1 is the full deck.
+      float cloudStrength = 1.0f;
+      // Vertical extent above cloudDeckHeight. 3 km over a 1.5 km base is a
+      // fair-weather cumulus field with room for the tall type to tower.
+      float cloudLayerThickness = 3000.0f;
+      // Meters per tile of each noise volume. shapeScale sets how big a whole
+      // cloud is; detailScale how fine the billows carved into it are. The
+      // two are deliberately three orders of magnitude apart -- that ratio is
+      // what makes the erosion read as surface detail rather than as a second
+      // layer of clouds.
+      float cloudShapeScale = 4200.0f;
+      float cloudDetailScale = 90.0f;
+      float cloudWeatherScale = 26000.0f;
+      // Extinction per METER per unit of eroded density. Real cumulus sits
+      // around 0.05; at that value a single 80 m step through solid cloud is
+      // already opaque, which is correct but leaves the dial no travel, so
+      // the default is lower and the slider reaches up to it.
+      float cloudDensityMultiplier = 0.028f;
+      // Optical depth toward the light through a full-density cone. Unlike
+      // the above this is dimensionless (see clDensityToLight): it is what
+      // sets how deep self-shadowing goes, i.e. the contrast between a lit
+      // top and a shadowed base, independent of the layer's authored
+      // thickness.
+      float cloudLightAbsorption = 4.0f;
+      float cloudAmbientStrength = 1.0f;
+      // How far the curl field shears the layer's thin bases into wisps.
+      float cloudCurlStrength = 0.35f;
+      // Phase: the broad forward lobe, plus a tight second lobe that only
+      // fires within a few degrees of the light. That second one IS the
+      // silver lining on a backlit cloud edge.
+      float cloudPhaseG = 0.62f;
+      float cloudSilverIntensity = 1.27f;
+      float cloudSilverSpread = 1.32f;
+      float cloudPowderStrength = 0.55f;
+      // Marching budget. maxMarchDist caps a near-horizon ray, which would
+      // otherwise cross an effectively unbounded slab and force a step size
+      // that dissolves the deck into stripes exactly where it is densest.
+      float cloudMaxMarchDist = 55000.0f;
+      float cloudMaxSteps = 96.0f;
+      float cloudLightTaps = 5.0f;
+      // Biases the weather map's type channel: negative flattens the sky
+      // toward stratus, positive builds it toward cumulus.
+      float cloudTypeBias = 0.0f;
+      float cloudDetailStrength = 0.72f;
     } style;
 
     // Camera pose. Editor mode: driven by EditorCamera (RMB look / MMB pan /
@@ -201,6 +289,10 @@ public:
     glm::vec3 camPos = glm::vec3(0.0f, 0.7f, 3.0f);
     float camYawDeg = 180.0f;   // facing -Z toward the origin
     float camPitchDeg = -8.0f;
+    // Incremented by scripting/RPC camera writes. main.cpp watches this and
+    // reseeds EditorCamera before its next update; otherwise the editor's
+    // smoothed target overwrites render.setParams before a deferred capture.
+    uint64_t externalCameraRevision = 0;
     float fovDeg = 55.0f;
     // Was a hardcoded 420 (sized only for the default viewDistanceChunks=6,
     // 384m radius): streamed terrain beyond whatever this is set to is
@@ -232,6 +324,18 @@ public:
     float shadowStrength = 1.0f;  // 0 = shadows off, 1 = full occlusion
     float shadowSoftness = 0.02f; // sun angular radius; 0 = sharp single ray
     int shadowSamples = 4;        // rays per pixel when soft
+
+    // Small authored lights for lamps and practicals.  A fixed four-light
+    // budget keeps FrameData deterministic and is enough for MCP-authored
+    // showcase scenes without introducing a second scene-light registry.
+    struct PointLight {
+      glm::vec3 position = glm::vec3(0.0f);
+      float radius = 8.0f;
+      glm::vec3 color = glm::vec3(1.0f, 0.75f, 0.45f);
+      float intensity = 80.0f;
+    };
+    std::array<PointLight, 4> pointLights{};
+    uint32_t pointLightCount = 0;
 
     // Screen-space ambient occlusion (darkens ambient-only, never direct light).
     float aoRadius = 0.5f;   // view-space hemisphere radius
@@ -304,19 +408,112 @@ public:
     glm::vec3 volumetricTintColor = glm::vec3(1.0f, 0.85f, 0.55f);
     float volumetricTintStrength = 0.3f; // 0..1
 
-    // Aerial / height fog. Tuned for the streamed terrain's world scale
-    // (~400 m visible; TerrainSettings::chunkWorldSize * viewDistanceChunks):
-    // ~50% haze around 145 m, hitting max opacity near the far plane. The
-    // old defaults (density 0.05, start 2) were sized for the meters-wide
-    // smoke-test scene and turned everything past ~50 m into milk.
+    // Fog. Two media over one view ray -- see shaders/vulkan/fog.glsl for the
+    // model and for what was wrong with the version this replaced.
+    //
+    // GROUND LAYER: mist that pools in low ground. fogDensity is its
+    // extinction coefficient (per meter) at fogHeightRef, thinning upward
+    // with scale height 1/fogHeightFalloff.
     float fogDensity = 0.006f;
     float fogStart = 30.0f;
-    float fogMaxOpacity = 0.9f;
-    float fogHeightFalloff = 0.0f; // >0 keeps fog near the ground
-    float fogHeightRef = -2.0f;    // world height where height fog is densest
-                                   // (TerrainSettings::seaLevel)
-    glm::vec3 fogDayColor = glm::vec3(0.55f, 0.65f, 0.78f);
-    glm::vec3 fogNightColor = glm::vec3(0.03f, 0.04f, 0.07f);
+    // Now a FLOOR on transmittance, not a ceiling on a blend: 1 lets fog run
+    // to completion so distant terrain dissolves into a matching horizon, 0
+    // disables fog entirely (which is what GLGEN_SMOKE_NOFOG and the
+    // turntable rely on), and values between cap how much of a surface fog is
+    // allowed to take. It defaulted to 0.9 under the old meaning, which is
+    // precisely what produced the horizon seam -- terrain frozen at 90%
+    // fogged against a sky at 0%.
+    float fogMaxOpacity = 1.0f;
+    // Per-meter thinning of the ground layer with altitude (H = 1/this).
+    // Nonzero by default now: with the correct path integral, ground fog
+    // that hugs the valleys is the whole point of having a second layer, and
+    // at 0 it degenerates into a uniform slab indistinguishable from the
+    // aerial term. 0.045 puts the scale height around 22 m.
+    float fogHeightFalloff = 0.045f;
+    float fogHeightRef = -2.0f; // altitude the ground layer is anchored at
+                                // (TerrainSettings::seaLevel)
+    // Ground-layer tint, blended by sun elevation. These two have existed and
+    // been uploaded every frame since the first fog implementation without a
+    // single shader reading them; fog.glsl finally does.
+    glm::vec3 fogDayColor = glm::vec3(0.72f, 0.79f, 0.90f);
+    glm::vec3 fogNightColor = glm::vec3(0.09f, 0.12f, 0.20f);
+
+    // AERIAL LAYER: air, in multiples of sea-level density. Real air over the
+    // ~400 m this engine renders has a Rayleigh optical depth around 0.013 --
+    // physically correct and visually nothing, so the multiplier is doing
+    // real work rather than papering over a wrong model. What being physical
+    // still buys: extinction stays SPECTRAL (blue leaves a distant surface
+    // ~3x faster than red, which is what aerial perspective is), and the
+    // in-scatter converges on the sky's own radiance, so the horizon matches
+    // by construction at any value of this dial.
+    //
+    // 180 is not arbitrary: it is the value at which the new model reproduces
+    // the OLD fog's measured opacity profile down the frame (0.88 at the far
+    // ridge / 0.39 near the camera, against the old 0.91 / 0.40) in the
+    // mountain smoke pose. Matching it deliberately -- the point of this
+    // rewrite is that the fog is correct, not that scenes suddenly have more
+    // or less of it, and a default that quietly halved everyone's haze would
+    // read as a regression however good the model underneath was. The old
+    // 0.91 was its maxOpacity clamp, i.e. clipped; this one is still climbing.
+    float fogAerialStrength = 180.0f;
+    // Extra forward-Mie in-scatter toward the sun, on top of what the env
+    // cubemap already carries -- the tight haze flare when looking into a low
+    // sun, and the glow low mist gets from the same direction.
+    float fogSunInscatter = 1.0f;
+    // Henyey-Greenstein g for the ground layer's sun lobe. Lower than the
+    // god rays' 0.87: mist scatters broadly, shafts are the tight case.
+    float fogAnisotropy = 0.55f;
+    // Patchiness of the ground layer. 0 is the analytic wash the old fog
+    // always was; the default gives mist visible body without it reading as
+    // noise. Scale is in cycles per meter (0.008 -> ~125 m features).
+    float fogNoiseStrength = 0.4f;
+    float fogNoiseScale = 0.008f;
+    float fogNoiseWindSpeed = 0.35f;
+    // How much of the ground layer the VISIBLE sky receives (never the env
+    // cubemap -- surfaces sample that back as their own fog color). This is
+    // the other half of removing the seam: terrain that fully dissolves still
+    // needs something to dissolve INTO.
+    float fogSkyStrength = 1.0f;
+
+    // --- Water (shaders/vulkan/water.frag) --------------------------------
+    // A single world-height water table, evaluated analytically in a
+    // fullscreen pass rather than drawn as a mesh. That means one water
+    // ALTITUDE for the whole world: it models a sea or a valley flood level,
+    // not lakes at differing heights. Terrain streams over an unbounded XZ
+    // plane, so a mesh would have needed its own chunking/LOD to match; an
+    // analytic plane is exact everywhere for free and cannot crack at chunk
+    // seams. Off by default -- the terrain generator has had no sea level
+    // since R1, so a world that never asked for water should not grow one.
+    bool waterEnabled = false;
+    float waterLevel = 0.0f; // world Y of the surface
+    // Shallow/deep are the colours the medium TRANSMITS at ~0 m and at
+    // waterClarity metres of path; the absorption between them is
+    // Beer-Lambert, so mid depths interpolate physically rather than by lerp.
+    glm::vec3 waterShallowColor = glm::vec3(0.22f, 0.44f, 0.42f);
+    glm::vec3 waterDeepColor = glm::vec3(0.02f, 0.09f, 0.14f);
+    float waterClarity = 6.0f;   // metres to reach the deep colour
+    float waterRoughness = 0.06f; // GGX roughness for sun glint + SSR blur
+    // Waves are normal-only (the surface stays geometrically flat), summed
+    // from a few directional octaves. Steepness scales the normal's tilt, not
+    // a displacement, so large values read as chop rather than as height.
+    float waveAmplitude = 0.22f;
+    // Cycles per metre of the base octave. 0.09 gives ~11 m swells, which at
+    // four octaves never produces anything you can see rippling; water wants
+    // metre-scale detail in the near field.
+    float waveScale = 0.35f;
+    float waveSpeed = 0.55f;
+    glm::vec2 waveDirection = glm::vec2(1.0f, 0.35f);
+    // Screen-space reflections. On a miss (ray leaves the screen, or finds no
+    // depth in front of it) the sky cubemap fills in, so there is never a
+    // hard edge where SSR stops -- only a change in how much detail is in the
+    // reflection.
+    float waterReflectionStrength = 1.0f;
+    int waterSsrSteps = 40;
+    float waterSsrThickness = 0.7f; // metres of depth a hit may span
+    // Shoreline foam, driven by how little water is between the surface and
+    // the terrain behind it.
+    float waterFoamDepth = 0.45f;
+    float waterFoamStrength = 0.7f;
 
     // Post-processing (tonemap pass). Exposure re-anchored for the
     // physical-scale lighting (sun outer radiance 20 HDR at intensity 1).
@@ -594,6 +791,32 @@ private:
     glm::vec4 styleCloudBase;
     std::array<glm::vec4, 5> terrainPaintLit;
     std::array<glm::vec4, 5> terrainPaintShade;
+    std::array<glm::vec4, 4> pointLightPositionRadius;
+    std::array<glm::vec4, 4> pointLightColorIntensity;
+    glm::vec4 pointLightParams; // x=count; y/z/w reserved
+    // Fog redesign (shaders/vulkan/fog.glsl). Appended, per this struct's
+    // established rule. fogParams/fogDayColor/fogNightColor above keep their
+    // slots; what changed is that fogParams.z is now a transmittance floor
+    // instead of a blend ceiling, and the two colors are finally read by a
+    // shader.
+    glm::vec4 fogParams2; // x=aerialStrength y=sunInscatterStrength z=noiseStrength w=noiseScale
+    glm::vec4 fogParams3; // x=groundAnisotropy y=noiseWindSpeed z=skyFogStrength w=unused
+    // Cloud deck geometry + density (sky.frag).
+    glm::vec4 styleCloud1; // x=deckHeight y=featureScale z=opticalDensity w=sunOcclusion
+    // Water (water.frag).
+    glm::vec4 waterParams0;  // x=level y=clarity z=roughness w=reflectionStrength
+    glm::vec4 waterParams1;  // x=waveAmplitude y=waveScale z=waveSpeed w=ssrSteps
+    glm::vec4 waterParams2;  // xy=waveDirection z=ssrThickness w=foamDepth
+    glm::vec4 waterParams3;  // x=foamStrength (y/z/w reserved)
+    glm::vec4 waterShallowColor; // rgb
+    glm::vec4 waterDeepColor;    // rgb
+    // Volumetric cloudscape (clouds.frag). styleCloud0/1 above stay shared
+    // with the analytic deck that now only feeds the environment cubemap.
+    glm::vec4 styleCloud2; // x=layerThickness y=shapeScale z=detailScale w=weatherScale
+    glm::vec4 styleCloud3; // x=densityMultiplier y=lightAbsorption z=ambientStrength w=curlStrength
+    glm::vec4 styleCloud4; // x=phaseG y=silverIntensity z=silverSpread w=powderStrength
+    glm::vec4 styleCloud5; // x=maxMarchDist y=maxSteps z=lightTaps w=cloudTypeBias
+    glm::vec4 styleCloud6; // x=detailStrength (y/z/w reserved)
   };
   // The GLSL mirror is shaders/vulkan/frameData.glsl; every scene shader
   // includes that whole block (no per-shader prefixes or offset hacks). If
@@ -632,7 +855,17 @@ private:
                 "FrameDataGpu layout drifted from frameData.glsl");
   static_assert(offsetof(FrameDataGpu, terrainPaintShade) == 960,
                 "FrameDataGpu layout drifted from frameData.glsl");
-  static_assert(sizeof(FrameDataGpu) == 1040,
+  static_assert(offsetof(FrameDataGpu, pointLightPositionRadius) == 1040,
+                "FrameDataGpu layout drifted from frameData.glsl");
+  static_assert(offsetof(FrameDataGpu, fogParams2) == 1184,
+                "FrameDataGpu layout drifted from frameData.glsl");
+  static_assert(offsetof(FrameDataGpu, styleCloud1) == 1216,
+                "FrameDataGpu layout drifted from frameData.glsl");
+  static_assert(offsetof(FrameDataGpu, waterParams0) == 1232,
+                "FrameDataGpu layout drifted from frameData.glsl");
+  static_assert(offsetof(FrameDataGpu, styleCloud2) == 1328,
+                "FrameDataGpu layout drifted from frameData.glsl");
+  static_assert(sizeof(FrameDataGpu) == 1408,
                 "FrameDataGpu layout drifted from frameData.glsl");
 
   // Material flag bits (mesh.frag mirrors these exactly).
@@ -645,6 +878,9 @@ private:
     kRoughnessChannelShift = 4,
     kMetallicChannelShift = 6,
     kAOChannelShift = 8,
+    kHasNormalMap = 1u << 10,
+    kHasOpacityMap = 1u << 11,
+    kOpacityChannelShift = 12,
   };
 
   struct DrawItem {
@@ -654,9 +890,14 @@ private:
     uint32_t roughnessIndex = 0;
     uint32_t metallicIndex = 0;
     uint32_t aoIndex = 0;
+    uint32_t normalIndex = 0;
+    uint32_t opacityIndex = 0;
     float roughnessScalar = 0.8f;
     float metallicScalar = 0.0f;
     float aoScalar = 1.0f;
+    float alphaCutoff = 0.0f;
+    glm::vec3 emissiveColor = glm::vec3(0.0f);
+    float emissiveStrength = 0.0f;
     uint32_t materialFlags = 0;
   };
 
@@ -712,10 +953,42 @@ private:
   bool createSkyPipeline(const std::string &shaderDir);
   bool createEnvMapPipeline(const std::string &shaderDir);
   bool createVolumetricPipelines(const std::string &shaderDir);
+  bool createWaterPipeline(const std::string &shaderDir);
+  // Volumetric clouds. The noise volumes come from assets/clouds/ and are
+  // immutable, so they are loaded once in init(); the half-res march target
+  // is swapchain-derived and lives in createSceneTargets()/destroy pair.
+  bool createCloudNoiseResources(const std::string &assetDir);
+  void destroyCloudNoiseResources();
+  void updateCloudSets();
+  bool createCloudPipelines(const std::string &shaderDir);
+
+public:
+  // Uploads the water-height field. `heights` is resolution^2 floats in row-
+  // major XZ order covering [origin, origin+worldSize]^2; each value is the
+  // water surface altitude there (the global sea level where there is no
+  // lake, so bilinear filtering across a shoreline ramps between two real
+  // water heights rather than into a sentinel). Safe to call every frame:
+  // reallocates only when the resolution changes.
+  void setWaterHeightField(const float *heights, uint32_t resolution,
+                           glm::vec2 worldOrigin, float worldSize);
+
+  // A texture for UI use (ImGui), returned as the view+sampler pair the
+  // ImGui Vulkan backend wants -- the renderer deliberately does not know
+  // about ImGui, so the caller does the ImGui_ImplVulkan_AddTexture() step.
+  // Owned by the renderer and destroyed with it; intended for a handful of
+  // long-lived images (the world map), not per-frame churn.
+  struct UiTexture {
+    VkImageView view = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+  };
+  UiTexture createUiTexture(const uint8_t *rgba, uint32_t w, uint32_t h);
+
+private:
   bool createSSAOPipeline(const std::string &shaderDir);
   bool createBlurPipeline(const std::string &shaderDir);
   bool createBloomExtractPipeline(const std::string &shaderDir);
   bool createBloomBlurPipeline(const std::string &shaderDir);
+  bool createLinePipeline(const std::string &shaderDir);
   bool createTonemapPipeline(const std::string &shaderDir);
   bool loadMeshFromObj(const std::string &path, Mesh &outMesh);
   // Shared by createMeshFromData()/updateMeshFromData(): flattens `data`
@@ -824,11 +1097,15 @@ private:
   // main scene pipeline (and terrain chunks, which share that vertex
   // layout), just no fragment shader/color output.
   VkPipeline mDepthPrepassPipeline = VK_NULL_HANDLE;
+  // Alpha-tested variants use the same vertices/depth state but run a tiny
+  // fragment shader so cutout holes do not poison SSAO and early-Z.
+  VkPipeline mDepthAlphaPrepassPipeline = VK_NULL_HANDLE;
   // Depth-only prepass for GPU-instanced vegetation: meshInstanced.vert
   // (2nd vertex binding for the per-instance model matrix), no fragment
   // shader/color output. A separate pipeline from mDepthPrepassPipeline
   // because the vertex input state (bindings/attributes) differs.
   VkPipeline mVegetationDepthPrepassPipeline = VK_NULL_HANDLE;
+  VkPipeline mVegetationDepthAlphaPrepassPipeline = VK_NULL_HANDLE;
 
   // --- Bloom: half-res bright-pass extract + 2-pass separable blur, plus a
   // second quarter-res blur pass (downsampled from the half-res result, same
@@ -897,6 +1174,78 @@ private:
   VkPipelineLayout mVolCompositePipelineLayout = VK_NULL_HANDLE;
   VkPipeline mVolCompositePipeline = VK_NULL_HANDLE;
 
+  // --- volumetric cloudscape (shaders/vulkan/clouds.frag) ---
+  // Half-res raymarch of a Nubis-style cloud layer, composited over the sky
+  // inside the scene pass before any geometry draws. The two 128^3 noise
+  // volumes and the two 2D maps are immutable, loaded once from
+  // assets/clouds/, and live in a single descriptor set (not per frame in
+  // flight -- nothing writes them after upload).
+  VkImage mCloudShapeImage = VK_NULL_HANDLE;   // Perlin-Worley base shape
+  VmaAllocation mCloudShapeAlloc = VK_NULL_HANDLE;
+  VkImageView mCloudShapeView = VK_NULL_HANDLE;
+  VkImage mCloudDetailImage = VK_NULL_HANDLE;  // Nubis 4-channel detail
+  VmaAllocation mCloudDetailAlloc = VK_NULL_HANDLE;
+  VkImageView mCloudDetailView = VK_NULL_HANDLE;
+  VkImage mCloudWeatherImage = VK_NULL_HANDLE; // r=coverage g=wetness b=type
+  VmaAllocation mCloudWeatherAlloc = VK_NULL_HANDLE;
+  VkImageView mCloudWeatherView = VK_NULL_HANDLE;
+  VkImage mCloudCurlImage = VK_NULL_HANDLE;
+  VmaAllocation mCloudCurlAlloc = VK_NULL_HANDLE;
+  VkImageView mCloudCurlView = VK_NULL_HANDLE;
+  VkSampler mCloudSampler = VK_NULL_HANDLE; // REPEAT + full mip range
+  VkDescriptorSetLayout mCloudNoiseSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool mCloudPool = VK_NULL_HANDLE;
+  VkDescriptorSet mCloudNoiseSet = VK_NULL_HANDLE;
+  bool mCloudNoiseReady = false; // false if the assets failed to load
+  std::vector<VkImage> mCloudImages;
+  std::vector<VmaAllocation> mCloudAllocs;
+  std::vector<VkImageView> mCloudViews;
+  std::vector<VkDescriptorSet> mCloudSampleSets; // composite samples mCloudViews
+  VkPipelineLayout mCloudPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline mCloudPipeline = VK_NULL_HANDLE;
+  VkExtent2D mCloudExtent{1, 1};
+
+  // --- water (shaders/vulkan/water.frag) ---
+  // The water surface is not geometry. It is an analytic plane at
+  // Params::waterLevel, intersected with the view ray in a fullscreen pass
+  // that runs after the opaque scene. That buys an unbounded surface with no
+  // tessellation, no LOD seams and no chunk streaming, which for a single
+  // world-height water table is all upside; the cost is that it cannot model
+  // lakes at differing heights (see Params::waterLevel).
+  //
+  // mSceneCopy* is a full-res snapshot of the opaque HDR image taken just
+  // before the water pass. Water needs to READ the scene it is covering --
+  // once for refraction through the surface, and again as the colour source
+  // for the screen-space reflection march -- and it cannot sample the render
+  // target it is writing to.
+  std::vector<VkImage> mSceneCopyImages;
+  std::vector<VmaAllocation> mSceneCopyAllocs;
+  std::vector<VkImageView> mSceneCopyViews;
+  std::vector<VkDescriptorSet> mSceneCopySets; // sample mSceneCopyViews
+  VkPipelineLayout mWaterPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline mWaterPipeline = VK_NULL_HANDLE;
+
+  // Water-height field: a world-space grid of water surface altitudes around
+  // the camera, so the water pass can shade lakes at their own levels instead
+  // of one global plane. Sampled from Engine/Terrain's waterSurfaceAt() -- the
+  // CPU stays the single authority for where water is, as it already is for
+  // where the ground is. Outside the field's footprint the shader falls back
+  // to the global sea level, which is what makes an ocean reach the horizon
+  // while the field only has to cover the streamed disc.
+  // Long-lived UI images (see createUiTexture).
+  std::vector<VkImage> mUiImages;
+  std::vector<VmaAllocation> mUiAllocs;
+  std::vector<VkImageView> mUiViews;
+
+  VkImage mWaterFieldImage = VK_NULL_HANDLE;
+  VmaAllocation mWaterFieldAlloc = VK_NULL_HANDLE;
+  VkImageView mWaterFieldView = VK_NULL_HANDLE;
+  VkDescriptorPool mWaterFieldPool = VK_NULL_HANDLE;
+  VkDescriptorSet mWaterFieldSet = VK_NULL_HANDLE;
+  uint32_t mWaterFieldResolution = 0;
+  glm::vec2 mWaterFieldOrigin{0.0f}; // world XZ of texel (0,0)
+  float mWaterFieldSize = 0.0f;      // world metres covered per side
+
   // --- terrain chunk pipeline; a regular indexed mesh pipeline (like the
   // scene pipeline) reusing mScenePipelineLayout, just a different
   // fragment shader (terrainChunk.frag's height/slope material blend).
@@ -940,6 +1289,27 @@ private:
   // One entry per species mesh with any placed instances. Grown (buffer
   // recreated larger) like a std::vector on overflow; never shrunk.
   std::vector<VegSpeciesBuffer> mVegBuffers;
+
+  // --- editor debug lines (grid, axes, outlines) ---
+  // No descriptor sets: viewProj and the fade parameters ride in a push
+  // constant, so this pipeline can be recorded mid-scene-pass without
+  // disturbing any binding the mesh/terrain draws set up.
+  struct LinePush {
+    glm::mat4 viewProj;
+    glm::vec4 camPosFade;
+  };
+  VkPipelineLayout mLinePipelineLayout = VK_NULL_HANDLE;
+  VkPipeline mLinePipeline = VK_NULL_HANDLE;
+  // Host-visible and grown like a std::vector; the line set is rebuilt from
+  // scratch every frame (the grid follows the camera), so a staged upload
+  // would cost more than it saves.
+  std::vector<VkBuffer> mLineBuffers;
+  std::vector<VmaAllocation> mLineAllocs;
+  std::vector<void *> mLineMapped;
+  std::vector<size_t> mLineCapacity; // vertices, per frame in flight
+  std::vector<DebugLineVertex> mDebugLines;
+  uint32_t mDebugLineCount = 0;
+  float mDebugLineFade = 220.0f;
 
   // --- tonemap pipeline ---
   VkDescriptorSetLayout mTonemapSetLayout = VK_NULL_HANDLE;
@@ -1003,6 +1373,11 @@ private:
   std::vector<VkSemaphore> mRenderFinished;
 
   uint32_t mCurrentFrame = 0;
+  // Monotonic, unlike mCurrentFrame (which only cycles over the frames in
+  // flight). The cloud march rotates its dither phase off this so the step
+  // lattice reads as noise the eye integrates away rather than a static grain
+  // locked to the screen.
+  uint64_t mFrameCounter = 0;
   std::chrono::steady_clock::time_point mStartTime;
 
   bool mCapture = false;

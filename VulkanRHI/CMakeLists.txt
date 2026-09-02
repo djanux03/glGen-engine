@@ -23,10 +23,13 @@ set(VK_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${VK_SHADER_OUT_DIR})
 
 set(VK_SHADERS mesh.vert mesh.frag meshInstanced.vert meshInstanced.frag
+               depthAlpha.frag
                tonemap.vert tonemap.frag
                terrainChunk.vert terrainChunk.frag sky.vert sky.frag
                ssao.frag blur.frag bloomExtract.frag bloomBlur.frag
-               volumetric.frag volumetricComposite.frag)
+               volumetric.frag volumetricComposite.frag water.frag
+               clouds.frag
+               line.vert line.frag)
 set(VK_SPV_FILES)
 foreach(shader ${VK_SHADERS})
     set(spv ${VK_SHADER_OUT_DIR}/${shader}.spv)
@@ -40,6 +43,7 @@ foreach(shader ${VK_SHADERS})
                 ${VK_SHADER_SRC_DIR}/grassMaterial.glsl
                ${VK_SHADER_SRC_DIR}/biomeLighting.glsl
                 ${VK_SHADER_SRC_DIR}/paintMaterial.glsl
+                ${VK_SHADER_SRC_DIR}/fog.glsl
         COMMENT "glslc ${shader} -> SPIR-V"
         VERBATIM
     )

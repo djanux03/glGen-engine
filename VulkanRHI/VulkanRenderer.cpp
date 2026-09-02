@@ -40,6 +40,23 @@ struct VolCompositePush {
   glm::vec4 camPosMaxDist; // xyz = camera world pos, w = volumetric max dist
 };
 
+// Mirrors clouds.frag / cloudComposite.frag. Camera position, sun direction
+// and the clock all already live in FrameData (which the march binds anyway
+// for the atmosphere and its own dials), so only the world<-clip matrix and
+// the per-frame dither phase need pushing.
+struct CloudPush {
+  glm::mat4 invViewProj;
+  glm::vec4 jitter; // x = dither phase; yzw reserved
+};
+
+// Water needs world<-clip to build its view ray and clip<-world to project
+// SSR march samples back to screen. Only the inverse goes here: the forward
+// viewProj, the camera position and the clock are all already in FrameData,
+// which water.frag binds anyway for fog and sun radiance.
+struct WaterPush {
+  glm::mat4 invViewProj;
+};
+
 // --- CPU mirror of skyModel.glsl's sun transmittance -----------------------
 // Packs FrameDataGpu.sunRadiance each frame so every lit shader gets the
 // atmosphere-colored direct light without evaluating the atmosphere itself.
@@ -150,9 +167,12 @@ struct ScenePush {
   uint32_t roughnessIndex;
   uint32_t metallicIndex;
   uint32_t aoIndex;
+  uint32_t normalIndex;
+  uint32_t opacityIndex;
   float roughnessScalar;
   float metallicScalar;
   float aoScalar;
+  float alphaCutoff;
   uint32_t materialFlags;
   // R5 vegetation wind, read by meshInstanced.vert (the VERTEX stage -- the
   // only push-constant member besides `model` that is). Every other
@@ -164,11 +184,10 @@ struct ScenePush {
   float groundOcclusion;
   float foliageSssStrength;
 };
-// 112 bytes: inside the 128-byte push-constant range Vulkan guarantees on
-// every implementation, but with only 4 floats of headroom left. This block
-// is shared by every scene-layout pipeline, so anything added here costs all
-// of them -- prefer the per-instance vertex buffer for new vegetation data.
-static_assert(sizeof(ScenePush) <= 128, "ScenePush exceeds guaranteed push-constant size");
+// Exactly the 128 bytes Vulkan guarantees. New per-material state belongs in
+// a buffer, not here: normal/opacity support intentionally consumes the last
+// spare lanes rather than silently exceeding low-end device limits.
+static_assert(sizeof(ScenePush) == 128, "ScenePush layout must stay at 128 bytes");
 
 void imageBarrier(VkCommandBuffer cmd, VkImage image,
                   VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
@@ -204,7 +223,8 @@ void imageBarrier(VkCommandBuffer cmd, VkImage image,
 
 bool VulkanRenderer::init(
     VulkanContext &ctx, VkSurfaceKHR surface, const std::string &shaderDir,
-    std::function<void(uint32_t &, uint32_t &)> queryFramebufferSize) {
+    std::function<void(uint32_t &, uint32_t &)> queryFramebufferSize,
+    const std::string &assetDir) {
   mCtx = &ctx;
   mSurface = surface;
   mQueryFbSize = std::move(queryFramebufferSize);
@@ -246,6 +266,12 @@ bool VulkanRenderer::init(
   if (!createEnvMapResources())
     return false;
   updateVolumetricSets();
+  // Cloud noise must load before createCloudPipelines (its descriptor set
+  // layout is part of the march's pipeline layout) and before updateCloudSets
+  // (which needs the pool the load allocates from).
+  if (!createCloudNoiseResources(assetDir))
+    return false;
+  updateCloudSets();
   if (!createScenePipeline(shaderDir))
     return false;
   if (!createTerrainChunkPipeline(shaderDir))
@@ -258,7 +284,11 @@ bool VulkanRenderer::init(
     return false;
   if (!createEnvMapPipeline(shaderDir))
     return false;
+  if (!createWaterPipeline(shaderDir))
+    return false;
   if (!createVolumetricPipelines(shaderDir))
+    return false;
+  if (!createCloudPipelines(shaderDir))
     return false;
   if (!createSSAOPipeline(shaderDir))
     return false;
@@ -267,6 +297,8 @@ bool VulkanRenderer::init(
   if (!createBloomExtractPipeline(shaderDir))
     return false;
   if (!createBloomBlurPipeline(shaderDir))
+    return false;
+  if (!createLinePipeline(shaderDir))
     return false;
   if (!createTonemapPipeline(shaderDir))
     return false;
@@ -643,8 +675,11 @@ bool VulkanRenderer::createSceneTargets() {
     hdrCi.arrayLayers = 1;
     hdrCi.samples = VK_SAMPLE_COUNT_1_BIT;
     hdrCi.tiling = VK_IMAGE_TILING_OPTIMAL;
+    // TRANSFER_SRC: the water pass copies this to mSceneCopyImages so it can
+    // sample the opaque scene it is about to draw over (refraction + SSR).
     hdrCi.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                  VK_IMAGE_USAGE_SAMPLED_BIT;
+                  VK_IMAGE_USAGE_SAMPLED_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     hdrCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VmaAllocationCreateInfo hdrAlloc{};
     hdrAlloc.usage = VMA_MEMORY_USAGE_AUTO;
@@ -700,6 +735,42 @@ bool VulkanRenderer::createSceneTargets() {
                    VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                    VK_IMAGE_ASPECT_DEPTH_BIT);
     });
+  }
+
+  // Opaque-scene snapshot for the water pass (refraction source + SSR colour
+  // source). Same format/extent as the HDR target so the copy is a straight
+  // vkCmdCopyImage rather than a format-converting blit.
+  mSceneCopyImages.resize(kFramesInFlight);
+  mSceneCopyAllocs.resize(kFramesInFlight);
+  mSceneCopyViews.resize(kFramesInFlight);
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    VkImageCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = mHdrFormat;
+    ci.extent = {extent.width, extent.height, 1};
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VmaAllocationCreateInfo alloc{};
+    alloc.usage = VMA_MEMORY_USAGE_AUTO;
+    VK_CHECK(vmaCreateImage(mCtx->allocator(), &ci, &alloc,
+                            &mSceneCopyImages[i], &mSceneCopyAllocs[i],
+                            nullptr));
+
+    VkImageViewCreateInfo view{};
+    view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view.image = mSceneCopyImages[i];
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = mHdrFormat;
+    view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    view.subresourceRange.levelCount = 1;
+    view.subresourceRange.layerCount = 1;
+    VK_CHECK(vkCreateImageView(mCtx->device(), &view, nullptr,
+                               &mSceneCopyViews[i]));
   }
 
   // Shared half-resolution extent: the SSAO raw target and bloom's chain
@@ -887,10 +958,54 @@ bool VulkanRenderer::createSceneTargets() {
     VK_CHECK(vkCreateImageView(mCtx->device(), &volView, nullptr,
                                &mVolumetricViews[i]));
   }
+
+  // Cloud march target: RGBA16F, rgb = premultiplied scattered
+  // light, a = transmittance. Rendered at full resolution to match
+  // 1:1 viewport fidelity.
+  mCloudExtent = extent;
+  mCloudImages.resize(kFramesInFlight);
+  mCloudAllocs.resize(kFramesInFlight);
+  mCloudViews.resize(kFramesInFlight);
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    VkImageCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = mHdrFormat;
+    ci.extent = {extent.width, extent.height, 1};
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VmaAllocationCreateInfo alloc{};
+    alloc.usage = VMA_MEMORY_USAGE_AUTO;
+    VK_CHECK(vmaCreateImage(mCtx->allocator(), &ci, &alloc, &mCloudImages[i],
+                            &mCloudAllocs[i], nullptr));
+
+    VkImageViewCreateInfo view{};
+    view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view.image = mCloudImages[i];
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = mHdrFormat;
+    view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    view.subresourceRange.levelCount = 1;
+    view.subresourceRange.layerCount = 1;
+    VK_CHECK(vkCreateImageView(mCtx->device(), &view, nullptr, &mCloudViews[i]));
+  }
   return true;
 }
 
 void VulkanRenderer::destroySceneTargets() {
+  for (VkImageView v : mSceneCopyViews)
+    vkDestroyImageView(mCtx->device(), v, nullptr);
+  for (uint32_t i = 0; i < mSceneCopyImages.size(); ++i)
+    vmaDestroyImage(mCtx->allocator(), mSceneCopyImages[i],
+                    mSceneCopyAllocs[i]);
+  mSceneCopyViews.clear();
+  mSceneCopyImages.clear();
+  mSceneCopyAllocs.clear();
+
   for (VkImageView v : mVolumetricViews)
     vkDestroyImageView(mCtx->device(), v, nullptr);
   for (uint32_t i = 0; i < mVolumetricImages.size(); ++i)
@@ -898,6 +1013,14 @@ void VulkanRenderer::destroySceneTargets() {
   mVolumetricViews.clear();
   mVolumetricImages.clear();
   mVolumetricAllocs.clear();
+
+  for (VkImageView v : mCloudViews)
+    vkDestroyImageView(mCtx->device(), v, nullptr);
+  for (uint32_t i = 0; i < mCloudImages.size(); ++i)
+    vmaDestroyImage(mCtx->allocator(), mCloudImages[i], mCloudAllocs[i]);
+  mCloudViews.clear();
+  mCloudImages.clear();
+  mCloudAllocs.clear();
 
   for (VkImageView v : mHdrViews)
     vkDestroyImageView(mCtx->device(), v, nullptr);
@@ -1150,12 +1273,14 @@ bool VulkanRenderer::createSSAOResources() {
   VK_CHECK(vkCreateDescriptorSetLayout(mCtx->device(), &layoutCi, nullptr,
                                        &mAOSamplerSetLayout));
 
+  // 4 per frame: SSAO depth, blur input, scene AO, and the water pass's
+  // opaque-scene copy (same one-sampler shape, so it shares this layout).
   VkDescriptorPoolSize poolSize{};
   poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  poolSize.descriptorCount = kFramesInFlight * 3;
+  poolSize.descriptorCount = kFramesInFlight * 4;
   VkDescriptorPoolCreateInfo poolCi{};
   poolCi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  poolCi.maxSets = kFramesInFlight * 3;
+  poolCi.maxSets = kFramesInFlight * 4;
   poolCi.poolSizeCount = 1;
   poolCi.pPoolSizes = &poolSize;
   VK_CHECK(vkCreateDescriptorPool(mCtx->device(), &poolCi, nullptr,
@@ -1164,9 +1289,11 @@ bool VulkanRenderer::createSSAOResources() {
   mSSAODepthSets.resize(kFramesInFlight);
   mBlurInputSets.resize(kFramesInFlight);
   mSceneAOSets.resize(kFramesInFlight);
+  mSceneCopySets.resize(kFramesInFlight);
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
     for (VkDescriptorSet *set :
-        {&mSSAODepthSets[i], &mBlurInputSets[i], &mSceneAOSets[i]}) {
+        {&mSSAODepthSets[i], &mBlurInputSets[i], &mSceneAOSets[i],
+         &mSceneCopySets[i]}) {
       VkDescriptorSetAllocateInfo alloc{};
       alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
       alloc.descriptorPool = mAOSamplerPool;
@@ -1200,6 +1327,8 @@ void VulkanRenderer::updateSSAOSets() {
     writeSet(mBlurInputSets[i], mSSAOViews[i],
              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     writeSet(mSceneAOSets[i], mSSAOBlurViews[i],
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    writeSet(mSceneCopySets[i], mSceneCopyViews[i],
              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   }
 }
@@ -1919,6 +2048,31 @@ bool VulkanRenderer::createDepthPrepassPipelines(const std::string &shaderDir) {
                                              nullptr, &p));
           return p;
         });
+
+    // Cutout materials need the same alpha decision here as in mesh.frag.
+    // Otherwise invisible pixels write depth, suppress objects behind them,
+    // and create rectangular SSAO silhouettes even though the color pass
+    // later discards those fragments.
+    VkShaderModule alphaFrag =
+        loadShaderModule(shaderDir + "/depthAlpha.frag.spv");
+    VkPipelineShaderStageCreateInfo alphaStages[2]{};
+    alphaStages[0] = stage;
+    alphaStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    alphaStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    alphaStages[1].module = alphaFrag;
+    alphaStages[1].pName = "main";
+    pipelineCi.stageCount = 2;
+    pipelineCi.pStages = alphaStages;
+    key = fnv1a64Str("depthprepass.mesh.alpha");
+    key = fnv1a64(&mDepthFormat, sizeof(mDepthFormat), key);
+    mDepthAlphaPrepassPipeline =
+        mPipelineCache.getOrCreate(key, [&](VkPipelineCache pc) {
+          VkPipeline p = VK_NULL_HANDLE;
+          VK_CHECK(vkCreateGraphicsPipelines(mCtx->device(), pc, 1, &pipelineCi,
+                                             nullptr, &p));
+          return p;
+        });
+    vkDestroyShaderModule(mCtx->device(), alphaFrag, nullptr);
     vkDestroyShaderModule(mCtx->device(), vert, nullptr);
   }
   // Terrain chunks share this same pipeline: they use the identical
@@ -1995,6 +2149,27 @@ bool VulkanRenderer::createDepthPrepassPipelines(const std::string &shaderDir) {
                                              nullptr, &p));
           return p;
         });
+
+    VkShaderModule alphaFrag =
+        loadShaderModule(shaderDir + "/depthAlpha.frag.spv");
+    VkPipelineShaderStageCreateInfo alphaStages[2]{};
+    alphaStages[0] = stage;
+    alphaStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    alphaStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    alphaStages[1].module = alphaFrag;
+    alphaStages[1].pName = "main";
+    pipelineCi.stageCount = 2;
+    pipelineCi.pStages = alphaStages;
+    key = fnv1a64Str("depthprepass.vegetation.alpha");
+    key = fnv1a64(&mDepthFormat, sizeof(mDepthFormat), key);
+    mVegetationDepthAlphaPrepassPipeline =
+        mPipelineCache.getOrCreate(key, [&](VkPipelineCache pc) {
+          VkPipeline p = VK_NULL_HANDLE;
+          VK_CHECK(vkCreateGraphicsPipelines(mCtx->device(), pc, 1, &pipelineCi,
+                                             nullptr, &p));
+          return p;
+        });
+    vkDestroyShaderModule(mCtx->device(), alphaFrag, nullptr);
     vkDestroyShaderModule(mCtx->device(), vert, nullptr);
   }
   return true;
@@ -2006,10 +2181,16 @@ bool VulkanRenderer::createSkyPipeline(const std::string &shaderDir) {
   pcRange.offset = 0;
   pcRange.size = sizeof(SkyPush);
 
+  // Set 1 is the half-res volumetric cloud buffer, which sky.frag blends into
+  // its radiance before grading. It is declared unconditionally so there is
+  // one sky pipeline layout rather than two: when the cloud assets failed to
+  // load the set is never bound and the shader is told so through
+  // passFlags.z, which short-circuits the sample.
+  VkDescriptorSetLayout skySetLayouts[2] = {mFrameSetLayout, mAOSamplerSetLayout};
   VkPipelineLayoutCreateInfo layoutCi{};
   layoutCi.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  layoutCi.setLayoutCount = 1;
-  layoutCi.pSetLayouts = &mFrameSetLayout;
+  layoutCi.setLayoutCount = 2;
+  layoutCi.pSetLayouts = skySetLayouts;
   layoutCi.pushConstantRangeCount = 1;
   layoutCi.pPushConstantRanges = &pcRange;
   VK_CHECK(vkCreatePipelineLayout(mCtx->device(), &layoutCi, nullptr,
@@ -2109,6 +2290,160 @@ bool VulkanRenderer::createSkyPipeline(const std::string &shaderDir) {
   vkDestroyShaderModule(mCtx->device(), vert, nullptr);
   vkDestroyShaderModule(mCtx->device(), frag, nullptr);
   return true;
+}
+
+bool VulkanRenderer::createLinePipeline(const std::string &shaderDir) {
+  VkPushConstantRange pcRange{};
+  // Both stages: the vertex shader transforms, the fragment shader fades.
+  pcRange.stageFlags =
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  pcRange.offset = 0;
+  pcRange.size = sizeof(LinePush);
+
+  // No descriptor sets at all: everything the shader needs is in the push
+  // constant, so recording this mid-scene-pass cannot disturb the bindless
+  // table / frame UBO / TLAS bindings the mesh and terrain draws rely on.
+  VkPipelineLayoutCreateInfo layoutCi{};
+  layoutCi.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  layoutCi.setLayoutCount = 0;
+  layoutCi.pushConstantRangeCount = 1;
+  layoutCi.pPushConstantRanges = &pcRange;
+  VK_CHECK(vkCreatePipelineLayout(mCtx->device(), &layoutCi, nullptr,
+                                  &mLinePipelineLayout));
+
+  VkShaderModule vert = loadShaderModule(shaderDir + "/line.vert.spv");
+  VkShaderModule frag = loadShaderModule(shaderDir + "/line.frag.spv");
+  VkPipelineShaderStageCreateInfo stages[2]{};
+  stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = vert;
+  stages[0].pName = "main";
+  stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = frag;
+  stages[1].pName = "main";
+
+  VkVertexInputBindingDescription binding{};
+  binding.binding = 0;
+  binding.stride = sizeof(DebugLineVertex);
+  binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+  VkVertexInputAttributeDescription attributes[2]{};
+  attributes[0].location = 0;
+  attributes[0].binding = 0;
+  attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+  attributes[0].offset = offsetof(DebugLineVertex, pos);
+  attributes[1].location = 1;
+  attributes[1].binding = 0;
+  attributes[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  attributes[1].offset = offsetof(DebugLineVertex, color);
+
+  VkPipelineVertexInputStateCreateInfo vertexInput{};
+  vertexInput.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  vertexInput.vertexBindingDescriptionCount = 1;
+  vertexInput.pVertexBindingDescriptions = &binding;
+  vertexInput.vertexAttributeDescriptionCount = 2;
+  vertexInput.pVertexAttributeDescriptions = attributes;
+
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+  inputAssembly.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+
+  VkPipelineViewportStateCreateInfo viewport{};
+  viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewport.viewportCount = 1;
+  viewport.scissorCount = 1;
+
+  VkPipelineRasterizationStateCreateInfo raster{};
+  raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  raster.polygonMode = VK_POLYGON_MODE_FILL;
+  raster.cullMode = VK_CULL_MODE_NONE;
+  raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  // 1.0 is the only width guaranteed without the wideLines feature.
+  raster.lineWidth = 1.0f;
+
+  VkPipelineMultisampleStateCreateInfo multisample{};
+  multisample.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+  // Tested so the grid is occluded by hills and geometry -- the whole point
+  // of a real pipeline over ImGui's foreground draw list. Not written, so a
+  // line never hides anything drawn after it.
+  VkPipelineDepthStencilStateCreateInfo depthStencil{};
+  depthStencil.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  depthStencil.depthTestEnable = VK_TRUE;
+  depthStencil.depthWriteEnable = VK_FALSE;
+  depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+  VkPipelineColorBlendAttachmentState blendAttachment{};
+  blendAttachment.blendEnable = VK_TRUE;
+  blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+  blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+  blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+  blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+  blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+  blendAttachment.colorWriteMask =
+      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  VkPipelineColorBlendStateCreateInfo colorBlend{};
+  colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  colorBlend.attachmentCount = 1;
+  colorBlend.pAttachments = &blendAttachment;
+
+  VkDynamicState dynamics[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                               VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dynamicState{};
+  dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  dynamicState.dynamicStateCount = 2;
+  dynamicState.pDynamicStates = dynamics;
+
+  VkPipelineRenderingCreateInfo renderingCi{};
+  renderingCi.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+  renderingCi.colorAttachmentCount = 1;
+  renderingCi.pColorAttachmentFormats = &mHdrFormat;
+  renderingCi.depthAttachmentFormat = mDepthFormat;
+
+  VkGraphicsPipelineCreateInfo pipelineCi{};
+  pipelineCi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipelineCi.pNext = &renderingCi;
+  pipelineCi.stageCount = 2;
+  pipelineCi.pStages = stages;
+  pipelineCi.pVertexInputState = &vertexInput;
+  pipelineCi.pInputAssemblyState = &inputAssembly;
+  pipelineCi.pViewportState = &viewport;
+  pipelineCi.pRasterizationState = &raster;
+  pipelineCi.pMultisampleState = &multisample;
+  pipelineCi.pDepthStencilState = &depthStencil;
+  pipelineCi.pColorBlendState = &colorBlend;
+  pipelineCi.pDynamicState = &dynamicState;
+  pipelineCi.layout = mLinePipelineLayout;
+
+  uint64_t key = fnv1a64Str("editor.lines");
+  key = fnv1a64(&mHdrFormat, sizeof(mHdrFormat), key);
+  mLinePipeline = mPipelineCache.getOrCreate(key, [&](VkPipelineCache pc) {
+    VkPipeline p = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateGraphicsPipelines(mCtx->device(), pc, 1, &pipelineCi,
+                                       nullptr, &p));
+    return p;
+  });
+
+  vkDestroyShaderModule(mCtx->device(), vert, nullptr);
+  vkDestroyShaderModule(mCtx->device(), frag, nullptr);
+
+  mLineBuffers.assign(kFramesInFlight, VK_NULL_HANDLE);
+  mLineAllocs.assign(kFramesInFlight, VK_NULL_HANDLE);
+  mLineMapped.assign(kFramesInFlight, nullptr);
+  mLineCapacity.assign(kFramesInFlight, 0);
+  return true;
+}
+
+void VulkanRenderer::setDebugLines(const std::vector<DebugLineVertex> &lines) {
+  mDebugLines = lines;
 }
 
 bool VulkanRenderer::createTonemapPipeline(const std::string &shaderDir) {
@@ -2599,6 +2934,740 @@ bool VulkanRenderer::createVolumetricPipelines(const std::string &shaderDir) {
   return true;
 }
 
+// --- volumetric clouds -----------------------------------------------------
+// Loads the two 128^3 noise volumes and the two 2D maps the cloud marcher
+// samples. The volumes ship as .glvol (see Tools/pack_cloud_volumes.py): an
+// 8-byte magic, four uint32 dimensions, then flat RGBA8 slice-major data --
+// one fread and one vkCmdCopyBufferToImage instead of decoding 128 TGAs at
+// every startup.
+//
+// A failure here is NOT fatal. mCloudNoiseReady stays false, drawFrame skips
+// the cloud passes entirely, and the sky renders exactly as it did before the
+// system existed -- a missing optional asset should not take the engine down.
+bool VulkanRenderer::createCloudNoiseResources(const std::string &assetDir) {
+  mCloudNoiseReady = false;
+
+  // The descriptor plumbing is built whether or not the assets load, because
+  // sky.frag samples the cloud buffer unconditionally (a dynamic branch would
+  // still leave the binding statically used, and an unbound set is invalid).
+  // With no assets the march simply never runs and the buffer stays cleared
+  // to "no light, full transmittance", which blends to nothing.
+  {
+    VkDescriptorSetLayoutBinding bindings[4]{};
+    for (uint32_t i = 0; i < 4; ++i) {
+      bindings[i].binding = i;
+      bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      bindings[i].descriptorCount = 1;
+      bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo layoutCi{};
+    layoutCi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutCi.bindingCount = 4;
+    layoutCi.pBindings = bindings;
+    VK_CHECK(vkCreateDescriptorSetLayout(mCtx->device(), &layoutCi, nullptr,
+                                         &mCloudNoiseSetLayout));
+
+    // 4 for the noise set + one per frame in flight for the sky's input.
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSize.descriptorCount = 4 + kFramesInFlight;
+    VkDescriptorPoolCreateInfo poolCi{};
+    poolCi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolCi.maxSets = 1 + kFramesInFlight;
+    poolCi.poolSizeCount = 1;
+    poolCi.pPoolSizes = &poolSize;
+    VK_CHECK(
+        vkCreateDescriptorPool(mCtx->device(), &poolCi, nullptr, &mCloudPool));
+
+    mCloudSampleSets.resize(kFramesInFlight);
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+      VkDescriptorSetAllocateInfo alloc{};
+      alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+      alloc.descriptorPool = mCloudPool;
+      alloc.descriptorSetCount = 1;
+      alloc.pSetLayouts = &mAOSamplerSetLayout;
+      VK_CHECK(
+          vkAllocateDescriptorSets(mCtx->device(), &alloc, &mCloudSampleSets[i]));
+    }
+  }
+
+  if (assetDir.empty())
+    return true;
+  const std::string dir = assetDir + "/clouds";
+
+  // Sampler: REPEAT on every axis (the volumes tile by construction) with the
+  // full mip range exposed, since the marcher raises the mip with distance to
+  // keep the horizon from shimmering.
+  {
+    VkSamplerCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    ci.magFilter = VK_FILTER_LINEAR;
+    ci.minFilter = VK_FILTER_LINEAR;
+    ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    ci.maxLod = VK_LOD_CLAMP_NONE;
+    ci.anisotropyEnable = VK_FALSE;
+    VK_CHECK(vkCreateSampler(mCtx->device(), &ci, nullptr, &mCloudSampler));
+  }
+
+  // Shared upload: stage RGBA8, copy into mip 0, then blit the mip chain
+  // down. 3D blits carry the depth extent, so the same loop covers both the
+  // volumes and the flat maps.
+  auto upload = [&](const uint8_t *pixels, uint32_t w, uint32_t h, uint32_t d,
+                    VkImage *outImage, VmaAllocation *outAlloc,
+                    VkImageView *outView) {
+    const bool is3D = d > 1;
+    uint32_t mips = 1;
+    {
+      uint32_t m = std::max(w, std::max(h, d));
+      while (m > 1) {
+        m >>= 1;
+        ++mips;
+      }
+    }
+
+    const VkDeviceSize byteSize =
+        static_cast<VkDeviceSize>(w) * h * d * 4;
+    VkBufferCreateInfo stagingCi{};
+    stagingCi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    stagingCi.size = byteSize;
+    stagingCi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    VmaAllocationCreateInfo stagingAlloc{};
+    stagingAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+    stagingAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VkBuffer staging = VK_NULL_HANDLE;
+    VmaAllocation stagingMem = VK_NULL_HANDLE;
+    VmaAllocationInfo stagingInfo{};
+    VK_CHECK(vmaCreateBuffer(mCtx->allocator(), &stagingCi, &stagingAlloc,
+                             &staging, &stagingMem, &stagingInfo));
+    std::memcpy(stagingInfo.pMappedData, pixels, static_cast<size_t>(byteSize));
+
+    VkImageCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = is3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+    ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ci.extent = {w, h, d};
+    ci.mipLevels = mips;
+    ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+               VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VmaAllocationCreateInfo alloc{};
+    alloc.usage = VMA_MEMORY_USAGE_AUTO;
+    VK_CHECK(vmaCreateImage(mCtx->allocator(), &ci, &alloc, outImage, outAlloc,
+                            nullptr));
+    VkImage image = *outImage;
+
+    immediateSubmit([&](VkCommandBuffer cmd) {
+      auto barrier = [&](uint32_t baseMip, uint32_t mipCount,
+                         VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
+                         VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
+                         VkImageLayout oldLayout, VkImageLayout newLayout) {
+        VkImageMemoryBarrier2 b{};
+        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        b.srcStageMask = srcStage;
+        b.srcAccessMask = srcAccess;
+        b.dstStageMask = dstStage;
+        b.dstAccessMask = dstAccess;
+        b.oldLayout = oldLayout;
+        b.newLayout = newLayout;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = image;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.baseMipLevel = baseMip;
+        b.subresourceRange.levelCount = mipCount;
+        b.subresourceRange.layerCount = 1;
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(cmd, &dep);
+      };
+
+      barrier(0, mips, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+              VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+              VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+      VkBufferImageCopy region{};
+      region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      region.imageSubresource.layerCount = 1;
+      region.imageExtent = {w, h, d};
+      vkCmdCopyBufferToImage(cmd, staging, image,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+      int32_t mw = static_cast<int32_t>(w), mh = static_cast<int32_t>(h),
+              md = static_cast<int32_t>(d);
+      for (uint32_t level = 1; level < mips; ++level) {
+        barrier(level - 1, 1, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        VkImageBlit blit{};
+        blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        blit.srcSubresource.mipLevel = level - 1;
+        blit.srcSubresource.layerCount = 1;
+        blit.srcOffsets[1] = {mw, mh, md};
+        mw = std::max(mw / 2, 1);
+        mh = std::max(mh / 2, 1);
+        md = std::max(md / 2, 1);
+        blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        blit.dstSubresource.mipLevel = level;
+        blit.dstSubresource.layerCount = 1;
+        blit.dstOffsets[1] = {mw, mh, md};
+        vkCmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                       VK_FILTER_LINEAR);
+        barrier(level - 1, 1, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      }
+      // The last mip was only ever a blit destination.
+      barrier(mips - 1, 1, VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT,
+              VK_ACCESS_2_TRANSFER_WRITE_BIT,
+              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+              VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    });
+    vmaDestroyBuffer(mCtx->allocator(), staging, stagingMem);
+
+    VkImageViewCreateInfo viewCi{};
+    viewCi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewCi.image = image;
+    viewCi.viewType = is3D ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
+    viewCi.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewCi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewCi.subresourceRange.levelCount = mips;
+    viewCi.subresourceRange.layerCount = 1;
+    VK_CHECK(vkCreateImageView(mCtx->device(), &viewCi, nullptr, outView));
+  };
+
+  auto loadVolume = [&](const std::string &path, VkImage *img,
+                        VmaAllocation *alloc, VkImageView *view) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+      std::fprintf(stderr, "[clouds] missing volume '%s'\n", path.c_str());
+      return false;
+    }
+    char magic[8] = {};
+    file.read(magic, 8);
+    if (std::memcmp(magic, "GLVOL1\0\0", 8) != 0) {
+      std::fprintf(stderr, "[clouds] '%s' is not a .glvol\n", path.c_str());
+      return false;
+    }
+    uint32_t dims[4] = {};
+    file.read(reinterpret_cast<char *>(dims), sizeof(dims));
+    if (!file || dims[0] == 0 || dims[1] == 0 || dims[2] == 0 || dims[3] != 4) {
+      std::fprintf(stderr, "[clouds] '%s' has a bad header\n", path.c_str());
+      return false;
+    }
+    const size_t byteSize =
+        static_cast<size_t>(dims[0]) * dims[1] * dims[2] * 4;
+    std::vector<uint8_t> pixels(byteSize);
+    file.read(reinterpret_cast<char *>(pixels.data()),
+              static_cast<std::streamsize>(byteSize));
+    if (static_cast<size_t>(file.gcount()) != byteSize) {
+      std::fprintf(stderr, "[clouds] '%s' is truncated\n", path.c_str());
+      return false;
+    }
+    upload(pixels.data(), dims[0], dims[1], dims[2], img, alloc, view);
+    return true;
+  };
+
+  auto loadMap = [&](const std::string &path, VkImage *img, VmaAllocation *alloc,
+                     VkImageView *view) {
+    int w = 0, h = 0, ch = 0;
+    stbi_uc *pixels = stbi_load(path.c_str(), &w, &h, &ch, STBI_rgb_alpha);
+    if (!pixels) {
+      std::fprintf(stderr, "[clouds] missing map '%s'\n", path.c_str());
+      return false;
+    }
+    upload(pixels, static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1, img,
+           alloc, view);
+    stbi_image_free(pixels);
+    return true;
+  };
+
+  if (!loadVolume(dir + "/cloud_shape.glvol", &mCloudShapeImage,
+                  &mCloudShapeAlloc, &mCloudShapeView) ||
+      !loadVolume(dir + "/nubis_detail.glvol", &mCloudDetailImage,
+                  &mCloudDetailAlloc, &mCloudDetailView) ||
+      !loadMap(dir + "/weather.png", &mCloudWeatherImage, &mCloudWeatherAlloc,
+               &mCloudWeatherView) ||
+      !loadMap(dir + "/curl_noise.png", &mCloudCurlImage, &mCloudCurlAlloc,
+               &mCloudCurlView)) {
+    std::fprintf(stderr,
+                 "[clouds] volumetric clouds disabled (assets not loaded)\n");
+    return true;
+  }
+
+  VkDescriptorSetAllocateInfo setAlloc{};
+  setAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  setAlloc.descriptorPool = mCloudPool;
+  setAlloc.descriptorSetCount = 1;
+  setAlloc.pSetLayouts = &mCloudNoiseSetLayout;
+  VK_CHECK(vkAllocateDescriptorSets(mCtx->device(), &setAlloc, &mCloudNoiseSet));
+
+  VkImageView views[4] = {mCloudShapeView, mCloudDetailView, mCloudWeatherView,
+                          mCloudCurlView};
+  VkDescriptorImageInfo images[4]{};
+  VkWriteDescriptorSet writes[4]{};
+  for (uint32_t i = 0; i < 4; ++i) {
+    images[i].sampler = mCloudSampler;
+    images[i].imageView = views[i];
+    images[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = mCloudNoiseSet;
+    writes[i].dstBinding = i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[i].pImageInfo = &images[i];
+  }
+  vkUpdateDescriptorSets(mCtx->device(), 4, writes, 0, nullptr);
+
+  mCloudNoiseReady = true;
+  return true;
+}
+
+void VulkanRenderer::destroyCloudNoiseResources() {
+  VkDevice device = mCtx->device();
+  VkImageView views[4] = {mCloudShapeView, mCloudDetailView, mCloudWeatherView,
+                          mCloudCurlView};
+  for (VkImageView v : views)
+    if (v)
+      vkDestroyImageView(device, v, nullptr);
+  if (mCloudShapeImage)
+    vmaDestroyImage(mCtx->allocator(), mCloudShapeImage, mCloudShapeAlloc);
+  if (mCloudDetailImage)
+    vmaDestroyImage(mCtx->allocator(), mCloudDetailImage, mCloudDetailAlloc);
+  if (mCloudWeatherImage)
+    vmaDestroyImage(mCtx->allocator(), mCloudWeatherImage, mCloudWeatherAlloc);
+  if (mCloudCurlImage)
+    vmaDestroyImage(mCtx->allocator(), mCloudCurlImage, mCloudCurlAlloc);
+  if (mCloudSampler)
+    vkDestroySampler(device, mCloudSampler, nullptr);
+  if (mCloudPool)
+    vkDestroyDescriptorPool(device, mCloudPool, nullptr);
+  if (mCloudNoiseSetLayout)
+    vkDestroyDescriptorSetLayout(device, mCloudNoiseSetLayout, nullptr);
+  mCloudShapeView = mCloudDetailView = mCloudWeatherView = mCloudCurlView =
+      VK_NULL_HANDLE;
+  mCloudShapeImage = mCloudDetailImage = mCloudWeatherImage = mCloudCurlImage =
+      VK_NULL_HANDLE;
+  mCloudSampler = VK_NULL_HANDLE;
+  mCloudPool = VK_NULL_HANDLE;
+  mCloudNoiseSetLayout = VK_NULL_HANDLE;
+  mCloudNoiseSet = VK_NULL_HANDLE;
+  mCloudSampleSets.clear();
+  mCloudNoiseReady = false;
+}
+
+void VulkanRenderer::updateCloudSets() {
+  if (mCloudSampleSets.empty() || mCloudViews.empty())
+    return;
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    VkDescriptorImageInfo image{};
+    image.sampler = mSampler;
+    image.imageView = mCloudViews[i];
+    image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = mCloudSampleSets[i];
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &image;
+    vkUpdateDescriptorSets(mCtx->device(), 1, &write, 0, nullptr);
+  }
+}
+
+bool VulkanRenderer::createCloudPipelines(const std::string &shaderDir) {
+  if (!mCloudNoiseReady)
+    return true;
+  {
+    VkDescriptorSetLayout setLayouts[2] = {mCloudNoiseSetLayout, mFrameSetLayout};
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.offset = 0;
+    pcRange.size = sizeof(CloudPush);
+    VkPipelineLayoutCreateInfo layoutCi{};
+    layoutCi.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutCi.setLayoutCount = 2;
+    layoutCi.pSetLayouts = setLayouts;
+    layoutCi.pushConstantRangeCount = 1;
+    layoutCi.pPushConstantRanges = &pcRange;
+    VK_CHECK(vkCreatePipelineLayout(mCtx->device(), &layoutCi, nullptr,
+                                    &mCloudPipelineLayout));
+  }
+  auto build = [&](const char *fragName, VkPipelineLayout layout, bool overBlend,
+                   const char *cacheTag) {
+    VkShaderModule vert = loadShaderModule(shaderDir + "/sky.vert.spv");
+    VkShaderModule frag =
+        loadShaderModule(shaderDir + "/" + std::string(fragName) + ".spv");
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vert;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = frag;
+    stages[1].pName = "main";
+
+    VkPipelineVertexInputStateCreateInfo vertexInput{};
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    VkPipelineViewportStateCreateInfo viewport{};
+    VkPipelineRasterizationStateCreateInfo raster{};
+    VkPipelineMultisampleStateCreateInfo multisample{};
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    VkPipelineColorBlendAttachmentState blendAttachment{};
+    VkPipelineColorBlendStateCreateInfo colorBlend{};
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    VkDynamicState dynamics[2]{};
+    fullscreenAOPipelineState(vertexInput, inputAssembly, viewport, raster,
+                              multisample, depthStencil, blendAttachment,
+                              colorBlend, dynamicState, dynamics);
+    (void)overBlend;
+
+    VkPipelineRenderingCreateInfo renderingCi{};
+    renderingCi.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    renderingCi.colorAttachmentCount = 1;
+    renderingCi.pColorAttachmentFormats = &mHdrFormat;
+
+    VkGraphicsPipelineCreateInfo pipelineCi{};
+    pipelineCi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineCi.pNext = &renderingCi;
+    pipelineCi.stageCount = 2;
+    pipelineCi.pStages = stages;
+    pipelineCi.pVertexInputState = &vertexInput;
+    pipelineCi.pInputAssemblyState = &inputAssembly;
+    pipelineCi.pViewportState = &viewport;
+    pipelineCi.pRasterizationState = &raster;
+    pipelineCi.pMultisampleState = &multisample;
+    pipelineCi.pDepthStencilState = &depthStencil;
+    pipelineCi.pColorBlendState = &colorBlend;
+    pipelineCi.pDynamicState = &dynamicState;
+    pipelineCi.layout = layout;
+
+    uint64_t key = fnv1a64Str(cacheTag);
+    key = fnv1a64(&mHdrFormat, sizeof(mHdrFormat), key);
+    VkPipeline pipeline = mPipelineCache.getOrCreate(key, [&](VkPipelineCache pc) {
+      VkPipeline p = VK_NULL_HANDLE;
+      VK_CHECK(vkCreateGraphicsPipelines(mCtx->device(), pc, 1, &pipelineCi,
+                                         nullptr, &p));
+      return p;
+    });
+
+    vkDestroyShaderModule(mCtx->device(), vert, nullptr);
+    vkDestroyShaderModule(mCtx->device(), frag, nullptr);
+    return pipeline;
+  };
+
+  mCloudPipeline = build("clouds.frag", mCloudPipelineLayout, false, "clouds.march");
+  return true;
+}
+
+VulkanRenderer::UiTexture VulkanRenderer::createUiTexture(const uint8_t *rgba,
+                                                         uint32_t w, uint32_t h) {
+  UiTexture out;
+  if (!rgba || w == 0 || h == 0)
+    return out;
+  // addTexture() already does the staging upload and layout transitions, but
+  // it only hands back a bindless index and keeps the view private. UI needs
+  // the view itself, so this repeats the creation rather than reaching into
+  // the bindless table -- a few images, once.
+  const VkDeviceSize byteSize = static_cast<VkDeviceSize>(w) * h * 4;
+  VkBufferCreateInfo stagingCi{};
+  stagingCi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  stagingCi.size = byteSize;
+  stagingCi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  VmaAllocationCreateInfo stagingAlloc{};
+  stagingAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+  stagingAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                       VMA_ALLOCATION_CREATE_MAPPED_BIT;
+  VkBuffer staging = VK_NULL_HANDLE;
+  VmaAllocation stagingMem = VK_NULL_HANDLE;
+  VmaAllocationInfo stagingInfo{};
+  VK_CHECK(vmaCreateBuffer(mCtx->allocator(), &stagingCi, &stagingAlloc, &staging,
+                           &stagingMem, &stagingInfo));
+  std::memcpy(stagingInfo.pMappedData, rgba, static_cast<size_t>(byteSize));
+
+  VkImageCreateInfo ci{};
+  ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ci.imageType = VK_IMAGE_TYPE_2D;
+  ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+  ci.extent = {w, h, 1};
+  ci.mipLevels = 1;
+  ci.arrayLayers = 1;
+  ci.samples = VK_SAMPLE_COUNT_1_BIT;
+  ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  VmaAllocationCreateInfo alloc{};
+  alloc.usage = VMA_MEMORY_USAGE_AUTO;
+  VkImage image = VK_NULL_HANDLE;
+  VmaAllocation mem = VK_NULL_HANDLE;
+  VK_CHECK(vmaCreateImage(mCtx->allocator(), &ci, &alloc, &image, &mem, nullptr));
+
+  immediateSubmit([&](VkCommandBuffer cmd) {
+    imageBarrier(cmd, image, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {w, h, 1};
+    vkCmdCopyBufferToImage(cmd, staging, image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    imageBarrier(cmd, image, VK_PIPELINE_STAGE_2_COPY_BIT,
+                 VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  });
+  vmaDestroyBuffer(mCtx->allocator(), staging, stagingMem);
+
+  VkImageViewCreateInfo viewCi{};
+  viewCi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  viewCi.image = image;
+  viewCi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  viewCi.format = VK_FORMAT_R8G8B8A8_UNORM;
+  viewCi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  viewCi.subresourceRange.levelCount = 1;
+  viewCi.subresourceRange.layerCount = 1;
+  VkImageView view = VK_NULL_HANDLE;
+  VK_CHECK(vkCreateImageView(mCtx->device(), &viewCi, nullptr, &view));
+
+  mUiImages.push_back(image);
+  mUiAllocs.push_back(mem);
+  mUiViews.push_back(view);
+  out.view = view;
+  out.sampler = mSampler;
+  return out;
+}
+
+void VulkanRenderer::setWaterHeightField(const float *heights, uint32_t resolution,
+                                         glm::vec2 worldOrigin, float worldSize) {
+  if (!heights || resolution == 0)
+    return;
+  mWaterFieldOrigin = worldOrigin;
+  mWaterFieldSize = worldSize;
+
+  const VkDeviceSize byteSize =
+      static_cast<VkDeviceSize>(resolution) * resolution * sizeof(float);
+
+  if (mWaterFieldResolution != resolution) {
+    // Resolution changes are rare (settings edits), so a full teardown is
+    // fine -- but it must wait for frames in flight that may still be
+    // sampling the old image.
+    vkDeviceWaitIdle(mCtx->device());
+    if (mWaterFieldView)
+      vkDestroyImageView(mCtx->device(), mWaterFieldView, nullptr);
+    if (mWaterFieldImage)
+      vmaDestroyImage(mCtx->allocator(), mWaterFieldImage, mWaterFieldAlloc);
+    mWaterFieldView = VK_NULL_HANDLE;
+    mWaterFieldImage = VK_NULL_HANDLE;
+
+    VkImageCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = VK_FORMAT_R32_SFLOAT;
+    ci.extent = {resolution, resolution, 1};
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VmaAllocationCreateInfo alloc{};
+    alloc.usage = VMA_MEMORY_USAGE_AUTO;
+    VK_CHECK(vmaCreateImage(mCtx->allocator(), &ci, &alloc, &mWaterFieldImage,
+                            &mWaterFieldAlloc, nullptr));
+
+    VkImageViewCreateInfo view{};
+    view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view.image = mWaterFieldImage;
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = VK_FORMAT_R32_SFLOAT;
+    view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    view.subresourceRange.levelCount = 1;
+    view.subresourceRange.layerCount = 1;
+    VK_CHECK(vkCreateImageView(mCtx->device(), &view, nullptr, &mWaterFieldView));
+    mWaterFieldResolution = resolution;
+
+    if (mWaterFieldSet == VK_NULL_HANDLE) {
+      VkDescriptorPoolSize poolSize{};
+      poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      poolSize.descriptorCount = 1;
+      VkDescriptorPoolCreateInfo poolCi{};
+      poolCi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+      poolCi.maxSets = 1;
+      poolCi.poolSizeCount = 1;
+      poolCi.pPoolSizes = &poolSize;
+      VK_CHECK(vkCreateDescriptorPool(mCtx->device(), &poolCi, nullptr,
+                                      &mWaterFieldPool));
+      VkDescriptorSetAllocateInfo setAlloc{};
+      setAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+      setAlloc.descriptorPool = mWaterFieldPool;
+      setAlloc.descriptorSetCount = 1;
+      setAlloc.pSetLayouts = &mAOSamplerSetLayout;
+      VK_CHECK(vkAllocateDescriptorSets(mCtx->device(), &setAlloc, &mWaterFieldSet));
+    }
+    VkDescriptorImageInfo image{};
+    image.sampler = mSampler;
+    image.imageView = mWaterFieldView;
+    image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = mWaterFieldSet;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &image;
+    vkUpdateDescriptorSets(mCtx->device(), 1, &write, 0, nullptr);
+  }
+
+  VkBufferCreateInfo stagingCi{};
+  stagingCi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  stagingCi.size = byteSize;
+  stagingCi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  VmaAllocationCreateInfo stagingAlloc{};
+  stagingAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+  stagingAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                       VMA_ALLOCATION_CREATE_MAPPED_BIT;
+  VkBuffer staging = VK_NULL_HANDLE;
+  VmaAllocation stagingMem = VK_NULL_HANDLE;
+  VmaAllocationInfo stagingInfo{};
+  VK_CHECK(vmaCreateBuffer(mCtx->allocator(), &stagingCi, &stagingAlloc, &staging,
+                           &stagingMem, &stagingInfo));
+  std::memcpy(stagingInfo.pMappedData, heights, static_cast<size_t>(byteSize));
+
+  immediateSubmit([&](VkCommandBuffer cmd) {
+    imageBarrier(cmd, mWaterFieldImage, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {resolution, resolution, 1};
+    vkCmdCopyBufferToImage(cmd, staging, mWaterFieldImage,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    imageBarrier(cmd, mWaterFieldImage, VK_PIPELINE_STAGE_2_COPY_BIT,
+                 VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  });
+  vmaDestroyBuffer(mCtx->allocator(), staging, stagingMem);
+}
+
+// Water: one fullscreen pass, alpha-blended over the opaque HDR image.
+// Sets are (0) the opaque-scene copy, (1) the prepass depth, (2) FrameData,
+// (3) the sky cubemap -- the first two so the surface can refract what is
+// behind it and march screen-space reflections, the last as the reflection
+// fallback wherever that march leaves the screen.
+//
+// Alpha blend rather than additive (volumetrics) or opaque (everything else):
+// water covers only the pixels where the plane is actually in front of the
+// scene, and it returns coverage in alpha, so untouched pixels cost a blend
+// with alpha 0 instead of a full-screen read-modify-write of the HDR image.
+bool VulkanRenderer::createWaterPipeline(const std::string &shaderDir) {
+  VkDescriptorSetLayout setLayouts[5] = {mAOSamplerSetLayout,
+                                         mAOSamplerSetLayout, mFrameSetLayout,
+                                         mAOSamplerSetLayout,
+                                         mAOSamplerSetLayout};
+  VkPushConstantRange pcRange{};
+  pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  pcRange.offset = 0;
+  pcRange.size = sizeof(WaterPush);
+  VkPipelineLayoutCreateInfo layoutCi{};
+  layoutCi.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  layoutCi.setLayoutCount = 5;
+  layoutCi.pSetLayouts = setLayouts;
+  layoutCi.pushConstantRangeCount = 1;
+  layoutCi.pPushConstantRanges = &pcRange;
+  VK_CHECK(vkCreatePipelineLayout(mCtx->device(), &layoutCi, nullptr,
+                                  &mWaterPipelineLayout));
+
+  VkShaderModule vert = loadShaderModule(shaderDir + "/sky.vert.spv");
+  VkShaderModule frag = loadShaderModule(shaderDir + "/water.frag.spv");
+  VkPipelineShaderStageCreateInfo stages[2]{};
+  stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = vert;
+  stages[0].pName = "main";
+  stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = frag;
+  stages[1].pName = "main";
+
+  VkPipelineVertexInputStateCreateInfo vertexInput{};
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+  VkPipelineViewportStateCreateInfo viewport{};
+  VkPipelineRasterizationStateCreateInfo raster{};
+  VkPipelineMultisampleStateCreateInfo multisample{};
+  VkPipelineDepthStencilStateCreateInfo depthStencil{};
+  VkPipelineColorBlendAttachmentState blendAttachment{};
+  VkPipelineColorBlendStateCreateInfo colorBlend{};
+  VkPipelineDynamicStateCreateInfo dynamicState{};
+  VkDynamicState dynamics[2]{};
+  fullscreenAOPipelineState(vertexInput, inputAssembly, viewport, raster,
+                            multisample, depthStencil, blendAttachment,
+                            colorBlend, dynamicState, dynamics);
+  blendAttachment.blendEnable = VK_TRUE;
+  blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+  blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+  blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+  blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+  blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+  VkPipelineRenderingCreateInfo renderingCi{};
+  renderingCi.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+  renderingCi.colorAttachmentCount = 1;
+  renderingCi.pColorAttachmentFormats = &mHdrFormat;
+
+  VkGraphicsPipelineCreateInfo pipelineCi{};
+  pipelineCi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipelineCi.pNext = &renderingCi;
+  pipelineCi.stageCount = 2;
+  pipelineCi.pStages = stages;
+  pipelineCi.pVertexInputState = &vertexInput;
+  pipelineCi.pInputAssemblyState = &inputAssembly;
+  pipelineCi.pViewportState = &viewport;
+  pipelineCi.pRasterizationState = &raster;
+  pipelineCi.pMultisampleState = &multisample;
+  pipelineCi.pDepthStencilState = &depthStencil;
+  pipelineCi.pColorBlendState = &colorBlend;
+  pipelineCi.pDynamicState = &dynamicState;
+  pipelineCi.layout = mWaterPipelineLayout;
+
+  uint64_t key = fnv1a64Str("water.surface");
+  key = fnv1a64(&mHdrFormat, sizeof(mHdrFormat), key);
+  mWaterPipeline = mPipelineCache.getOrCreate(key, [&](VkPipelineCache pc) {
+    VkPipeline p = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateGraphicsPipelines(mCtx->device(), pc, 1, &pipelineCi,
+                                       nullptr, &p));
+    return p;
+  });
+
+  vkDestroyShaderModule(mCtx->device(), vert, nullptr);
+  vkDestroyShaderModule(mCtx->device(), frag, nullptr);
+  return true;
+}
+
 bool VulkanRenderer::createBloomExtractPipeline(const std::string &shaderDir) {
   VkPushConstantRange pcRange{};
   pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -3048,6 +4117,17 @@ bool VulkanRenderer::buildMeshFromData(const ::MeshData &data,
       item.aoIndex = textureFor(mat.texAOPath, /*srgb=*/false);
       flags |= kHasAOMap;
     }
+    if (!mat.texNormalPath.empty()) {
+      item.normalIndex = textureFor(mat.texNormalPath, /*srgb=*/false);
+      flags |= kHasNormalMap;
+    }
+    if (!mat.texOpacityPath.empty()) {
+      item.opacityIndex = textureFor(mat.texOpacityPath, /*srgb=*/false);
+      flags |= kHasOpacityMap;
+    }
+    item.alphaCutoff = std::max(mat.alphaCutoff, 0.0f);
+    item.emissiveColor = glm::max(mat.emissiveColor, glm::vec3(0.0f));
+    item.emissiveStrength = std::max(mat.emissiveStrength, 0.0f);
     if (mat.roughnessMapIsGloss)
       flags |= kRoughnessIsGloss;
     flags |= static_cast<uint32_t>(mat.roughnessChannel & 0x3)
@@ -3055,6 +4135,8 @@ bool VulkanRenderer::buildMeshFromData(const ::MeshData &data,
     flags |= static_cast<uint32_t>(mat.metallicChannel & 0x3)
              << kMetallicChannelShift;
     flags |= static_cast<uint32_t>(mat.aoChannel & 0x3) << kAOChannelShift;
+    flags |= static_cast<uint32_t>(mat.opacityChannel & 0x3)
+             << kOpacityChannelShift;
     item.materialFlags = flags;
     mesh.drawItems.push_back(item);
   }
@@ -3139,6 +4221,8 @@ void VulkanRenderer::setVegetationBatches(const std::vector<VegBatch> &batches) 
 
     std::memcpy(vb->mapped, batch.instances.data(),
                sizeof(VegInstanceGpu) * needed);
+    // Flush for non-coherent memory (VMA may select non-HOST_COHERENT heaps).
+    vmaFlushAllocation(mCtx->allocator(), vb->alloc, 0, VK_WHOLE_SIZE);
     vb->count = static_cast<uint32_t>(needed);
     vb->cpu = batch.instances;
     vb->ranges = batch.ranges;
@@ -3291,6 +4375,7 @@ void VulkanRenderer::recreateSwapchain() {
   updateSSAOSets();
   updateBloomSets();
   updateVolumetricSets(); // scatter target is swapchain-sized; env map is not
+  updateCloudSets();      // cloud march target is swapchain-derived too
 
   mRenderFinished.resize(mSwapchain.imageCount());
   VkSemaphoreCreateInfo semCi{};
@@ -3453,6 +4538,12 @@ void VulkanRenderer::drawFrame() {
                 mParams.fogHeightFalloff);
   frameData.fogDayColor = glm::vec4(mParams.fogDayColor, 0.0f);
   frameData.fogNightColor = glm::vec4(mParams.fogNightColor, 0.0f);
+  frameData.fogParams2 =
+      glm::vec4(mParams.fogAerialStrength, mParams.fogSunInscatter,
+                mParams.fogNoiseStrength, mParams.fogNoiseScale);
+  frameData.fogParams3 = glm::vec4(mParams.fogAnisotropy,
+                                   mParams.fogNoiseWindSpeed,
+                                   mParams.fogSkyStrength, 0.0f);
   frameData.lightParams =
       glm::vec4(mParams.ambientIntensity, mParams.shadowStrength,
                 mParams.shadowSoftness,
@@ -3579,14 +4670,78 @@ void VulkanRenderer::drawFrame() {
       glm::vec4(style.cloudMid, mParams.sunDiscIntensity);
   frameData.styleCloudBase =
       glm::vec4(style.cloudBase, mParams.moonGlowIntensity);
+  frameData.styleCloud1 =
+      glm::vec4(style.cloudDeckHeight, style.cloudFeatureScale,
+                style.cloudOpticalDensity, style.cloudSunOcclusion);
+  frameData.styleCloud2 =
+      glm::vec4(std::max(style.cloudLayerThickness, 50.0f),
+                std::max(style.cloudShapeScale, 50.0f),
+                std::max(style.cloudDetailScale, 5.0f),
+                std::max(style.cloudWeatherScale, 100.0f));
+  frameData.styleCloud3 =
+      glm::vec4(std::max(style.cloudDensityMultiplier, 0.0f),
+                std::max(style.cloudLightAbsorption, 0.0f),
+                std::max(style.cloudAmbientStrength, 0.0f),
+                std::max(style.cloudCurlStrength, 0.0f));
+  frameData.styleCloud4 =
+      glm::vec4(glm::clamp(style.cloudPhaseG, 0.0f, 0.95f),
+                std::max(style.cloudSilverIntensity, 0.0f),
+                std::max(style.cloudSilverSpread, 0.0f),
+                glm::clamp(style.cloudPowderStrength, 0.0f, 1.0f));
+  frameData.styleCloud5 =
+      glm::vec4(std::max(style.cloudMaxMarchDist, 1000.0f),
+                glm::clamp(style.cloudMaxSteps, 24.0f, 192.0f),
+                glm::clamp(style.cloudLightTaps, 1.0f, 6.0f),
+                glm::clamp(style.cloudTypeBias, -1.0f, 1.0f));
+  frameData.styleCloud6 =
+      glm::vec4(glm::clamp(style.cloudDetailStrength, 0.0f, 1.0f), 0.0f, 0.0f,
+                0.0f);
+  frameData.waterParams0 =
+      glm::vec4(mParams.waterLevel, std::max(mParams.waterClarity, 0.05f),
+                glm::clamp(mParams.waterRoughness, 0.005f, 1.0f),
+                mParams.waterReflectionStrength);
+  frameData.waterParams1 =
+      glm::vec4(mParams.waveAmplitude, mParams.waveScale, mParams.waveSpeed,
+                static_cast<float>(glm::clamp(mParams.waterSsrSteps, 4, 128)));
+  {
+    glm::vec2 waveDir = mParams.waveDirection;
+    if (glm::dot(waveDir, waveDir) < 1e-6f)
+      waveDir = glm::vec2(1.0f, 0.0f);
+    waveDir = glm::normalize(waveDir);
+    frameData.waterParams2 =
+        glm::vec4(waveDir.x, waveDir.y, std::max(mParams.waterSsrThickness, 0.01f),
+                  std::max(mParams.waterFoamDepth, 0.001f));
+  }
+  // yz = the field's world origin, w = its size in metres. Size 0 means "no
+  // field uploaded": the shader then uses the flat sea plane alone.
+  frameData.waterParams3 =
+      glm::vec4(mParams.waterFoamStrength, mWaterFieldOrigin.x,
+                mWaterFieldOrigin.y, mWaterFieldSize);
+  frameData.waterShallowColor = glm::vec4(mParams.waterShallowColor, 0.0f);
+  frameData.waterDeepColor = glm::vec4(mParams.waterDeepColor, 0.0f);
   for (size_t i = 0; i < style.terrain.size(); ++i) {
     frameData.terrainPaintLit[i] =
         glm::vec4(style.terrain[i].lit, style.terrain[i].mottleScale);
     frameData.terrainPaintShade[i] =
         glm::vec4(style.terrain[i].shade, style.terrain[i].overlayStrength);
   }
+  const uint32_t pointLightCount =
+      std::min<uint32_t>(mParams.pointLightCount,
+                         static_cast<uint32_t>(mParams.pointLights.size()));
+  for (uint32_t i = 0; i < pointLightCount; ++i) {
+    const auto &light = mParams.pointLights[i];
+    frameData.pointLightPositionRadius[i] =
+        glm::vec4(light.position, std::max(light.radius, 0.1f));
+    frameData.pointLightColorIntensity[i] =
+        glm::vec4(glm::max(light.color, glm::vec3(0.0f)),
+                  std::max(light.intensity, 0.0f));
+  }
+  frameData.pointLightParams =
+      glm::vec4(static_cast<float>(pointLightCount), 0.0f, 0.0f, 0.0f);
 
   std::memcpy(mFrameUBOMapped[mCurrentFrame], &frameData, sizeof(frameData));
+  // Flush for non-coherent memory (VMA may select non-HOST_COHERENT heaps).
+  vmaFlushAllocation(mCtx->allocator(), mFrameUBOAllocs[mCurrentFrame], 0, VK_WHOLE_SIZE);
 
   // ---- TLAS input assembly + change detection (CPU only; the build is
   // recorded into the command buffer further down, and ONLY for frame slots
@@ -3779,6 +4934,86 @@ void VulkanRenderer::drawFrame() {
     mFrameStats.tlasRebuiltThisFrame = true;
   }
 
+  // ---- Pass C: volumetric cloud march (half-res) ----
+  // Runs before BOTH sky passes because sky.frag consumes the result: the
+  // clouds are blended into the sky's radiance there, ahead of the painterly
+  // grade and ahead of the sun/moon/star highlights, so the deck is washed
+  // with the same house look as the sky behind it and correctly occludes the
+  // disc. Compositing it afterwards as its own pass (the first arrangement)
+  // left ungraded clouds sitting on a graded sky and a sun that shone
+  // straight through solid overcast.
+  //
+  // Nothing in the scene feeds this -- the layer sits kilometres past the far
+  // plane, so no depth and no TLAS. When clouds are off the target is still
+  // cleared to (0,0,0,1): sky.frag's sample is statically reachable, so the
+  // image must be in a readable layout regardless, and a transmittance of 1
+  // with no scattered light makes the blend an exact no-op.
+  const bool cloudsOn = mCloudNoiseReady && mParams.style.cloudVolumetricEnabled &&
+                        mParams.style.cloudStrength > 0.001f &&
+                        mParams.debugViewMode == 0;
+  // Always transition + clear -- sky.frag samples this image unconditionally,
+  // so it must be in a valid layout even when cloud noise hasn't loaded yet.
+  // (Leaving it in UNDEFINED violates VUID-vkCmdDraw-None-08114.)
+  imageBarrier(cmd, mCloudImages[mCurrentFrame],
+               VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+               VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+  VkRenderingAttachmentInfo cloudColor{};
+  cloudColor.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+  cloudColor.imageView = mCloudViews[mCurrentFrame];
+  cloudColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  cloudColor.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  cloudColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  cloudColor.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+
+  const VkExtent2D cloudExtent = extent;
+  VkViewport cloudVp{};
+  cloudVp.width = static_cast<float>(cloudExtent.width);
+  cloudVp.height = static_cast<float>(cloudExtent.height);
+  cloudVp.minDepth = 0.0f;
+  cloudVp.maxDepth = 1.0f;
+  VkRect2D cloudScissor{};
+  cloudScissor.extent = cloudExtent;
+
+  VkRenderingInfo cloudRender{};
+  cloudRender.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+  cloudRender.renderArea.extent = cloudExtent;
+  cloudRender.layerCount = 1;
+  cloudRender.colorAttachmentCount = 1;
+  cloudRender.pColorAttachments = &cloudColor;
+  vkCmdBeginRendering(cmd, &cloudRender);
+  if (cloudsOn) {
+    const glm::mat4 cloudInvViewProj = glm::inverse(proj * viewMat);
+    vkCmdSetViewport(cmd, 0, 1, &cloudVp);
+    vkCmdSetScissor(cmd, 0, 1, &cloudScissor);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mCloudPipeline);
+    VkDescriptorSet cloudSets[2] = {mCloudNoiseSet, mFrameSets[mCurrentFrame]};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            mCloudPipelineLayout, 0, 2, cloudSets, 0, nullptr);
+    CloudPush cloudPush{};
+    cloudPush.invViewProj = cloudInvViewProj;
+    // Rotating the dither phase per frame turns the march's fixed step
+    // lattice into noise that the eye integrates away over a few frames,
+    // rather than a static grain locked to the screen.
+    cloudPush.jitter = glm::vec4(
+        static_cast<float>(mFrameCounter % 8u) * 13.7f, 0.0f, 0.0f, 0.0f);
+    vkCmdPushConstants(cmd, mCloudPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(CloudPush), &cloudPush);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+  }
+  vkCmdEndRendering(cmd);
+
+  imageBarrier(cmd, mCloudImages[mCurrentFrame],
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
   // Shared sky push-constant packing for the visible sky and the env faces.
   // The env pass zeroes disc/stars: the scene treats sun/moon as analytic
   // direct lights, so the cubemap carrying the disc would double-count it.
@@ -3789,8 +5024,10 @@ void VulkanRenderer::drawFrame() {
     push.sunDir = glm::vec4(toSun, sunOuterScale);
     push.moonDir = glm::vec4(toMoon, moonOuterScale);
     push.camPos = glm::vec4(eye, timeSeconds);
-    push.passFlags =
-        glm::vec4(forEnv ? 1.0f : 0.0f, 0.0105f, 0.0f, 0.0f);
+    push.passFlags = glm::vec4(
+        forEnv ? 1.0f : 0.0f, 0.0105f,
+        cloudsOn ? std::clamp(mParams.style.cloudStrength, 0.0f, 1.0f) : 0.0f,
+        0.0f);
     return push;
   };
 
@@ -3842,9 +5079,14 @@ void VulkanRenderer::drawFrame() {
       vkCmdSetViewport(cmd, 0, 1, &envVp);
       vkCmdSetScissor(cmd, 0, 1, &envScissor);
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mEnvMapPipeline);
+      // The env faces never sample the cloud buffer (passFlags.x forces the
+      // analytic deck instead -- the half-res march is the MAIN camera's
+      // view, which says nothing about what a cube face sees), but the layout
+      // is shared, so set 1 still has to be bound.
+      VkDescriptorSet envSkySets[2] = {mFrameSets[mCurrentFrame],
+                                       mCloudSampleSets[mCurrentFrame]};
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              mSkyPipelineLayout, 0, 1,
-                              &mFrameSets[mCurrentFrame], 0, nullptr);
+                              mSkyPipelineLayout, 0, 2, envSkySets, 0, nullptr);
 
       // Affine unprojector: (ndc.x, ndc.y, 1, 1) -> camPos + F + x*Rt + y*Dn,
       // so the shader's `normalize(farPoint - camPos)` spans this face.
@@ -4080,6 +5322,7 @@ void VulkanRenderer::drawFrame() {
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mDepthPrepassPipeline);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           mScenePipelineLayout, 0, 5, sets, 0, nullptr);
+  bool alphaDepthPipeline = false;
   for (size_t i = 0; i < mInstances.size(); ++i) {
     if (!mInstanceVisible[i])
       continue;
@@ -4088,8 +5331,19 @@ void VulkanRenderer::drawFrame() {
     vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertexBuffer, &vbOffset);
     vkCmdBindIndexBuffer(cmd, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
     for (const DrawItem &item : mesh.drawItems) {
+      const bool needsAlpha = item.alphaCutoff > 0.0f;
+      if (needsAlpha != alphaDepthPipeline) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          needsAlpha ? mDepthAlphaPrepassPipeline
+                                     : mDepthPrepassPipeline);
+        alphaDepthPipeline = needsAlpha;
+      }
       ScenePush push{};
       push.model = inst.model;
+      push.textureIndex = item.textureIndex;
+      push.opacityIndex = item.opacityIndex;
+      push.alphaCutoff = item.alphaCutoff;
+      push.materialFlags = item.materialFlags;
       vkCmdPushConstants(cmd, mScenePipelineLayout, pushStages, 0,
                          sizeof(ScenePush), &push);
       vkCmdDrawIndexed(cmd, item.indexCount, 1, item.indexOffset, 0, 0);
@@ -4105,6 +5359,7 @@ void VulkanRenderer::drawFrame() {
   // other would fail its own depth test and vanish.
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     mVegetationDepthPrepassPipeline);
+  alphaDepthPipeline = false;
   for (const VegSpeciesBuffer &vb : mVegBuffers) {
     if (vb.visibleSpans.empty())
       continue;
@@ -4113,16 +5368,28 @@ void VulkanRenderer::drawFrame() {
     VkDeviceSize offsets[2] = {0, 0};
     vkCmdBindVertexBuffers(cmd, 0, 2, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(cmd, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-    ScenePush windPush{};
-    windPush.windStrength = vb.windStrength;
-    windPush.windSpeed = vb.windSpeed;
-    windPush.windMeshHeight = vb.windMeshHeight;
-    vkCmdPushConstants(cmd, mScenePipelineLayout, pushStages, 0,
-                       sizeof(ScenePush), &windPush);
-    for (const DrawItem &item : mesh.drawItems)
+    for (const DrawItem &item : mesh.drawItems) {
+      const bool needsAlpha = item.alphaCutoff > 0.0f;
+      if (needsAlpha != alphaDepthPipeline) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          needsAlpha ? mVegetationDepthAlphaPrepassPipeline
+                                     : mVegetationDepthPrepassPipeline);
+        alphaDepthPipeline = needsAlpha;
+      }
+      ScenePush windPush{};
+      windPush.textureIndex = item.textureIndex;
+      windPush.opacityIndex = item.opacityIndex;
+      windPush.alphaCutoff = item.alphaCutoff;
+      windPush.materialFlags = item.materialFlags;
+      windPush.windStrength = vb.windStrength;
+      windPush.windSpeed = vb.windSpeed;
+      windPush.windMeshHeight = vb.windMeshHeight;
+      vkCmdPushConstants(cmd, mScenePipelineLayout, pushStages, 0,
+                         sizeof(ScenePush), &windPush);
       for (const auto &[first, count] : vb.visibleSpans)
         vkCmdDrawIndexed(cmd, item.indexCount, count, item.indexOffset, 0,
                          first);
+    }
   }
   vkCmdEndRendering(cmd);
 
@@ -4329,9 +5596,10 @@ void VulkanRenderer::drawFrame() {
   {
     SkyPush skyPush = fillSkyPush(invViewProj, false);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mSkyPipeline);
+    VkDescriptorSet skySets[2] = {mFrameSets[mCurrentFrame],
+                                  mCloudSampleSets[mCurrentFrame]};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            mSkyPipelineLayout, 0, 1,
-                            &mFrameSets[mCurrentFrame], 0, nullptr);
+                            mSkyPipelineLayout, 0, 2, skySets, 0, nullptr);
     vkCmdPushConstants(cmd, mSkyPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(SkyPush), &skyPush);
     vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -4359,10 +5627,20 @@ void VulkanRenderer::drawFrame() {
       push.roughnessIndex = item.roughnessIndex;
       push.metallicIndex = item.metallicIndex;
       push.aoIndex = item.aoIndex;
+      push.normalIndex = item.normalIndex;
+      push.opacityIndex = item.opacityIndex;
       push.roughnessScalar = item.roughnessScalar;
       push.metallicScalar = item.metallicScalar;
       push.aoScalar = item.aoScalar;
+      push.alphaCutoff = item.alphaCutoff;
       push.materialFlags = item.materialFlags;
+      // Regular meshes do not consume the vegetation tail of ScenePush, so
+      // use it for per-submesh emissive data without exceeding Vulkan's
+      // guaranteed 128-byte push-constant budget.
+      push.windStrength = item.emissiveColor.r;
+      push.windSpeed = item.emissiveColor.g;
+      push.windMeshHeight = item.emissiveColor.b;
+      push.groundOcclusion = item.emissiveStrength;
       vkCmdPushConstants(cmd, mScenePipelineLayout, pushStages, 0,
                          sizeof(ScenePush), &push);
       vkCmdDrawIndexed(cmd, item.indexCount, 1, item.indexOffset, 0, 0);
@@ -4414,9 +5692,12 @@ void VulkanRenderer::drawFrame() {
       push.roughnessIndex = item.roughnessIndex;
       push.metallicIndex = item.metallicIndex;
       push.aoIndex = item.aoIndex;
+      push.normalIndex = item.normalIndex;
+      push.opacityIndex = item.opacityIndex;
       push.roughnessScalar = item.roughnessScalar;
       push.metallicScalar = item.metallicScalar;
       push.aoScalar = item.aoScalar;
+      push.alphaCutoff = item.alphaCutoff;
       push.materialFlags = item.materialFlags;
       // Must match the depth prepass's wind push exactly -- see the comment
       // there.
@@ -4432,7 +5713,148 @@ void VulkanRenderer::drawFrame() {
                          first);
     }
   }
+
+  // ---- editor debug lines (grid, axes, outlines) ----
+  // Last in the scene pass so it depth-tests against everything solid, and
+  // still inside it so the lines are part of the HDR image the tonemapper
+  // grades -- lines composited after tonemapping would not sit in the scene,
+  // they would sit on the screen.
+  if (mLinePipeline != VK_NULL_HANDLE && !mDebugLines.empty()) {
+    const size_t needed = mDebugLines.size();
+    VkBuffer &buffer = mLineBuffers[mCurrentFrame];
+    // Grown like a std::vector and never shrunk; the retired buffer waits out
+    // the frames still in flight rather than being freed under them.
+    if (mLineCapacity[mCurrentFrame] < needed) {
+      const size_t capacity = std::max<size_t>(needed * 2, 4096);
+      if (buffer != VK_NULL_HANDLE) {
+        mPendingGarbage.buffers.emplace_back(buffer, mLineAllocs[mCurrentFrame]);
+      }
+      VkBufferCreateInfo bufferCi{};
+      bufferCi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      bufferCi.size = capacity * sizeof(DebugLineVertex);
+      bufferCi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+      bufferCi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      VmaAllocationCreateInfo allocCi{};
+      allocCi.usage = VMA_MEMORY_USAGE_AUTO;
+      allocCi.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                      VMA_ALLOCATION_CREATE_MAPPED_BIT;
+      VmaAllocationInfo allocInfo{};
+      if (vmaCreateBuffer(mCtx->allocator(), &bufferCi, &allocCi, &buffer,
+                          &mLineAllocs[mCurrentFrame], &allocInfo) == VK_SUCCESS) {
+        mLineMapped[mCurrentFrame] = allocInfo.pMappedData;
+        mLineCapacity[mCurrentFrame] = capacity;
+      } else {
+        buffer = VK_NULL_HANDLE;
+        mLineCapacity[mCurrentFrame] = 0;
+      }
+    }
+
+    if (buffer != VK_NULL_HANDLE && mLineMapped[mCurrentFrame]) {
+      std::memcpy(mLineMapped[mCurrentFrame], mDebugLines.data(),
+                  needed * sizeof(DebugLineVertex));
+      // Flush for non-coherent memory (VMA may select non-HOST_COHERENT heaps).
+      vmaFlushAllocation(mCtx->allocator(), mLineAllocs[mCurrentFrame], 0, VK_WHOLE_SIZE);
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mLinePipeline);
+      LinePush linePush{};
+      linePush.viewProj = frameData.viewProj;
+      linePush.camPosFade =
+          glm::vec4(eye, mDebugLineFade > 0.0f ? mDebugLineFade : 1e9f);
+      vkCmdPushConstants(cmd, mLinePipelineLayout,
+                         VK_SHADER_STAGE_VERTEX_BIT |
+                             VK_SHADER_STAGE_FRAGMENT_BIT,
+                         0, sizeof(LinePush), &linePush);
+      VkDeviceSize lineOffset = 0;
+      vkCmdBindVertexBuffers(cmd, 0, 1, &buffer, &lineOffset);
+      vkCmdDraw(cmd, static_cast<uint32_t>(needed), 1, 0, 0);
+      mDebugLineCount = static_cast<uint32_t>(needed / 2);
+    }
+  } else {
+    mDebugLineCount = 0;
+  }
+
   vkCmdEndRendering(cmd);
+
+  // ---- Pass 1w: water surface ----
+  // Runs after the opaque scene and BEFORE the volumetric composite, so god
+  // rays scatter over the water rather than under it. The surface is an
+  // analytic plane at Params::waterLevel intersected per-pixel in
+  // water.frag -- no geometry, so no tessellation, LOD or streaming.
+  //
+  // The opaque HDR image is copied to mSceneCopyImages first: water refracts
+  // what is behind it and marches screen-space reflections through it, and a
+  // pass cannot sample the attachment it renders to.
+  if (mParams.waterEnabled) {
+    imageBarrier(cmd, mHdrImages[mCurrentFrame],
+                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                 VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    imageBarrier(cmd, mSceneCopyImages[mCurrentFrame],
+                 VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                 VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                 VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    VkImageCopy region{};
+    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.srcSubresource.layerCount = 1;
+    region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.dstSubresource.layerCount = 1;
+    region.extent = {extent.width, extent.height, 1};
+    vkCmdCopyImage(cmd, mHdrImages[mCurrentFrame],
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   mSceneCopyImages[mCurrentFrame],
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    imageBarrier(cmd, mSceneCopyImages[mCurrentFrame],
+                 VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                 VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    imageBarrier(cmd, mHdrImages[mCurrentFrame],
+                 VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    VkRenderingAttachmentInfo waterColor{};
+    waterColor.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    waterColor.imageView = mHdrViews[mCurrentFrame];
+    waterColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    waterColor.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    waterColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo waterRender{};
+    waterRender.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    waterRender.renderArea.extent = extent;
+    waterRender.layerCount = 1;
+    waterRender.colorAttachmentCount = 1;
+    waterRender.pColorAttachments = &waterColor;
+    vkCmdBeginRendering(cmd, &waterRender);
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mWaterPipeline);
+    // The field set falls back to the scene-copy set when no field has been
+    // uploaded yet (terrain off, or the first frames of a load). The shader
+    // detects that case from waterParams3.z == 0 and uses the flat sea plane,
+    // so what it would sample there is never read.
+    VkDescriptorSet waterFieldSet =
+        mWaterFieldSet ? mWaterFieldSet : mSceneCopySets[mCurrentFrame];
+    VkDescriptorSet waterSets[5] = {
+        mSceneCopySets[mCurrentFrame], mSSAODepthSets[mCurrentFrame],
+        mFrameSets[mCurrentFrame], mSceneEnvSets[mCurrentFrame], waterFieldSet};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            mWaterPipelineLayout, 0, 5, waterSets, 0, nullptr);
+    WaterPush waterPush{invViewProj};
+    vkCmdPushConstants(cmd, mWaterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(WaterPush), &waterPush);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(cmd);
+  }
 
   // ---- Pass 1a: volumetric composite (additive onto HDR) ----
   // Depth-aware upsample of the half-res god-ray march, ADDING in-scattered
@@ -4837,6 +6259,7 @@ void VulkanRenderer::drawFrame() {
   }
 
   mCurrentFrame = (mCurrentFrame + 1) % kFramesInFlight;
+  ++mFrameCounter;
 }
 
 void VulkanRenderer::requestCapture(const std::string &path,
@@ -4909,6 +6332,7 @@ void VulkanRenderer::shutdown() {
   mTlasSetLayout = VK_NULL_HANDLE;
   destroySceneTargets();
   destroyEnvMapResources();
+  destroyCloudNoiseResources();
 
   if (mTonemapPool)
     vkDestroyDescriptorPool(device, mTonemapPool, nullptr);
@@ -4952,6 +6376,17 @@ void VulkanRenderer::shutdown() {
     vkDestroyPipelineLayout(device, mSkyPipelineLayout, nullptr);
   if (mScenePipelineLayout)
     vkDestroyPipelineLayout(device, mScenePipelineLayout, nullptr);
+  if (mLinePipelineLayout)
+    vkDestroyPipelineLayout(device, mLinePipelineLayout, nullptr);
+  // Line vertex buffers are host-visible and persistently mapped; vmaDestroy
+  // handles the unmap. (The pipeline itself belongs to mPipelineCache.)
+  for (size_t i = 0; i < mLineBuffers.size(); ++i)
+    if (mLineBuffers[i] != VK_NULL_HANDLE)
+      vmaDestroyBuffer(mCtx->allocator(), mLineBuffers[i], mLineAllocs[i]);
+  mLineBuffers.clear();
+  mLineAllocs.clear();
+  mLineMapped.clear();
+  mLineCapacity.clear();
   if (mSSAOPipelineLayout)
     vkDestroyPipelineLayout(device, mSSAOPipelineLayout, nullptr);
   if (mBlurPipelineLayout)
@@ -4964,6 +6399,28 @@ void VulkanRenderer::shutdown() {
     vkDestroyPipelineLayout(device, mVolumetricPipelineLayout, nullptr);
   if (mVolCompositePipelineLayout)
     vkDestroyPipelineLayout(device, mVolCompositePipelineLayout, nullptr);
+  if (mCloudPipelineLayout)
+    vkDestroyPipelineLayout(device, mCloudPipelineLayout, nullptr);
+  if (mWaterPipelineLayout)
+    vkDestroyPipelineLayout(device, mWaterPipelineLayout, nullptr);
+  for (VkImageView v : mUiViews)
+    vkDestroyImageView(device, v, nullptr);
+  for (size_t i = 0; i < mUiImages.size(); ++i)
+    vmaDestroyImage(mCtx->allocator(), mUiImages[i], mUiAllocs[i]);
+  mUiViews.clear();
+  mUiImages.clear();
+  mUiAllocs.clear();
+  if (mWaterFieldView)
+    vkDestroyImageView(device, mWaterFieldView, nullptr);
+  if (mWaterFieldImage)
+    vmaDestroyImage(mCtx->allocator(), mWaterFieldImage, mWaterFieldAlloc);
+  if (mWaterFieldPool)
+    vkDestroyDescriptorPool(device, mWaterFieldPool, nullptr);
+  mWaterFieldView = VK_NULL_HANDLE;
+  mWaterFieldImage = VK_NULL_HANDLE;
+  mWaterFieldPool = VK_NULL_HANDLE;
+  mWaterFieldSet = VK_NULL_HANDLE;
+  mWaterPipelineLayout = VK_NULL_HANDLE;
   mTonemapPipelineLayout = VK_NULL_HANDLE;
   mSkyPipelineLayout = VK_NULL_HANDLE;
   mScenePipelineLayout = VK_NULL_HANDLE;
@@ -4973,6 +6430,7 @@ void VulkanRenderer::shutdown() {
   mBloomBlurPipelineLayout = VK_NULL_HANDLE;
   mVolumetricPipelineLayout = VK_NULL_HANDLE;
   mVolCompositePipelineLayout = VK_NULL_HANDLE;
+  mCloudPipelineLayout = VK_NULL_HANDLE;
 
   mPipelineCache.destroy(*mCtx);
   mScenePipeline = VK_NULL_HANDLE;
@@ -4982,11 +6440,14 @@ void VulkanRenderer::shutdown() {
   mEnvMapPipeline = VK_NULL_HANDLE;
   mVolumetricPipeline = VK_NULL_HANDLE;
   mVolCompositePipeline = VK_NULL_HANDLE;
+  mCloudPipeline = VK_NULL_HANDLE;
   mTonemapPipeline = VK_NULL_HANDLE;
   mSSAOPipeline = VK_NULL_HANDLE;
   mBlurPipeline = VK_NULL_HANDLE;
   mDepthPrepassPipeline = VK_NULL_HANDLE;
+  mDepthAlphaPrepassPipeline = VK_NULL_HANDLE;
   mVegetationDepthPrepassPipeline = VK_NULL_HANDLE;
+  mVegetationDepthAlphaPrepassPipeline = VK_NULL_HANDLE;
   mBloomExtractPipeline = VK_NULL_HANDLE;
   mBloomBlurPipeline = VK_NULL_HANDLE;
 

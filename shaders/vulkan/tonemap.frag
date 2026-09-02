@@ -35,12 +35,27 @@ float edgeMask(vec2 uv){
  return clamp(e,0.0,1.0);
 }
 vec3 filteredHdr(vec2 uv){
- vec2 px=1.0/vec2(textureSize(uHdr,0));vec3 c=texture(uHdr,uv).rgb;
- vec3 n=texture(uHdr,uv+vec2(0,px.y)).rgb,s=texture(uHdr,uv-vec2(0,px.y)).rgb;
- vec3 e=texture(uHdr,uv+vec2(px.x,0)).rgb,w=texture(uHdr,uv-vec2(px.x,0)).rgb;
- float range=max(max(lum(n),lum(s)),max(lum(e),lum(w)))-min(min(lum(n),lum(s)),min(lum(e),lum(w)));
- float blend=smoothstep(.035,.20,range)*.36*uFrame.styleOutlineColor.w;
- return mix(c,(n+s+e+w)*.25,blend);
+ // FXAA in HDR space. It follows the actual edge direction, preserving
+ // material detail while stabilising one-pixel rebar, branches and rooflines.
+ vec2 px=1.0/vec2(textureSize(uHdr,0));
+ vec3 nw=texture(uHdr,uv+vec2(-1,-1)*px).rgb;
+ vec3 ne=texture(uHdr,uv+vec2( 1,-1)*px).rgb;
+ vec3 sw=texture(uHdr,uv+vec2(-1, 1)*px).rgb;
+ vec3 se=texture(uHdr,uv+vec2( 1, 1)*px).rgb;
+ vec3 c=texture(uHdr,uv).rgb;
+ float lnw=lum(nw),lne=lum(ne),lsw=lum(sw),lse=lum(se),lc=lum(c);
+ float lmin=min(lc,min(min(lnw,lne),min(lsw,lse)));
+ float lmax=max(lc,max(max(lnw,lne),max(lsw,lse)));
+ vec2 dir=vec2(-((lnw+lne)-(lsw+lse)),(lnw+lsw)-(lne+lse));
+ float reduce=max((lnw+lne+lsw+lse)*.0078125,.0009765625);
+ float invMin=1.0/(min(abs(dir.x),abs(dir.y))+reduce);
+ dir=clamp(dir*invMin,vec2(-8),vec2(8))*px;
+ vec3 a=.5*(texture(uHdr,uv+dir*(1.0/3.0-.5)).rgb+
+            texture(uHdr,uv+dir*(2.0/3.0-.5)).rgb);
+ vec3 b=a*.5+.25*(texture(uHdr,uv+dir*-.5).rgb+
+                  texture(uHdr,uv+dir*.5).rgb);
+ float lb=lum(b);
+ return (lb<lmin||lb>lmax)?a:b;
 }
 void main(){
  vec3 hdr=filteredHdr(vUV);hdr+=texture(uBloom,vUV).rgb*pc.bloomIntensity;
@@ -61,5 +76,17 @@ void main(){
  float grain=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453)-.5;
  hdr*=1.0+grain*uFrame.stylePost1.w*(.35+.65*lum(hdr));
  hdr=pow(clamp(hdr,0.0,1.0),vec3(1.0/max(pc.gamma,0.1)));
- outColor=vec4(hdr,1);
+ // Dither at the 8-bit quantisation step. Smooth wide gradients -- the sky is
+ // the worst case, and a clear zenith-to-horizon ramp is most of the frame --
+ // land on the same output code for many pixels in a row and show as banded
+ // contours. This is NOT the film grain above: that one is a style dial
+ // (stylePost1.w), multiplicative, and off in most scenes. This is one LSB of
+ // triangular-PDF noise applied after the gamma curve, i.e. in the space the
+ // quantisation actually happens in, which converts the banding to noise well
+ // below the visible threshold. Offset hash so it does not correlate with the
+ // grain when both are on.
+ float d1=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453);
+ float d2=fract(sin(dot(gl_FragCoord.xy+vec2(5.31,11.7),vec2(12.9898,78.233)))*43758.5453);
+ hdr+=vec3((d1+d2-1.0)*(1.0/255.0));
+ outColor=vec4(clamp(hdr,0.0,1.0),1);
 }

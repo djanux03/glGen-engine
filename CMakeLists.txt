@@ -33,6 +33,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 add_subdirectory(ThirdParty)
 add_subdirectory(Engine)
 add_subdirectory(VulkanRHI)
+add_subdirectory(Tools/glgen-bake)
 
 # ── Tests (opt-in) ──────────────────────────────────────────────────────────
 option(GLGEN_BUILD_TESTS "Build the glGen test suite" OFF)

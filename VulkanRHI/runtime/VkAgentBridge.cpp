@@ -6,6 +6,7 @@
 #include "subsystems/VkTerrainSubsystem.h"
 
 #include "ECS/Components.h"
+#include "Assets/MeshExportGLTF.h"
 #include "ECS/Registry.h"
 #include "Generators/AssetLibrary.h"
 #include "Generators/GeneratorRegistry.h"
@@ -75,7 +76,7 @@ void VkAgentBridge::registerHandlers_() {
     // What a client may call. Cheaper than a round trip per probe.
     info["methods"] = json::array(
         {"engine.info", "script.eval", "assets.generators", "assets.schema",
-         "assets.define", "scene.spawn", "scene.query", "scene.clear",
+         "assets.define", "assets.info", "assets.exportGlb", "scene.spawn", "scene.query", "scene.clear",
          "render.setParams", "render.getParams", "render.capture",
          "render.turntable"});
     return Response::ok(info);
@@ -141,6 +142,35 @@ void VkAgentBridge::registerHandlers_() {
                              {"triangles", r.triangles},
                              {"regenerated", r.regenerated},
                              {"warnings", r.warnings}});
+  });
+
+  // A typed metrics query keeps MCP's validation path out of Lua string
+  // construction and returns the same facts the regression harness compares.
+  mServer.setHandler("assets.info", [st](const json &params, uint64_t) {
+    const std::string assetId = params.value("assetId", std::string{});
+    if (assetId.empty())
+      return Response::fail("assets.info needs an 'assetId'");
+    const gen::AssetLibrary::AssetInfo info = st->assetLibrary.info(assetId);
+    if (!info.valid)
+      return Response::fail("unknown asset '" + assetId + "'");
+    return Response::ok(json{{"assetId", assetId},
+                             {"triangles", info.triangles},
+                             {"vertices", info.vertices},
+                             {"submeshes", info.submeshes},
+                             {"boundsMin", {info.boundsMin.x, info.boundsMin.y, info.boundsMin.z}},
+                             {"boundsMax", {info.boundsMax.x, info.boundsMax.y, info.boundsMax.z}}});
+  });
+
+  mServer.setHandler("assets.exportGlb", [st](const json &params, uint64_t) {
+    const std::string assetId = params.value("assetId", std::string{});
+    const std::string path = params.value("path", std::string{});
+    if (assetId.empty() || path.empty())
+      return Response::fail("assets.exportGlb needs 'assetId' and 'path'");
+    const MeshData *data = st->assets.getOBJData(st->assets.findMeshData(assetId));
+    if (!data) return Response::fail("unknown generated asset '" + assetId + "'");
+    std::string error;
+    if (!exportMeshGLB(*data, path, error)) return Response::fail(error);
+    return Response::ok(json{{"path", path}});
   });
 
   mServer.setHandler("scene.spawn", [st](const json &params, uint64_t) {
@@ -357,7 +387,6 @@ void VkAgentBridge::update() {
   if (mTurntableActive && mState->renderer) {
     vkrhi::VulkanRenderer::Params &p = mState->renderer->params();
     if (!mTurntable.shotRequested) {
-      ++mTurntable.current;
       if (mTurntable.current >= mTurntable.steps) {
         // Done: restore the view and drop the temporary entity.
         p.camPos = mTurntable.savedCamPos;
@@ -396,6 +425,7 @@ void VkAgentBridge::update() {
         mTurntable.paths.push_back(path);
         mTurntable.shotRequested = true;
         mHideUiThisFrame = true; // a turntable is always for review
+        ++mTurntable.current;  // post-increment: advance AFTER requesting this frame's shot
       }
     }
   }

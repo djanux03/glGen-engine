@@ -35,11 +35,13 @@ Self-test against a running engine, no MCP client needed:
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import os
 import subprocess
 import sys
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 sys.path.insert(
@@ -116,6 +118,12 @@ DEFAULT_EXE = os.environ.get(
     "GLGEN_EXE", os.path.join(REPO_ROOT, "Build-vs18", "bin", "Release", "glGenVk.exe")
 )
 CAPTURE_DIR = os.path.join(REPO_ROOT, "captures", "mcp")
+CHARACTER_JOB_DIR = os.path.join(REPO_ROOT, ".glgen", "jobs")
+
+# MCP is a stateful authoring session.  Keeping only the recipes made through
+# this session is intentional: we can offer safe intent-level edits without
+# guessing how an arbitrary pre-existing runtime asset was authored.
+SESSION_RECIPES: Dict[str, Dict[str, Any]] = {}
 
 
 def log(message: str) -> None:
@@ -338,6 +346,21 @@ STATIC_TOOLS: List[Dict[str, Any]] = [
                 "exposure": {"type": "number"},
                 "autoExposure": {"type": "boolean"},
                 "fogDensity": {"type": "number"},
+                "pointLights": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "description": "Local practical lights for lamps and fixtures.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "position": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+                            "color": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+                            "radius": {"type": "number", "minimum": 0.1},
+                            "intensity": {"type": "number", "minimum": 0},
+                        },
+                        "required": ["position", "color", "radius", "intensity"],
+                    },
+                },
             },
         },
     },
@@ -361,6 +384,111 @@ STATIC_TOOLS: List[Dict[str, Any]] = [
         },
     },
 ]
+
+# These tools compose the schema-generated creation tools into an editing
+# workflow. Geometry remains engine-owned; the server merely retains the
+# small JSON recipes needed to make an in-place revision meaningful.
+STATIC_TOOLS.extend([
+    {
+        "name": "glgen_modify_asset",
+        "description": "Patch a session-created asset's generator parameters, seed, or material recipes, regenerate it in place, and keep all existing placements linked to the revised asset.",
+        "inputSchema": {"type": "object", "properties": {
+            "assetId": {"type": "string"}, "params": {"type": "object", "description": "Only the generator parameters to replace."},
+            "seed": {"type": "integer"}, "material": {"type": "object", "description": "Material-slot recipes to replace."},
+        }, "required": ["assetId"]},
+    },
+    {
+        "name": "glgen_apply_material",
+        "description": "Apply or replace procedural texture recipes on a session-created asset's named material slots, then regenerate it in place. Texture generator names and schemas are reported by glgen_info.",
+        "inputSchema": {"type": "object", "properties": {
+            "assetId": {"type": "string"}, "material": {"type": "object", "description": "Slot map, e.g. {sculpt:{generator:'tex.rock',params:{...}}}."},
+        }, "required": ["assetId", "material"]},
+    },
+    {
+        "name": "glgen_create_assembly",
+        "description": "Compose existing generated assets into a named multi-part scene assembly. Use it for a sculpted body plus sweep horns, a revolved lamp plus panel housing, or any reusable hero prop made from coherent parts.",
+        "inputSchema": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "Shared name prefix for the placed parts."},
+            "pos": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "default": [0, 0, 0]},
+            "parts": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "object", "properties": {
+                "assetId": {"type": "string"}, "pos": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+                "rot": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "scale": {"type": "number"}, "name": {"type": "string"},
+            }, "required": ["assetId"]}},
+        }, "required": ["name", "parts"]},
+    },
+    {
+        "name": "glgen_render_compare",
+        "description": "Render two assets from identical bounds-framed viewpoints and return a contact-sheet sequence plus their triangle and bounds metrics. Use to judge whether an iteration actually improved the result.",
+        "inputSchema": {"type": "object", "properties": {
+            "beforeAssetId": {"type": "string"}, "afterAssetId": {"type": "string"}, "views": {"type": "integer", "minimum": 1, "maximum": 4, "default": 2},
+        }, "required": ["beforeAssetId", "afterAssetId"]},
+    },
+    {
+        "name": "glgen_validate_asset",
+        "description": "Return an asset's triangle count, vertex count, submesh count and physical bounds, with concise authoring guidance based on those facts.",
+        "inputSchema": {"type": "object", "properties": {"assetId": {"type": "string"}}, "required": ["assetId"]},
+    },
+    {
+        "name": "glgen_create_lod_set",
+        "description": "Create lower-detail recipe variants for a session-created asset by lowering its 'detail' parameter. Best for generators that expose detail (sculpt, rock); returns the generated LOD asset IDs and their metrics.",
+        "inputSchema": {"type": "object", "properties": {
+            "assetId": {"type": "string"}, "levels": {"type": "integer", "minimum": 1, "maximum": 3, "default": 2},
+        }, "required": ["assetId"]},
+    },
+    {
+        "name": "glgen_import_reference",
+        "description": "Import a local GLB/glTF/OBJ/FBX reference mesh through the engine's conditioned import.gltf recipe. It normalizes and decimates the result so it obeys glGen's ray-tracing budget.",
+        "inputSchema": {"type": "object", "properties": {
+            "id": {"type": "string"}, "path": {"type": "string", "description": "Local mesh path accessible to the glGen process."},
+            "maxTriangles": {"type": "integer", "minimum": 100, "maximum": 50000, "default": 8000},
+            "normalizeSize": {"type": "number", "minimum": 0.01, "maximum": 100, "default": 1.0},
+        }, "required": ["id", "path"]},
+    },
+])
+
+STATIC_TOOLS.extend([
+    {"name": "glgen_character_begin", "description": "Start a persistent text-to-character job. Creates a deterministic stylized static humanoid base; use character_edit, character_review, and character_finalize to complete it.", "inputSchema": {"type": "object", "properties": {"brief": {"type": "string"}, "name": {"type": "string"}, "targetTriangles": {"type": "integer", "minimum": 1000, "maximum": 20000, "default": 15000}, "seed": {"type": "integer"}}, "required": ["brief", "name"]}},
+    {"name": "glgen_character_edit", "description": "Apply one semantic edit to a persistent character job. Allowed operations are reshape, add_garment, add_feature, add_hair, add_accessory, assign_material, mirror, smooth, remesh, and simplify. At most eight edits are allowed before finalization.", "inputSchema": {"type": "object", "properties": {"jobId": {"type": "string"}, "expectedVersion": {"type": "integer"}, "operation": {"type": "object", "description": "Semantic operation object, always including string field 'op'."}}, "required": ["jobId", "expectedVersion", "operation"]}},
+    {"name": "glgen_character_review", "description": "Render three fixed, bounds-framed review angles for a character job. At most three reviews are allowed before finalization; inspect the returned images before deciding on another edit.", "inputSchema": {"type": "object", "properties": {"jobId": {"type": "string"}}, "required": ["jobId"]}},
+    {"name": "glgen_character_status", "description": "Read a persistent character job's brief, recipe, version history, limits, diagnostics, and current asset metrics.", "inputSchema": {"type": "object", "properties": {"jobId": {"type": "string"}}, "required": ["jobId"]}},
+    {"name": "glgen_character_finalize", "description": "Validate a character job and export its editable recipe plus a static PBR GLB. Fails rather than exporting invalid, over-budget, or materially incomplete assets.", "inputSchema": {"type": "object", "properties": {"jobId": {"type": "string"}}, "required": ["jobId"]}},
+])
+
+
+def _character_job_path(job_id: str) -> str:
+    if not job_id or any(c not in "0123456789abcdef" for c in job_id):
+        raise GlGenError("invalid character job id")
+    return os.path.join(CHARACTER_JOB_DIR, job_id)
+
+
+def _save_character_job(job: Dict[str, Any]) -> None:
+    directory = _character_job_path(job["jobId"])
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, "job.json"), "w", encoding="utf-8") as handle:
+        json.dump(job, handle, indent=2)
+        handle.write("\n")
+    with open(os.path.join(directory, f"revision_{job['version']:03d}.json"), "w", encoding="utf-8") as handle:
+        json.dump(job["recipe"], handle, indent=2)
+        handle.write("\n")
+
+
+def _load_character_job(job_id: str) -> Dict[str, Any]:
+    path = os.path.join(_character_job_path(job_id), "job.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            job = json.load(handle)
+    except OSError as exc:
+        raise GlGenError(f"unknown character job '{job_id}'") from exc
+    if not isinstance(job, dict) or job.get("jobId") != job_id:
+        raise GlGenError(f"corrupt character job '{job_id}'")
+    return job
+
+
+def _character_text(result: Dict[str, Any], prefix: str) -> Dict[str, Any]:
+    text = f"{prefix}: {result['assetId']}, {result['triangles']} triangles"
+    if result.get("warnings"):
+        text += "\nWarnings:\n" + "\n".join("  - " + w for w in result["warnings"])
+    return {"content": [text_block(text)]}
 
 
 def build_generator_tools(engine: Engine) -> List[Dict[str, Any]]:
@@ -477,6 +605,7 @@ def call_tool(engine: Engine, tools: List[Dict[str, Any]], name: str,
             "params": args,  # whatever remains belongs to the generator
         }
         result = engine.call("assets.define", recipe)
+        SESSION_RECIPES[result["assetId"]] = copy.deepcopy(recipe)
         lines = [
             f"Created {result['assetId']}",
             f"{result['triangles']} triangles",
@@ -492,9 +621,210 @@ def call_tool(engine: Engine, tools: List[Dict[str, Any]], name: str,
         return {"content": [text_block("\n".join(lines))]}
 
     # -- static tools -------------------------------------------------------
+    if name == "glgen_character_begin":
+        job_id = uuid.uuid4().hex
+        target = int(arguments.get("targetTriangles", 15000))
+        # A stable id is what lets every edit replace the mesh in place while
+        # scene entities and a review turntable continue to reference it.
+        slug = sanitize(arguments["name"].strip().lower().replace(" ", "_")) or "character"
+        recipe = {
+            "id": f"character/{slug}_{job_id[:8]}", "generator": "character.v1",
+            "seed": int(arguments.get("seed", 0)),
+            "params": {"operations": []},
+            # These procedural sets are embedded into MeshData by AssetLibrary,
+            # so character reviews exercise albedo/roughness/AO data instead
+            # of a flat-colour placeholder even before an agent customizes it.
+            "material": {
+                "Skin": {"generator": "tex.leaf", "params": {"resolution": 128, "color": [0.72, 0.48, 0.34], "cutout": False}},
+                "Jacket": {"generator": "tex.wood", "params": {"resolution": 128, "color": [0.08, 0.14, 0.28], "grain": 0.15}},
+                "Shirt": {"generator": "tex.wood", "params": {"resolution": 128, "color": [0.85, 0.85, 0.82], "grain": 0.10}},
+                "Trousers": {"generator": "tex.wood", "params": {"resolution": 128, "color": [0.12, 0.12, 0.16], "grain": 0.20}},
+                "Belt": {"generator": "tex.metal", "params": {"resolution": 64, "color": [0.25, 0.15, 0.08], "polish": 0.30}},
+                "Boots": {"generator": "tex.metal", "params": {"resolution": 64, "color": [0.32, 0.18, 0.09], "polish": 0.35}},
+                "Hair": {"generator": "tex.wood", "params": {"resolution": 64, "color": [0.05, 0.04, 0.04], "grain": 0.70}},
+            },
+            "provenance": {"brief": arguments["brief"], "author": "mcp-character-v1"},
+        }
+        result = engine.call("assets.define", recipe)
+        job = {"jobId": job_id, "brief": arguments["brief"], "name": arguments["name"],
+               "targetTriangles": target, "version": 0, "edits": 0, "reviews": 0,
+               "assetId": result["assetId"], "recipe": recipe,
+               "history": [{"version": 0, "action": "begin", "warnings": result.get("warnings", [])}]}
+        _save_character_job(job)
+        reply = _character_text(result, f"Started character job {job_id}")
+        reply["content"].append(text_block("Use glgen_character_review, then apply targeted semantic edits with expectedVersion 0."))
+        return reply
+
+    if name == "glgen_character_status":
+        job = _load_character_job(arguments["jobId"])
+        info = engine.call("assets.info", {"assetId": job["assetId"]})
+        return {"content": [text_block(json.dumps({**job, "metrics": info}, indent=2))]}
+
+    if name == "glgen_character_edit":
+        job = _load_character_job(arguments["jobId"])
+        if int(arguments["expectedVersion"]) != int(job["version"]):
+            return {"content": [text_block(f"stale character revision: expected {arguments['expectedVersion']}, current is {job['version']}")], "isError": True}
+        if job["edits"] >= 8:
+            return {"content": [text_block("character job exhausted its eight-edit budget; review or start a new job")], "isError": True}
+        operation = arguments["operation"]
+        if not isinstance(operation, dict) or not isinstance(operation.get("op"), str):
+            return {"content": [text_block("character operation needs a string 'op'")], "isError": True}
+        allowed = {"reshape", "add_garment", "add_feature", "add_hair", "add_accessory",
+                   "assign_material", "mirror", "smooth", "remesh", "simplify"}
+        if operation["op"] not in allowed:
+            return {"content": [text_block("unsupported character operation '" + operation["op"] + "'")], "isError": True}
+        recipe = copy.deepcopy(job["recipe"])
+        recipe["params"].setdefault("operations", []).append(operation)
+        result = engine.call("assets.define", recipe)
+        job["recipe"] = recipe
+        job["assetId"] = result["assetId"]
+        job["edits"] += 1
+        job["version"] += 1
+        job["history"].append({"version": job["version"], "action": operation, "warnings": result.get("warnings", [])})
+        _save_character_job(job)
+        return _character_text(result, f"Character revision {job['version']}")
+
+    if name == "glgen_character_review":
+        job = _load_character_job(arguments["jobId"])
+        if job["reviews"] >= 3:
+            return {"content": [text_block("character job exhausted its three-review budget")], "isError": True}
+        review_dir = _character_job_path(job["jobId"])
+        base = os.path.join(review_dir, f"review_{job['version']:03d}")
+        result = engine.call("render.turntable", {"assetId": job["assetId"], "path": base, "steps": 3})
+        job["reviews"] += 1
+        job["history"].append({"version": job["version"], "action": "review", "paths": result["paths"]})
+        _save_character_job(job)
+        content: List[Dict[str, Any]] = [text_block(f"Character review {job['reviews']}/3, revision {job['version']}:")]
+        for path in result["paths"]:
+            block = image_block(path)
+            if block: content.append(block)
+        return {"content": content}
+
+    if name == "glgen_character_finalize":
+        job = _load_character_job(arguments["jobId"])
+        info = engine.call("assets.info", {"assetId": job["assetId"]})
+        if info["triangles"] > job["targetTriangles"]:
+            return {"content": [text_block(f"cannot finalize: {info['triangles']} triangles exceeds target {job['targetTriangles']}")], "isError": True}
+        if info["submeshes"] < 2:
+            return {"content": [text_block("cannot finalize: character is missing required material regions")], "isError": True}
+        directory = _character_job_path(job["jobId"])
+        recipe_path = os.path.join(directory, "character_recipe.json")
+        glb_path = os.path.join(directory, "character.glb")
+        with open(recipe_path, "w", encoding="utf-8") as handle:
+            json.dump(job["recipe"], handle, indent=2)
+            handle.write("\n")
+        engine.call("assets.exportGlb", {"assetId": job["assetId"], "path": glb_path})
+        job["finalized"] = {"recipe": recipe_path, "glb": glb_path, "metrics": info}
+        job["history"].append({"version": job["version"], "action": "finalize"})
+        _save_character_job(job)
+        return {"content": [text_block(json.dumps(job["finalized"], indent=2))]}
+
     if name == "glgen_info":
         info = engine.call("engine.info")
         return {"content": [text_block(json.dumps(info, indent=2))]}
+
+    if name == "glgen_modify_asset" or name == "glgen_apply_material":
+        asset_id = arguments["assetId"]
+        previous = SESSION_RECIPES.get(asset_id)
+        if previous is None:
+            return {"content": [text_block(
+                "This asset was not created in this MCP session, so its recipe "
+                "is unavailable for a safe edit. Create it again with a stable id "
+                "or use glgen_eval_lua.")], "isError": True}
+        recipe = copy.deepcopy(previous)
+        if name == "glgen_modify_asset":
+            if "params" in arguments:
+                recipe["params"].update(arguments["params"])
+            if "seed" in arguments:
+                recipe["seed"] = arguments["seed"]
+        if "material" in arguments:
+            recipe["material"].update(arguments["material"])
+        result = engine.call("assets.define", recipe)
+        # AssetLibrary's id is stable, but retain the returned spelling rather
+        # than assuming a generator will never change its asset-id convention.
+        SESSION_RECIPES.pop(asset_id, None)
+        SESSION_RECIPES[result["assetId"]] = recipe
+        text = f"Updated {result['assetId']}: {result['triangles']} triangles"
+        if result.get("warnings"):
+            text += "\nWarnings:\n" + "\n".join("  - " + w for w in result["warnings"])
+        return {"content": [text_block(text)]}
+
+    if name == "glgen_create_assembly":
+        base = arguments.get("pos", [0.0, 0.0, 0.0])
+        placed = []
+        for index, part in enumerate(arguments["parts"]):
+            local = part.get("pos", [0.0, 0.0, 0.0])
+            if len(local) != 3:
+                return {"content": [text_block(f"assembly part {index} has invalid pos")], "isError": True}
+            spawn = {"assetId": part["assetId"],
+                     "pos": [base[i] + local[i] for i in range(3)],
+                     "rot": part.get("rot", [0.0, 0.0, 0.0]),
+                     "scale": part.get("scale", 1.0), "onGround": False,
+                     "name": f"{arguments['name']}/{part.get('name', index)}"}
+            placed.append(engine.call("scene.spawn", spawn))
+        return {"content": [text_block(json.dumps({"assembly": arguments["name"], "parts": placed}, indent=2))]}
+
+    if name == "glgen_validate_asset":
+        info = engine.call("assets.info", {"assetId": arguments["assetId"]})
+        mn, mx = info["boundsMin"], info["boundsMax"]
+        extent = [round(mx[i] - mn[i], 4) for i in range(3)]
+        notes: List[str] = []
+        if info["triangles"] > 10000:
+            notes.append("high unique-mesh triangle count; create an LOD before scattering")
+        if min(extent) < 0.002:
+            notes.append("very thin axis; check silhouette and ray-traced shadows")
+        if not notes:
+            notes.append("bounds and mesh metrics are within normal authoring ranges")
+        return {"content": [text_block(json.dumps({**info, "extent": extent,
+                                                      "guidance": notes}, indent=2))]}
+
+    if name == "glgen_render_compare":
+        os.makedirs(CAPTURE_DIR, exist_ok=True)
+        views = int(arguments.get("views", 2))
+        content: List[Dict[str, Any]] = []
+        for label, asset_id in (("Before", arguments["beforeAssetId"]),
+                                ("After", arguments["afterAssetId"])):
+            info = engine.call("assets.info", {"assetId": asset_id})
+            content.append(text_block(f"{label}: {asset_id}\n" + json.dumps(info, indent=2)))
+            base = os.path.join(CAPTURE_DIR, f"compare_{label.lower()}_{sanitize(asset_id.split('/')[-1])}")
+            result = engine.call("render.turntable", {"assetId": asset_id, "path": base, "steps": views})
+            for path in result["paths"]:
+                block = image_block(path)
+                if block:
+                    content.append(block)
+        return {"content": content}
+
+    if name == "glgen_create_lod_set":
+        source_id = arguments["assetId"]
+        source = SESSION_RECIPES.get(source_id)
+        if source is None or "detail" not in source.get("params", {}):
+            return {"content": [text_block(
+                "LOD creation currently requires a session-created recipe with a "
+                "numeric 'detail' parameter (such as sculpt.v1 or rock.v1).")], "isError": True}
+        count = int(arguments.get("levels", 2))
+        original = int(source["params"]["detail"])
+        rows = []
+        for level in range(1, count + 1):
+            recipe = copy.deepcopy(source)
+            recipe["id"] = f"{source['id']}/lod{level}"
+            recipe["params"]["detail"] = max(0, original - level)
+            result = engine.call("assets.define", recipe)
+            SESSION_RECIPES[result["assetId"]] = recipe
+            rows.append({"level": level, "assetId": result["assetId"],
+                         "detail": recipe["params"]["detail"],
+                         "triangles": result["triangles"], "warnings": result.get("warnings", [])})
+        return {"content": [text_block(json.dumps({"source": source_id, "lods": rows}, indent=2))]}
+
+    if name == "glgen_import_reference":
+        recipe = {"id": arguments["id"], "generator": "import.gltf", "seed": 0,
+                  "params": {"path": arguments["path"],
+                             "maxTriangles": arguments.get("maxTriangles", 8000),
+                             "normalizeSize": arguments.get("normalizeSize", 1.0)}}
+        result = engine.call("assets.define", recipe)
+        SESSION_RECIPES[result["assetId"]] = recipe
+        return {"content": [text_block(f"Imported {result['assetId']}: {result['triangles']} triangles" +
+                                         ("\nWarnings:\n" + "\n".join("  - " + w for w in result["warnings"])
+                                          if result.get("warnings") else ""))]}
 
     if name == "glgen_render_asset":
         os.makedirs(CAPTURE_DIR, exist_ok=True)

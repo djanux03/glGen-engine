@@ -115,7 +115,5 @@ void VkSpaceshipControlSystem::update(VkAppState &state, float dt) {
       rb.pendingLinearVelocity = ship.velocity;
       rb.setLinearVelocity = true;
     }
-
-    break;
   }
 }

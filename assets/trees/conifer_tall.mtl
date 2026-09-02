@@ -1,0 +1,8 @@
+# baked by glgen-bake
+newmtl Tree
+Kd 1.000000 1.000000 1.000000
+d 1.000000
+illum 2
+map_Kd tree_basecolor.jpg
+norm tree_normal.jpg
+map_Pr tree_rm.jpg

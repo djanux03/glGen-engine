@@ -69,4 +69,36 @@ layout(set = FRAME_DATA_SET, binding = 0) uniform FrameData {
     vec4 styleCloudBase;
     vec4 terrainPaintLit[5];   // rgb color, mottle scale
     vec4 terrainPaintShade[5]; // rgb color, overlay strength
+    vec4 pointLightPositionRadius[4]; // xyz=position w=radius
+    vec4 pointLightColorIntensity[4]; // rgb=color w=intensity
+    vec4 pointLightParams;            // x=count
+    // Fog redesign (fog.glsl). fogParams/fogDayColor/fogNightColor above keep
+    // their slots and their meanings, with two exceptions documented in
+    // fog.glsl: fogParams.z (maxOpacity) is now a transmittance FLOOR rather
+    // than a blend ceiling, and the two colors -- uploaded every frame and
+    // read by nothing until now -- tint the ground layer.
+    vec4 fogParams2; // x=aerialStrength y=sunInscatterStrength z=noiseStrength w=noiseScale
+    vec4 fogParams3; // x=groundAnisotropy y=noiseWindSpeed z=skyFogStrength w=unused
+    // Cloud deck geometry + density (sky.frag). styleCloud0 above still holds
+    // coverage/softness/wind; these are the dials the old palette-lerp cloud
+    // had no use for and the lit one does.
+    vec4 styleCloud1; // x=deckHeight(m) y=featureScale(m) z=opticalDensity w=sunOcclusion
+    // Water (water.frag). The surface is an analytic plane at waterParams0.x,
+    // not geometry -- see VulkanRenderer::Params for why.
+    vec4 waterParams0;  // x=level y=clarity z=roughness w=reflectionStrength
+    vec4 waterParams1;  // x=waveAmplitude y=waveScale z=waveSpeed w=ssrSteps
+    vec4 waterParams2;  // xy=waveDirection z=ssrThickness w=foamDepth
+    vec4 waterParams3;  // x=foamStrength
+    vec4 waterShallowColor;
+    vec4 waterDeepColor;
+    // Volumetric cloudscape (clouds.frag). styleCloud0/1 above are SHARED
+    // with the analytic deck sky.frag still draws into the environment
+    // cubemap -- coverage, softness, wind, layer bottom and sun occlusion
+    // mean the same thing to both, so one set of dials drives both. These
+    // five are the volumetric marcher's own.
+    vec4 styleCloud2; // x=layerThickness(m) y=shapeScale(m) z=detailScale(m) w=weatherScale(m)
+    vec4 styleCloud3; // x=densityMultiplier y=lightAbsorption z=ambientStrength w=curlStrength
+    vec4 styleCloud4; // x=phaseG y=silverIntensity z=silverSpread w=powderStrength
+    vec4 styleCloud5; // x=maxMarchDist(m) y=maxSteps z=lightTaps w=cloudTypeBias
+    vec4 styleCloud6; // x=detailStrength (y/z/w reserved)
 } uFrame;

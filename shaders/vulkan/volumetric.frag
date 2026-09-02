@@ -22,6 +22,8 @@ layout(location = 0) out vec4 outScatter;
 layout(set = 0, binding = 0) uniform sampler2D uDepth;
 
 #include "frameData.glsl"
+#include "skyModel.glsl"
+#include "fog.glsl"
 
 layout(set = 2, binding = 0) uniform accelerationStructureEXT uTLAS;
 
@@ -124,18 +126,21 @@ void main() {
     float mu = dot(rayDir, L);
     float phase = phaseHG(mu, g);
 
-    // Medium density: derived from the surface shaders' distance-fog dial
-    // (so foggier weather = thicker shafts) but scaled well DOWN -- that
-    // dial is a tuned falloff-curve constant, not a physical scattering
-    // coefficient; using it raw made a 90 m march optically thick (~0.6)
-    // and painted the entire sun-ward sky white. densityScale is an
-    // independent editor knob on top of that (volumetricParams2.x) so ray
-    // visibility isn't tied 1:1 to how foggy the rest of the scene looks.
-    // Same ground-hugging height falloff as the surface fog, scaled by its
-    // own independent multiplier (volumetricParams2.y).
-    float baseDensity = uFrame.fogParams.x * 0.25 * uFrame.volumetricParams2.x;
-    float heightFalloff = uFrame.fogParams.w * uFrame.volumetricParams2.y;
-    float heightRef = uFrame.miscParams.y;
+    // Medium: the SAME ground fog layer the surfaces are shaded with, sampled
+    // through fog.glsl rather than reimplemented here. The two used to carry
+    // separate copies of the falloff curve, so a shaft could hang in air the
+    // surface shaders considered clear (and vice versa) whenever one of the
+    // copies was tuned and the other wasn't.
+    //
+    // The 0.25 scale stays: the surface dial is a tuned extinction constant,
+    // not a physical scattering coefficient, and used raw it made a 90 m
+    // march optically thick (~0.6) and painted the whole sun-ward sky white.
+    // densityScale (volumetricParams2.x) remains an independent knob on top,
+    // so ray visibility is not tied 1:1 to how foggy the scene looks;
+    // heightFalloffScale (volumetricParams2.y) still lets shafts hug the
+    // ground more or less than the surface fog does.
+    float densityScale = 0.25 * uFrame.volumetricParams2.x;
+    float falloffScale = uFrame.volumetricParams2.y;
 
     // Organic shaft movement (editor "God Ray Turbulence"/"Wind Speed"):
     // a coarse, slowly-drifting noise field perturbs density per march
@@ -158,9 +163,12 @@ void main() {
     float transmittance = 1.0;
     for (int i = 0; i < steps; ++i) {
         vec3 P = camPos + rayDir * t;
-        float density = baseDensity;
-        if (heightFalloff > 0.0)
-            density *= exp(-max(P.y - heightRef, 0.0) * heightFalloff);
+        // Shared medium (fog.glsl). The ground layer's XZ patchiness is
+        // deliberately NOT sampled per step -- it is a two-octave noise and
+        // this loop already runs one 3D octave of its own turbulence up to 32
+        // times per half-res pixel; the two would mostly cancel visually while
+        // costing three times the noise.
+        float density = fogGroundDensityScaled(P.y, falloffScale) * densityScale;
         if (turbStrength > 0.0005) {
             float n = volNoise3D(P * 0.045 + windOffset);
             density *= max(1.0 + (n - 0.5) * 2.0 * turbStrength, 0.0);

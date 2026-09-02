@@ -49,12 +49,28 @@ MeshData buildTerrainChunkMesh(const std::vector<float> &heights,
           (static_cast<float>(j) / denom - 0.5f) * chunkWorldSize;
       const float h = heightAt(static_cast<int>(i), static_cast<int>(j));
 
-      const float hL = heightAt(static_cast<int>(i) - 1, static_cast<int>(j));
-      const float hR = heightAt(static_cast<int>(i) + 1, static_cast<int>(j));
-      const float hD = heightAt(static_cast<int>(i), static_cast<int>(j) - 1);
-      const float hU = heightAt(static_cast<int>(i), static_cast<int>(j) + 1);
+      const int il = static_cast<int>(i) - 1;
+      const int ir = static_cast<int>(i) + 1;
+      const int jd = static_cast<int>(j) - 1;
+      const int ju = static_cast<int>(j) + 1;
+      // Clamp-aware stencil width: at chunk boundaries heightAt clamps
+      // out-of-bounds indices, halving the horizontal span the finite
+      // difference actually covers.  Hardcoding 2*spacing would flatten
+      // the normal at every edge vertex, creating visible lighting seams.
+      const int clampedL = std::max(il, 0);
+      const int clampedR = std::min(ir, static_cast<int>(samplesPerEdge) - 1);
+      const int clampedD = std::max(jd, 0);
+      const int clampedU = std::min(ju, static_cast<int>(samplesPerEdge) - 1);
+      const float hL = heightAt(il, static_cast<int>(j));
+      const float hR = heightAt(ir, static_cast<int>(j));
+      const float hD = heightAt(static_cast<int>(i), jd);
+      const float hU = heightAt(static_cast<int>(i), ju);
+      const float dxSpan = static_cast<float>(clampedR - clampedL) * spacing;
+      const float dzSpan = static_cast<float>(clampedU - clampedD) * spacing;
+      // Use the actual span covered by the stencil rather than 2*spacing.
+      // dxSpan/dzSpan are spacing (not 2*spacing) at boundaries.
       const glm::vec3 normal = glm::normalize(
-          glm::vec3(-(hR - hL), 2.0f * spacing, -(hU - hD)));
+          glm::vec3(-(hR - hL) / std::max(dxSpan, 1e-6f), 1.0f, -(hU - hD) / std::max(dzSpan, 1e-6f)));
 
       // Slope (0 flat .. 1 vertical) from the same normal, and curvature
       // (discrete Laplacian: neighbor average minus center, positive =

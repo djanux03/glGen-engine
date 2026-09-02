@@ -176,15 +176,15 @@ ScatterManifest defaultScatterManifest() {
   ScatterManifest m;
   m.version = kScatterManifestVersion;
 
-  // tree.obj is authored with its trunk along local X (bounding box:
-  // X-extent ~11.2, Y-extent ~5.7, Z-extent ~5.5) instead of Y-up --
-  // without this, every placed tree lies on its side. Post-fix the mesh is
-  // ~11.2 units tall, so the scale/heightScale ranges below read directly as
-  // "x11.2 meters".
-  const glm::vec3 kTreeUpFix(0.0f, 0.0f, 90.0f);
+  // The tree meshes are baked by Tools/glgen-bake from assets/custom_trees/,
+  // normalized to 11 m tall and authored Y-up, so the scale ranges below read
+  // directly as "x11 metres" and no corrective rotation is needed. (The old
+  // tree.obj needed one: its trunk ran along local X, and without the fix
+  // every placed tree lay on its side.)
+  const glm::vec3 kTreeUpFix(0.0f, 0.0f, 0.0f);
 
   // --- Mature conifers: the forest's silhouette ---
-  // Grown by UNIFORM scale (1.25-2.05 -> roughly 14-23m tall, 7-12m wide),
+  // Grown by UNIFORM scale (0.9-1.5 -> roughly 10-16m tall),
   // NOT by vertical stretch. tree.obj's authored height/width ratio is 1.98;
   // an earlier revision reached the same heights via heightScale and pushed
   // that ratio to 2.7-3.8, which reads as a distorted asset rather than as a
@@ -193,7 +193,7 @@ ScatterManifest defaultScatterManifest() {
   // minSpacing keeps trunks from interpenetrating at these canopy widths.
   ScatterLayer pine;
   pine.name = "pine_canopy";
-  pine.meshPath = "assets/terraingeneratorassets/tree.obj";
+  pine.meshPath = "assets/trees/conifer_tall.obj";
   pine.type = ScatterLayerType::Tree;
   pine.density = 0.05f;
   pine.biomeMeadow = 0.06f;  // rare lone trees
@@ -203,8 +203,8 @@ ScatterManifest defaultScatterManifest() {
   pine.clustering.standRadius = 25.0f;
   pine.clustering.clearingChance = 0.25f;
   pine.minSpacing = 6.0f;
-  pine.scaleMin = 1.25f;
-  pine.scaleMax = 2.05f;
+  pine.scaleMin = 0.9f;
+  pine.scaleMax = 1.5f;
   // Just enough spread to break up a uniform canopy line; small enough that
   // no individual tree reads as stretched.
   pine.heightScaleMin = 0.94f;
@@ -234,7 +234,7 @@ ScatterManifest defaultScatterManifest() {
   // shoulder-high scrub should not stop the player.
   ScatterLayer sapling;
   sapling.name = "pine_young";
-  sapling.meshPath = "assets/terraingeneratorassets/tree.obj";
+  sapling.meshPath = "assets/trees/conifer_small.obj";
   sapling.type = ScatterLayerType::Tree;
   sapling.density = 0.07f;
   sapling.biomeMeadow = 0.10f;
@@ -339,7 +339,8 @@ ScatterManifest defaultScatterManifest() {
   grass.patchScale = 1.0f;
   grass.patchThreshold = 0.34f;
   grass.groundOcclusion = 0.62f;
-  grass.meshUpAxisFixDeg = kTreeUpFix;
+  const glm::vec3 kGrassUpFix(0.0f, 0.0f, -90.0f);
+  grass.meshUpAxisFixDeg = kGrassUpFix;
   m.layers.push_back(grass);
 
   // Taller, sparser, yellower tufts scattered over the short cover, with an
@@ -378,7 +379,7 @@ ScatterManifest defaultScatterManifest() {
   tuft.groundOcclusion = 0.55f;
   // Must match grass_meadow's -- both layers share grass.obj, and the
   // corrective rotation is a property of the file (see loadScatterMeshData).
-  tuft.meshUpAxisFixDeg = kTreeUpFix;
+  tuft.meshUpAxisFixDeg = kGrassUpFix;
   m.layers.push_back(tuft);
 
   return m;

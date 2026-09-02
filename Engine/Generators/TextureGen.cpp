@@ -18,6 +18,10 @@ struct Texel {
   float alpha = 1.0f;
   float roughness = 0.8f;
   float ao = 1.0f;
+  // Unitless surface height used only to derive a tangent-space normal map.
+  // Keeping it beside the other sampled properties guarantees every output
+  // map comes from the same deterministic procedural evaluation.
+  float height = 0.5f;
 };
 
 // A texture generator: a schema plus a per-pixel sampler over (u,v) in [0,1).
@@ -68,7 +72,10 @@ SchemaBuilder baseSchema(glm::vec3 defaultColor) {
       .number("contrast", 1.0f, 0.0f, 3.0f,
               "How strongly the pattern varies from the base colour.")
       .number("scale", 1.0f, 0.05f, 16.0f,
-              "Pattern frequency multiplier. Higher is finer/busier.");
+              "Pattern frequency multiplier. Higher is finer/busier.")
+      .number("normalStrength", 1.0f, 0.0f, 3.0f,
+              "Strength of the generated surface-relief normal map. Zero "
+              "keeps the surface geometrically smooth.");
   return s;
 }
 
@@ -101,6 +108,7 @@ std::vector<TexGen> makeGenerators() {
       const float k = (h - 0.4f) * p.num("contrast", 1.0f);
       t.albedo = glm::clamp(base * (1.0f + k * 0.9f), glm::vec3(0.0f), glm::vec3(1.0f));
       t.roughness = saturate(0.75f + h * 0.25f);
+      t.height = h;
       // Fissures are self-shadowed; this is the only occlusion cue a flat
       // card or untessellated trunk gets.
       t.ao = saturate(0.55f + h * 0.65f);
@@ -122,18 +130,23 @@ std::vector<TexGen> makeGenerators() {
       const float s = p.num("scale", 1.0f);
       const float mottle = fbm(n, u, v, 6.0f * s, 6.0f * s, 4) * 0.5f + 0.5f;
       const float crackN = ridged(n, u, v, 14.0f * s, 14.0f * s, 2);
-      const float crack = saturate((crackN - 0.55f) * 4.0f);
+      // Ridged noise is bright over a surprisingly wide area.  The previous
+      // low threshold turned most of the texture into outlined cells; only
+      // retain the narrow ridge peaks so this reads as occasional fissures.
+      const float crack = glm::smoothstep(0.80f, 0.94f, crackN);
       const float speck = fbm(n, u, v, 60.0f * s, 60.0f * s, 1) * 0.5f + 0.5f;
 
       Texel t;
       const glm::vec3 base = p.color("color", glm::vec3(0.42f, 0.40f, 0.38f));
       const float c = p.num("contrast", 1.0f);
-      glm::vec3 a = base * (0.8f + mottle * 0.4f * c);
-      a *= 1.0f - crack * p.num("crackDepth", 0.5f) * 0.7f;
-      a += glm::vec3(speck - 0.5f) * p.num("speckle", 0.25f) * 0.15f;
+      glm::vec3 a = base * (0.88f + (mottle - 0.5f) * 0.32f * c);
+      a *= 1.0f - crack * p.num("crackDepth", 0.5f) * 0.48f;
+      a += glm::vec3(speck - 0.5f) * p.num("speckle", 0.25f) * 0.10f;
       t.albedo = glm::clamp(a, glm::vec3(0.0f), glm::vec3(1.0f));
       t.roughness = saturate(0.7f + mottle * 0.3f);
-      t.ao = saturate(1.0f - crack * 0.5f);
+      t.ao = saturate(1.0f - crack * 0.34f);
+      t.height = saturate(0.40f + mottle * 0.34f - crack * 0.28f +
+                          (speck - 0.5f) * 0.05f);
       return t;
     };
     gens.push_back(std::move(g));
@@ -184,6 +197,7 @@ std::vector<TexGen> makeGenerators() {
 
       t.albedo = glm::clamp(base, glm::vec3(0.0f), glm::vec3(1.0f));
       t.roughness = 0.65f;
+      t.height = saturate(0.38f + vein * 0.48f + (blotch - 0.5f) * 0.10f);
       // Slightly darker toward the base, where leaves shade each other. Kept
       // shallow on purpose: foliage cards are usually seen against the sky or
       // facing away from the sun, and a strong gradient on top of that reads
@@ -221,6 +235,7 @@ std::vector<TexGen> makeGenerators() {
       t.albedo = glm::clamp(base, glm::vec3(0.0f), glm::vec3(1.0f));
       t.roughness = 0.8f;
       t.ao = saturate(0.45f + v * 0.55f); // dark at the root, lit at the tip
+      t.height = saturate(0.45f + (streak - 0.5f) * 0.22f - dx * 0.08f);
       return t;
     };
     gens.push_back(std::move(g));
@@ -252,6 +267,8 @@ std::vector<TexGen> makeGenerators() {
                             glm::vec3(1.0f));
       t.roughness = saturate(0.6f + rings * 0.25f);
       t.ao = 1.0f;
+      t.height = saturate(0.35f + rings * 0.38f +
+                          (grain - 0.5f) * p.num("grain", 0.4f) * 0.22f);
       return t;
     };
     gens.push_back(std::move(g));
@@ -284,6 +301,7 @@ std::vector<TexGen> makeGenerators() {
       t.roughness = saturate(glm::mix(0.55f, 0.12f, polish) + brush * 0.1f +
                              rustMask * 0.6f);
       t.ao = 1.0f;
+      t.height = saturate(0.48f + (brush - 0.5f) * 0.10f + rustMask * 0.22f);
       return t;
     };
     gens.push_back(std::move(g));
@@ -351,6 +369,8 @@ bool generateTextureSet(const std::string &generator, nlohmann::json params,
   MeshImage albedo = makeImage(keyPrefix + "/albedo", size, 4);
   MeshImage rough = makeImage(keyPrefix + "/roughness", size, 1);
   MeshImage ao = makeImage(keyPrefix + "/ao", size, 1);
+  MeshImage normal = makeImage(keyPrefix + "/normal", size, 4);
+  std::vector<float> heights(static_cast<size_t>(size) * size, 0.5f);
   bool anyAO = false;
 
   for (int y = 0; y < size; ++y) {
@@ -369,8 +389,35 @@ bool generateTextureSet(const std::string &generator, nlohmann::json params,
       albedo.pixels[i * 4 + 3] = toByte(t.alpha);
       rough.pixels[i] = toByte(t.roughness);
       ao.pixels[i] = toByte(t.ao);
+      heights[i] = t.height;
       if (t.ao < 0.999f)
         anyAO = true;
+    }
+  }
+
+  // Central differences over the deterministic height field. U wraps because
+  // the procedural samplers are cylindrical/seamless there; V clamps so a
+  // leaf tip or board edge never reads from the opposite side of the image.
+  const float normalStrength = p.num("normalStrength", 1.0f);
+  if (normalStrength > 0.0001f) {
+    auto heightAt = [&](int x, int y) {
+      x = (x % size + size) % size;
+      y = std::clamp(y, 0, size - 1);
+      return heights[static_cast<size_t>(y) * size + x];
+    };
+    const float slope = normalStrength * static_cast<float>(size) * 0.035f;
+    for (int y = 0; y < size; ++y) {
+      for (int x = 0; x < size; ++x) {
+        const float dx = (heightAt(x + 1, y) - heightAt(x - 1, y)) * 0.5f;
+        const float dy = (heightAt(x, y + 1) - heightAt(x, y - 1)) * 0.5f;
+        const glm::vec3 n =
+            glm::normalize(glm::vec3(-dx * slope, -dy * slope, 1.0f));
+        const size_t i = static_cast<size_t>(y) * size + x;
+        normal.pixels[i * 4 + 0] = toByte(n.x * 0.5f + 0.5f);
+        normal.pixels[i * 4 + 1] = toByte(n.y * 0.5f + 0.5f);
+        normal.pixels[i * 4 + 2] = toByte(n.z * 0.5f + 0.5f);
+        normal.pixels[i * 4 + 3] = 255;
+      }
     }
   }
 
@@ -379,6 +426,10 @@ bool generateTextureSet(const std::string &generator, nlohmann::json params,
   out.roughnessKey = rough.key;
   out.images.push_back(std::move(albedo));
   out.images.push_back(std::move(rough));
+  if (normalStrength > 0.0001f) {
+    out.normalKey = normal.key;
+    out.images.push_back(std::move(normal));
+  }
   if (anyAO) {
     out.aoKey = ao.key;
     out.images.push_back(std::move(ao));
@@ -394,6 +445,8 @@ void applyTextureSet(MeshData &mesh, MaterialAsset &material, TextureSet &&set) 
   // Single-channel payloads: the renderer expands them to RGB, so any channel
   // selector reads the same value. Left at the default R.
   material.roughnessChannel = 0;
+  if (!set.normalKey.empty())
+    material.texNormalPath = set.normalKey;
   if (!set.aoKey.empty()) {
     material.texAOPath = set.aoKey;
     material.aoChannel = 0;

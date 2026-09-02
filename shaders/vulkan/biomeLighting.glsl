@@ -99,17 +99,27 @@ vec3 biomeFogTint(vec3 baseFogColor, float wForest, float wMountain) {
 }
 
 // Extra aerial-perspective term for mountains: distant, lower ridgelines
-// fade into blue haze faster than the base fog curve alone would give
-// (plan: "stronger blue aerial-perspective term scaling with distance AND
-// the ridge's altitude drop"). Returns an amount in [0,1] to ADD to fogAmt
-// (not a replacement) -- `viewZ` is view-space distance, `altitudeDrop` is
-// how far below the camera this pixel sits (clamped positive; distant
-// LOWER ridges read hazier, distant peaks at camera height don't).
-float mountainAerialPerspective(float viewZ, float altitudeDrop, float wMountain) {
+// fade into blue haze faster than the base curve alone would give (plan:
+// "stronger blue aerial-perspective term scaling with distance AND the
+// ridge's altitude drop"). `altitudeDrop` is how far below the camera this
+// pixel sits (clamped positive; distant LOWER ridges read hazier, distant
+// peaks at camera height don't).
+//
+// Returns a MULTIPLIER on the aerial layer's density (>= 1), not an opacity
+// to add. Under the old fog it added straight onto the blend factor, which
+// meant it pushed pixels toward the flat fog color rather than through more
+// air -- so "blue aerial perspective" came out whatever color the fog tint
+// happened to be. fog.glsl's aerial extinction is spectral, so thickening it
+// produces the blue shift on its own, from the Rayleigh coefficients, and
+// this term no longer has to fake the color it is named after.
+//
+// The distance term is gone with it: optical depth already scales with path
+// length by construction. Doubling down on distance here is what made far
+// ridges saturate to a flat wall.
+float mountainAerialPerspective(float altitudeDrop, float wMountain) {
     float strength = uFrame.biomeDirectParams.w * wMountain * uFrame.biomeMountainExtra.x;
     if (strength <= 0.001)
-        return 0.0;
-    float distTerm = clamp(viewZ * 0.0012, 0.0, 1.0);
+        return 1.0;
     float altTerm = clamp(altitudeDrop * 0.01, 0.0, 1.0);
-    return distTerm * (0.4 + 0.6 * altTerm) * strength;
+    return 1.0 + (0.6 + 1.9 * altTerm) * strength;
 }

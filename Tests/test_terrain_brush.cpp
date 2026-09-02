@@ -59,6 +59,12 @@ TEST_CASE("HeightOffsetGrid — takeTouchedChunks reports and clears touched coo
 TEST_CASE("computeHeight — reflects a non-null edits grid's offset") {
   TerrainSettings settings;
   settings.heightScale = 0.0f; // flat procedural terrain -> isolates the edit
+  // worldBounded shapes land toward landBaseHeight and sea toward
+  // -oceanFloorDepth in ABSOLUTE metres relative to sea level, so it is
+  // deliberately independent of heightScale: zeroing the relief amplitude
+  // no longer implies a flat world once the world has a shape. This test
+  // wants a synthetic flat field as a FIXTURE, so it opts out.
+  settings.worldBounded = false;
   TerrainNoiseSet noiseSet(7);
 
   HeightOffsetGrid edits;
@@ -77,6 +83,12 @@ TEST_CASE("computeHeight — reflects a non-null edits grid's offset") {
 TEST_CASE("TerrainQuery::raycast — hits a flat plane at the expected distance") {
   TerrainSettings settings;
   settings.heightScale = 0.0f; // flat terrain at height 0
+  // worldBounded shapes land toward landBaseHeight and sea toward
+  // -oceanFloorDepth in ABSOLUTE metres relative to sea level, so it is
+  // deliberately independent of heightScale: zeroing the relief amplitude
+  // no longer implies a flat world once the world has a shape. This test
+  // wants a synthetic flat field as a FIXTURE, so it opts out.
+  settings.worldBounded = false;
   TerrainNoiseSet noiseSet(11);
   TerrainQuery query(settings, noiseSet);
 

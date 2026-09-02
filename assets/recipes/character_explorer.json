@@ -1,0 +1,66 @@
+{
+  "id": "character/explorer",
+  "generator": "character.v1",
+  "seed": 42,
+  "params": {
+    "height": 1.82,
+    "build": 1.0,
+    "outfit": "explorer",
+    "hair": true,
+    "boots": true,
+    "detail": 1,
+    "skinColor": [0.72, 0.48, 0.34],
+    "garmentColor": [0.08, 0.14, 0.28],
+    "hairColor": [0.05, 0.04, 0.04],
+    "jacketColor": [0.08, 0.14, 0.28],
+    "shirtColor": [0.85, 0.85, 0.82],
+    "trousersColor": [0.12, 0.12, 0.16],
+    "bootsColor": [0.32, 0.18, 0.09],
+    "beltColor": [0.25, 0.15, 0.08],
+    "operations": [
+      { "op": "add_garment", "type": "explorer" },
+      { "op": "add_accessory", "type": "utility_belt", "color": [0.25, 0.15, 0.08] },
+      { "op": "add_hair", "style": "short", "color": [0.05, 0.04, 0.04] },
+      { "op": "assign_material", "region": "skin", "color": [0.72, 0.48, 0.34] },
+      { "op": "assign_material", "region": "jacket", "color": [0.08, 0.14, 0.28] },
+      { "op": "assign_material", "region": "shirt", "color": [0.85, 0.85, 0.82] },
+      { "op": "assign_material", "region": "trousers", "color": [0.12, 0.12, 0.16] },
+      { "op": "assign_material", "region": "boots", "color": [0.32, 0.18, 0.09] }
+    ]
+  },
+  "material": {
+    "Skin": {
+      "generator": "tex.leaf",
+      "params": { "resolution": 128, "color": [0.72, 0.48, 0.34], "cutout": false }
+    },
+    "Jacket": {
+      "generator": "tex.wood",
+      "params": { "resolution": 128, "color": [0.08, 0.14, 0.28], "grain": 0.15 }
+    },
+    "Shirt": {
+      "generator": "tex.wood",
+      "params": { "resolution": 128, "color": [0.85, 0.85, 0.82], "grain": 0.10 }
+    },
+    "Trousers": {
+      "generator": "tex.wood",
+      "params": { "resolution": 128, "color": [0.12, 0.12, 0.16], "grain": 0.20 }
+    },
+    "Belt": {
+      "generator": "tex.metal",
+      "params": { "resolution": 64, "color": [0.25, 0.15, 0.08], "polish": 0.30 }
+    },
+    "Boots": {
+      "generator": "tex.metal",
+      "params": { "resolution": 64, "color": [0.32, 0.18, 0.09], "polish": 0.35 }
+    },
+    "Hair": {
+      "generator": "tex.wood",
+      "params": { "resolution": 64, "color": [0.05, 0.04, 0.04], "grain": 0.70 }
+    }
+  },
+  "provenance": {
+    "prompt": "stylized PBR 3D human character: adult male explorer with short dark hair, warm medium skin tone, fitted navy jacket over light shirt, dark trousers, brown leather boots, utility belt",
+    "author": "mcp-character-v1",
+    "date": "2026-08-09"
+  }
+}

@@ -22,7 +22,7 @@ TEST_CASE("SparseSet — get returns correct data") {
   SparseSet<Position> pool;
   pool.emplace(10, Position{4.0f, 5.0f, 6.0f});
 
-  auto& p = pool.get(10);
+  auto &p = pool.get(10);
   CHECK(p.x == doctest::Approx(4.0f));
   CHECK(p.y == doctest::Approx(5.0f));
   CHECK(p.z == doctest::Approx(6.0f));
@@ -43,7 +43,7 @@ TEST_CASE("SparseSet — swap-and-pop preserves other entities") {
   pool.emplace(2, Position{2.0f, 0.0f, 0.0f});
   pool.emplace(3, Position{3.0f, 0.0f, 0.0f});
 
-  pool.remove(1);  // should swap entity 3 into slot 0
+  pool.remove(1); // should swap entity 3 into slot 0
 
   CHECK_FALSE(pool.has(1));
   CHECK(pool.has(2));
@@ -59,7 +59,7 @@ TEST_CASE("SparseSet — entities() returns packed list") {
   pool.emplace(20, Position{});
   pool.emplace(30, Position{});
 
-  auto& ents = pool.entities();
+  auto &ents = pool.entities();
   REQUIRE(ents.size() == 3);
   // Order is insertion order
   CHECK(ents[0] == 10);
@@ -73,32 +73,32 @@ TEST_CASE("SparseSet — components() gives dense array") {
   pool.emplace(1, 200);
   pool.emplace(2, 300);
 
-  auto& comps = pool.components();
+  auto &comps = pool.components();
   REQUIRE(comps.size() == 3);
   CHECK(comps[0] == 100);
   CHECK(comps[1] == 200);
   CHECK(comps[2] == 300);
 }
 
-TEST_CASE("SparseSet — emplace duplicate returns existing") {
+TEST_CASE("SparseSet — emplace duplicate updates component data") {
   SparseSet<int> pool;
-  auto& first = pool.emplace(5, 42);
-  auto& second = pool.emplace(5, 99);  // duplicate — should NOT overwrite
+  auto &first = pool.emplace(5, 42);
+  auto &second = pool.emplace(5, 99); // duplicate — updates existing value
 
   CHECK(&first == &second);
-  CHECK(pool.get(5) == 42);  // original value preserved
+  CHECK(pool.get(5) == 99); // updated value stored
 }
 
 TEST_CASE("SparseSet — remove nonexistent entity is a no-op") {
   SparseSet<int> pool;
   pool.emplace(1, 10);
 
-  pool.remove(999);  // does not exist — must not crash
+  pool.remove(999); // does not exist — must not crash
   CHECK(pool.has(1));
   CHECK(pool.entities().size() == 1);
 }
 
-TEST_CASE("SparseSet — large entity IDs") {
+TEST_CASE("SparseSet — large entity IDs with paged allocation") {
   SparseSet<int> pool;
   EntityId big = 100'000;
   pool.emplace(big, 777);
@@ -155,5 +155,5 @@ TEST_CASE("SparseSet — independent pools for different types") {
 
   posPool.remove(1);
   CHECK_FALSE(posPool.has(1));
-  CHECK(velPool.has(1));  // velocity unaffected
+  CHECK(velPool.has(1)); // velocity unaffected
 }

@@ -39,6 +39,10 @@ public:
   // Step the simulation forward and sync transforms to the ECS
   void update(Registry &registry, float dt);
 
+  // Global gravity controls
+  void setGravity(glm::vec3 gravity);
+  glm::vec3 getGravity() const;
+
   // ── Terrain chunk collision ──────────────────────────────────────
   // Registers a static HeightFieldShape body for a terrain chunk.
   // heightSamples: row-major (sampleCount x sampleCount) height floats

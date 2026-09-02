@@ -326,7 +326,8 @@ TEST_CASE("Recipe — parse round-trips and rejects malformed input") {
 TEST_CASE("Registry — built-ins are registered with schemas") {
   const auto names = GeneratorRegistry::instance().names();
   for (const char *expected :
-       {"tree.v1", "rock.v1", "grass.v1", "kitbash.v1", "import.gltf"}) {
+       {"tree.v1", "rock.v1", "grass.v1", "kitbash.v1", "sculpt.v1",
+        "sweep.v1", "revolve.v1", "panel.v1", "character.v1", "import.gltf"}) {
     CAPTURE(expected);
     CHECK(std::find(names.begin(), names.end(), expected) != names.end());
     const GeneratorInfo *info = GeneratorRegistry::instance().find(expected);
@@ -463,6 +464,115 @@ TEST_CASE("kitbash.v1 — empty part list is an error, bad shapes are warnings")
   CHECK(warned);
 }
 
+TEST_CASE("sculpt.v1 — stamps reshape a grounded, deterministic mesh") {
+  json params;
+  params["radius"] = 1.0;
+  params["detail"] = 2;
+  params["stamps"] = json::array({
+      {{"type", "inflate"}, {"centre", {0.0, 1.0, 0.0}},
+       {"radius", 0.55}, {"strength", 0.45}},
+      {{"type", "carve"}, {"centre", {0.0, 0.0, 1.0}},
+       {"radius", 0.35}, {"strength", 0.20}},
+      {{"type", "flatten"}, {"centre", {0.0, -1.0, 0.0}},
+       {"radius", 0.8}, {"strength", -0.15}},
+  });
+  GenResult a = GeneratorRegistry::instance().run("sculpt.v1", params, 42);
+  GenResult b = GeneratorRegistry::instance().run("sculpt.v1", params, 42);
+  REQUIRE(a.ok());
+  REQUIRE(b.ok());
+  CHECK(identical(*a.mesh, *b.mesh));
+  glm::vec3 mn, mx;
+  REQUIRE(a.mesh->getGlobalBounds(mn, mx));
+  CHECK(mn.y == doctest::Approx(0.0f).epsilon(0.001f));
+  CHECK(mx.y > 2.0f); // the upper inflate is visible in the bounds
+  CHECK(a.triangles <= 3000);
+}
+
+TEST_CASE("sculpt.v1 — malformed stamps warn without losing valid geometry") {
+  json params;
+  params["stamps"] = json::array({
+      {{"type", "inflate"}, {"centre", {0.0, 1.0}}, {"radius", 1.0}},
+      {{"type", "melt"}, {"centre", {0.0, 1.0, 0.0}}},
+  });
+  GenResult r = GeneratorRegistry::instance().run("sculpt.v1", params, 1);
+  REQUIRE(r.ok());
+  CHECK(r.warnings.size() >= 2);
+}
+
+TEST_CASE("sweep.v1 — follows a path and rejects an incomplete path") {
+  json params;
+  params["points"] = json::array({{0.0, 0.0, 0.0}, {0.0, 1.0, 0.0},
+                                   {0.6, 1.5, 0.0}});
+  params["startRadius"] = 0.16;
+  params["endRadius"] = 0.04;
+  GenResult r = GeneratorRegistry::instance().run("sweep.v1", params, 1);
+  REQUIRE(r.ok());
+  CHECK(r.triangles > 0);
+  GenResult invalid = GeneratorRegistry::instance().run(
+      "sweep.v1", json{{"points", json::array({{0.0, 0.0, 0.0}})}}, 1);
+  CHECK_FALSE(invalid.ok());
+}
+
+TEST_CASE("revolve.v1 and panel.v1 — make grounded authored forms") {
+  json profile = json::array({{0.0, 0.0}, {0.45, 0.0}, {0.38, 0.7},
+                              {0.18, 1.0}, {0.0, 1.05}});
+  GenResult lathed = GeneratorRegistry::instance().run(
+      "revolve.v1", json{{"profile", profile}, {"segments", 12}}, 1);
+  REQUIRE(lathed.ok());
+  glm::vec3 mn, mx;
+  REQUIRE(lathed.mesh->getGlobalBounds(mn, mx));
+  CHECK(mn.y == doctest::Approx(0.0f).epsilon(0.001f));
+
+  GenResult panel = GeneratorRegistry::instance().run(
+      "panel.v1", json{{"rows", 2}, {"columns", 3}, {"studs", true}}, 1);
+  REQUIRE(panel.ok());
+  CHECK(panel.triangles > 12);
+  CHECK(panel.triangles <= 2500);
+}
+
+TEST_CASE("character.v1 — deterministic grounded humanoid has material regions") {
+  json params;
+  params["outfit"] = "armor";
+  params["detail"] = 0;
+  params["operations"] = json::array({{{"op", "reshape"}, {"region", "torso"}, {"amount", 0.12}},
+                                        {{"op", "add_garment"}, {"type", "armor"}}});
+  GenResult a = GeneratorRegistry::instance().run("character.v1", params, 19);
+  GenResult b = GeneratorRegistry::instance().run("character.v1", params, 19);
+  REQUIRE(a.ok());
+  REQUIRE(b.ok());
+  CHECK(identical(*a.mesh, *b.mesh));
+  CHECK(a.mesh->submeshes.size() >= 2);
+  glm::vec3 mn, mx;
+  REQUIRE(a.mesh->getGlobalBounds(mn, mx));
+  CHECK(mn.y == doctest::Approx(0.0f).epsilon(0.002f));
+  CHECK(mx.y > 1.3f);
+  CHECK(a.triangles < 20000);
+}
+
+TEST_CASE("character.v1 — explorer outfit preset emits 7 material regions under 15k triangles") {
+  json params;
+  params["outfit"] = "explorer";
+  params["detail"] = 1;
+  params["operations"] = json::array({
+      {{"op", "add_garment"}, {"type", "explorer"}},
+      {{"op", "add_accessory"}, {"type", "utility_belt"}},
+      {{"op", "assign_material"}, {"region", "jacket"}, {"color", {0.08, 0.14, 0.28}}},
+      {{"op", "assign_material"}, {"region", "shirt"}, {"color", {0.85, 0.85, 0.82}}},
+      {{"op", "assign_material"}, {"region", "trousers"}, {"color", {0.12, 0.12, 0.16}}},
+      {{"op", "assign_material"}, {"region", "boots"}, {"color", {0.32, 0.18, 0.09}}},
+      {{"op", "assign_material"}, {"region", "belt"}, {"color", {0.25, 0.15, 0.08}}},
+      {{"op", "assign_material"}, {"region", "skin"}, {"color", {0.72, 0.48, 0.34}}}
+  });
+  GenResult r = GeneratorRegistry::instance().run("character.v1", params, 42);
+  REQUIRE(r.ok());
+  CHECK(r.mesh->submeshes.size() == 7);
+  glm::vec3 mn, mx;
+  REQUIRE(r.mesh->getGlobalBounds(mn, mx));
+  CHECK(mn.y == doctest::Approx(0.0f).epsilon(0.002f));
+  CHECK(r.triangles < 15000);
+}
+
+
 TEST_CASE("import.gltf — missing path and missing file fail cleanly") {
   GenResult noPath =
       GeneratorRegistry::instance().run("import.gltf", json::object(), 0);
@@ -489,6 +599,7 @@ TEST_CASE("TextureGen — produces embedded albedo and roughness payloads") {
   CHECK(set.valid());
   CHECK_FALSE(set.albedoKey.empty());
   CHECK_FALSE(set.roughnessKey.empty());
+  CHECK_FALSE(set.normalKey.empty());
   for (const auto &img : set.images) {
     CHECK(img.width == 64);
     CHECK(img.height == 64);
@@ -548,10 +659,12 @@ TEST_CASE("TextureGen — applying a set points the material at the payloads") {
 
   CHECK_FALSE(material.texDiffusePath.empty());
   CHECK_FALSE(material.texRoughnessPath.empty());
+  CHECK_FALSE(material.texNormalPath.empty());
   // The renderer resolves these by looking the key up in MeshData::images --
   // if the payload is missing it silently falls back to a file load.
   CHECK(mesh.findImage(material.texDiffusePath) != nullptr);
   CHECK(mesh.findImage(material.texRoughnessPath) != nullptr);
+  CHECK(mesh.findImage(material.texNormalPath) != nullptr);
 }
 
 // ── AssetLibrary ───────────────────────────────────────────────────────────

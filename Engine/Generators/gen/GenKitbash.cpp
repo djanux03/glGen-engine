@@ -65,6 +65,11 @@ void registerKitbashGenerator() {
                  "Default colour for parts that do not specify one.")
           .number("roughness", 0.8f, 0.0f, 1.0f, "Surface roughness.")
           .number("metallic", 0.0f, 0.0f, 1.0f, "Metalness.")
+          .color("emissive", glm::vec3(0.0f),
+                 "HDR emission colour. Use on a separate bulb asset so the "
+                 "lamp glows without making its pole emissive.")
+          .number("emissiveStrength", 0.0f, 0.0f, 100.0f,
+                  "Brightness of the emissive colour; values above one feed bloom.")
           .integer("roundSegments", 10, 3, 32,
                    "Default sides for cylinders and cones.")
           .number("jitter", 0.0f, 0.0f, 0.2f,
@@ -93,6 +98,8 @@ void registerKitbashGenerator() {
     mat.baseColor = glm::vec4(defaultColor, 1.0f);
     mat.roughness = p.num("roughness", 0.8f);
     mat.metallic = p.num("metallic", 0.0f);
+    mat.emissiveColor = p.color("emissive", glm::vec3(0.0f));
+    mat.emissiveStrength = p.num("emissiveStrength", 0.0f);
     out.beginSubmesh("Prop", mat);
 
     // One submesh per distinct colour: MaterialAsset is per-submesh, so a

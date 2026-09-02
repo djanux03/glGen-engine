@@ -21,7 +21,10 @@ public:
     auto it = mHandlers.find(std::type_index(typeid(Event)));
     if (it == mHandlers.end())
       return;
-    for (const auto &handler : it->second) {
+    // Copy so a handler that subscribe()s to the same event type during
+    // broadcast cannot reallocate the vector under us (use-after-free).
+    const auto snapshot = it->second;
+    for (const auto &handler : snapshot) {
       handler(&event);
     }
   }
