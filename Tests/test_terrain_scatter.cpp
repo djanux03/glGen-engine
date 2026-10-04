@@ -2,6 +2,8 @@
 #include "ScatterManifest.h"
 #include "TerrainNoise.h"
 #include "TerrainScatter.h"
+#include "TerrainWater.h"
+#include "WoodlandLayout.h"
 #include "TerrainSettings.h"
 #include "TerrainTypes.h"
 
@@ -12,6 +14,68 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+
+TEST_CASE("Grass ground contact follows coverage and never requires blade shadows") {
+  TerrainSettings settings;
+  settings.worldBounded = false;
+  settings.oceanEnabled = settings.lakesEnabled = false;
+  TerrainNoiseSet noise(1337);
+  ScatterLayer grass;
+  grass.type = ScatterLayerType::Grass;
+  grass.density = 2;
+  grass.groundOcclusion = .38f;
+  grass.patchScale = 0;
+  grass.scaleMin = grass.scaleMax = 1;
+  grass.castRayShadow = false;
+  ScatterManifest manifest;
+  manifest.layers.push_back(grass);
+  auto contact = [&](glm::vec3 pos = glm::vec3(12, 4, 20)) {
+    return grassGroundOcclusionAt(manifest, noise, settings, pos, {0,1,0}, {1,0,0}, .5f);
+  };
+  const float full = contact();
+  CHECK(full > .75f);
+  CHECK(full < 1.0f);
+  CHECK(contact() == full);
+  settings.grassDensityMultiplier = .25f;
+  CHECK(contact() < full * .6f);
+  settings.grassDensityMultiplier = 0;
+  CHECK(contact() == 0);
+  settings.grassDensityMultiplier = 1;
+  settings.spawnGrass = false;
+  CHECK(contact() == 0);
+  settings.spawnGrass = true;
+  settings.spawnVegetation = false;
+  CHECK(contact() == 0);
+  settings.spawnVegetation = true;
+  settings.grassOcclusionStrength = 0;
+  CHECK(contact() == 0);
+  settings.grassOcclusionStrength = 1;
+  manifest.layers[0].biomeMeadow = 0;
+  CHECK(contact() == 0);
+  manifest.layers[0].biomeMeadow = 1;
+  manifest.layers[0].moistureMin = .8f;
+  CHECK(contact() == 0);
+  manifest.layers[0].moistureMin = 0;
+  settings.oceanEnabled = true;
+  settings.autoSeaLevel = false;
+  settings.seaLevel = 10;
+  CHECK(contact({12,0,20}) == 0);
+}
+
+TEST_CASE("Grass patch contact is continuous at a chunk boundary") {
+  TerrainSettings settings;
+  settings.oceanEnabled = settings.lakesEnabled = false;
+  settings.worldBounded = false;
+  TerrainNoiseSet noise(1337);
+  auto manifest = defaultScatterManifest();
+  for (int z=0; z<64; ++z) {
+    const auto sample = [&](float x) {
+      return grassGroundOcclusionAt(manifest, noise, settings, {x,4,float(z)},
+                                     {0,1,0}, {1,0,0}, .5f);
+    };
+    CHECK(std::abs(sample(64-.001f)-sample(64+.001f)) < .001f);
+  }
+}
 
 TEST_CASE("scatterLayers — deterministic for the same seed and chunk") {
   TerrainSettings settings;
@@ -116,6 +180,39 @@ TEST_CASE("scatterLayers — Grass-typed layers now place instances (R5)") {
   // it is emphatically non-empty, so terrain-shape rejections can't make this
   // flaky.
   CHECK(out.size() > 500);
+}
+
+TEST_CASE("Grass sampling fills its budget without a one-tuft-per-cell grid") {
+  TerrainSettings settings;
+  settings.worldBounded = settings.oceanEnabled = settings.lakesEnabled = false;
+  settings.heightScale = 0;
+  TerrainNoiseSet noise(1337);
+  ScatterManifest manifest;
+  auto layer = testGrassLayer();
+  layer.patchScale = 0;
+  manifest.layers.push_back(layer);
+  std::vector<ScatterInstance> a,b;
+  const glm::vec2 origin(-16,0);
+  scatterLayers(manifest,noise,settings,origin,16,791u,0,a);
+  scatterLayers(manifest,noise,settings,origin,16,791u,0,b);
+  REQUIRE(a.size() == 256);
+  REQUIRE(a.size() == b.size());
+  std::map<std::pair<int,int>,int> cells;
+  for (size_t i=0; i<a.size(); ++i) {
+    CHECK(a[i].transform == b[i].transform);
+    const glm::vec3 p(a[i].transform[3]);
+    CHECK(p.x >= -16); CHECK(p.x < 0);
+    CHECK(p.z >= 0); CHECK(p.z < 16);
+    ++cells[{static_cast<int>(std::floor(p.x)),static_cast<int>(std::floor(p.z))}];
+    for (size_t j=0; j<i; ++j) {
+      const glm::vec3 q(a[j].transform[3]);
+      CHECK(glm::length(glm::vec2(p.x-q.x,p.z-q.z)) >= .4499f);
+    }
+  }
+  // The former jittered grid put exactly one accepted tuft in each metre
+  // cell. Random bounded spacing should have both empty and double cells.
+  CHECK(cells.size() < 230);
+  CHECK(std::any_of(cells.begin(),cells.end(),[](const auto &c){return c.second>1;}));
 }
 
 TEST_CASE("scatterLayers — spawnGrass=false disables only Grass layers") {
@@ -355,7 +452,7 @@ TEST_CASE("scatterLayers — rock outcrop clustering places satellites around so
 TEST_CASE("ScatterManifest — default manifest covers trees, rocks and grass") {
   const ScatterManifest manifest = defaultScatterManifest();
   CHECK(manifest.version == kScatterManifestVersion);
-  REQUIRE(manifest.layers.size() == 5);
+  REQUIRE(manifest.layers.size() == 8);
 
   CHECK(manifest.layers[0].name == "pine_canopy");
   CHECK(manifest.layers[0].type == ScatterLayerType::Tree);
@@ -387,10 +484,8 @@ TEST_CASE("ScatterManifest — default manifest covers trees, rocks and grass") 
     if (l.type == ScatterLayerType::Grass)
       CHECK(l.groundOcclusion > 0.2f);
 
-  // Every grass layer must opt out of ray-traced shadows and set a finite
-  // draw distance + a cull cell size. Missing any one of these is a
-  // performance cliff rather than a visual bug, so it would not be caught by
-  // looking at a capture.
+  // Stock grass uses broad terrain contact shading, not blade casting.
+  // Finite draw distances and small cells still bound raster work.
   size_t grassLayers = 0;
   for (const ScatterLayer &l : manifest.layers) {
     if (l.type != ScatterLayerType::Grass)
@@ -400,7 +495,8 @@ TEST_CASE("ScatterManifest — default manifest covers trees, rocks and grass") 
     CHECK(l.maxDrawDistance < 1.0e6f);
     CHECK(l.cullCellSize > 0.0f);
   }
-  CHECK(grassLayers == 2);
+  CHECK(grassLayers == 5);
+  CHECK_FALSE(TerrainSettings{}.grassCastShadows);
 
   // Every layer sharing one mesh file must agree on that file's up-axis
   // correction -- it describes the ASSET, and only the first one encountered
@@ -415,13 +511,20 @@ TEST_CASE("ScatterManifest — default manifest covers trees, rocks and grass") 
       CHECK(glm::length(it->second - l.meshUpAxisFixDeg) == doctest::Approx(0.0f));
   }
 
-  // grass.obj is authored up-along-X, so it needs a non-zero correction.
-  // Asserted explicitly because "no correction" is also the default, making
-  // a forgotten fix indistinguishable from a deliberate one.
+  // The correction belongs to the file: the legacy grass.obj is authored
+  // up-along-X and needs a non-zero one, while glTF is Y-up by spec and must
+  // have none (a stray fix lays every clump on its side). Asserted explicitly
+  // because "no correction" is also the default, making a forgotten fix
+  // indistinguishable from a deliberate one.
   for (const ScatterLayer &l : manifest.layers) {
     if (l.type != ScatterLayerType::Grass)
       continue;
-    CHECK(glm::length(l.meshUpAxisFixDeg) > 1.0f);
+    const bool gltf = l.meshPath.size() > 5 &&
+                      l.meshPath.compare(l.meshPath.size() - 5, 5, ".gltf") == 0;
+    if (gltf)
+      CHECK(glm::length(l.meshUpAxisFixDeg) == doctest::Approx(0.0f));
+    else
+      CHECK(glm::length(l.meshUpAxisFixDeg) > 1.0f);
   }
 }
 
@@ -503,4 +606,89 @@ TEST_CASE("ScatterManifest - v5 rim strength migrates to foliage SSS") {
 TEST_CASE("ScatterManifest — loading a missing file fails cleanly") {
   ScatterManifest out;
   CHECK_FALSE(loadScatterManifest("this/path/does/not/exist.json", out));
+}
+
+TEST_CASE("Rock clusters respect shoreline, service track and chunk ownership") {
+  TerrainSettings settings;
+  settings.authoredWoodland = true;
+  settings.worldBounded = false;
+  settings.worldRadius = 500;
+  settings.shoreScatterMargin = .6f;
+  TerrainNoiseSet noise(settings.seed);
+  ScatterLayer rock;
+  rock.name = "clustered_stone";
+  rock.type = ScatterLayerType::Rock;
+  rock.meshPath = "assets/terrain_dressing/granite_slab.gltf";
+  rock.density = .12f;
+  rock.minSpacing = .45f;
+  rock.slopeMax = .5f;
+  rock.avoidTracks = true;
+  rock.clustering.outcrops = true;
+  ScatterManifest manifest;
+  manifest.layers.push_back(rock);
+  ScatterManifest restored;
+  REQUIRE(scatterManifestFromJson(scatterManifestToJson(manifest), restored));
+  REQUIRE(restored.layers[0].avoidTracks);
+  size_t total = 0;
+  for (int z=-3; z<=0; ++z) for (int x=-2; x<=1; ++x) {
+    const glm::vec2 origin(x*settings.chunkWorldSize,z*settings.chunkWorldSize);
+    std::vector<ScatterInstance> instances, repeated;
+    const uint32_t seed = chunkSeedFor(settings.seed, ChunkCoord{x,z});
+    scatterLayers(restored, noise, settings, origin, settings.chunkWorldSize, seed, 0, instances);
+    scatterLayers(restored, noise, settings, origin, settings.chunkWorldSize, seed, 0, repeated);
+    REQUIRE(instances.size() == repeated.size());
+    WaterCellCache cache;
+    for (size_t i=0; i<instances.size(); ++i) {
+      const glm::vec3 p(instances[i].transform[3]);
+      CHECK(instances[i].transform == repeated[i].transform);
+      CHECK(p.x >= origin.x);
+      CHECK(p.z >= origin.y);
+      CHECK(p.x < origin.x+settings.chunkWorldSize);
+      CHECK(p.z < origin.y+settings.chunkWorldSize);
+      const glm::vec2 xz(p.x,p.z);
+      CHECK(woodland::sample(xz, settings.worldRadius).track <= .12f);
+      const float water = waterSurfaceAt(noise, settings, xz, nullptr, &cache);
+      if (water > kNoWater*.5f) CHECK(p.y >= water+settings.shoreScatterMargin);
+    }
+    total += instances.size();
+  }
+  CHECK(total > 50);
+}
+
+TEST_CASE("Woodland grass feathers into the verge while the road centre stays open") {
+  TerrainSettings settings;
+  settings.authoredWoodland = true;
+  settings.worldBounded = false;
+  settings.worldRadius = 900;
+  TerrainNoiseSet noise(settings.seed);
+  ScatterLayer grass;
+  grass.name = "verge_review";
+  grass.type = ScatterLayerType::Grass;
+  grass.density = 4;
+  grass.slopeMax = 1;
+  grass.biomeMeadow = grass.biomeForest = grass.biomeMountain = 1;
+  grass.patchScale = 0;
+  grass.sinkIntoGround = 0;
+  ScatterManifest manifest;
+  manifest.layers.push_back(grass);
+  std::vector<ScatterInstance> instances, repeated;
+  const glm::vec2 origin(-64,0);
+  scatterLayers(manifest,noise,settings,origin,64,17171,0,instances);
+  scatterLayers(manifest,noise,settings,origin,64,17171,0,repeated);
+  REQUIRE(instances.size() == repeated.size());
+  size_t shoulder = 0;
+  for (size_t i=0; i<instances.size(); ++i) {
+    CHECK(instances[i].transform == repeated[i].transform);
+    const glm::vec3 p(instances[i].transform[3]);
+    const float coverage = woodland::sample({p.x,p.z},settings.worldRadius).track;
+    CHECK(coverage < .88f);
+    if (coverage > .12f) ++shoulder;
+  }
+  // A binary .12 cut used to leave the entire blended shoulder devoid of
+  // blades. This checks actual deterministic placement, not just the mask.
+  CHECK(shoulder > 30);
+  for (int i=1; i<13; ++i) {
+    const glm::vec2 centre = glm::mix(woodland::serviceTrack[2],woodland::serviceTrack[3],i/13.f);
+    CHECK(woodland::sample(centre,settings.worldRadius).track == doctest::Approx(1));
+  }
 }

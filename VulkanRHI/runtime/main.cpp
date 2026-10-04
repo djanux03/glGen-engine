@@ -61,6 +61,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -170,6 +173,17 @@ float normalizeEntityScale(Registry &reg, AssetManager &assets, EntityId e,
 #endif
 
 int main() {
+  // Capture jobs still need a Vulkan surface, but must not steal focus from
+  // another app (show/maximize also activate windows on Windows). Keep the
+  // surface hidden for smoke runs; GLGEN_BACKGROUND=1 also covers agent jobs.
+  const char *backgroundEnv = std::getenv("GLGEN_BACKGROUND");
+  const bool background = backgroundEnv ? std::atoi(backgroundEnv) != 0 :
+      (std::getenv("GLGEN_SMOKE_FRAMES") || std::getenv("GLGEN_SMOKE_CAPTURE"));
+  // Hidden presentation need not wait for desktop refresh. Pace captures so
+  // verification does not run flat out while the user is playing a game.
+  float backgroundFps = 15.0f;
+  if (const char *fps = std::getenv("GLGEN_BACKGROUND_FPS"))
+    backgroundFps = std::clamp(static_cast<float>(std::atof(fps)), 1.0f, 120.0f);
   if (!glfwInit()) {
     std::fprintf(stderr, "[glGenVk] glfwInit failed\n");
     return 1;
@@ -181,15 +195,51 @@ int main() {
   }
 
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-  // Start maximized (windowed, not exclusive fullscreen) so the editor has
-  // room to breathe on launch; the user can still un-maximize normally.
-  glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
+  glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+  if (background) {
+    // Window borders can make Windows clamp a requested 1080-line hidden
+    // client area to 1061 lines. Benchmarks need the exact framebuffer size.
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+  }
+  int windowWidth=1280,windowHeight=720;
+  if(const char* size=std::getenv("GLGEN_WINDOW_SIZE")) {
+    int width=0,height=0;
+    if(std::sscanf(size,"%d,%d",&width,&height)==2 && width>=64 && height>=64 && width<=8192 && height<=8192) {windowWidth=width;windowHeight=height;}
+  }
   GLFWwindow *window =
-      glfwCreateWindow(1280, 720, "glGen (Vulkan)", nullptr, nullptr);
+      glfwCreateWindow(windowWidth, windowHeight, "glGen (Vulkan)", nullptr, nullptr);
   if (!window) {
     std::fprintf(stderr, "[glGenVk] glfwCreateWindow failed\n");
     glfwTerminate();
     return 1;
+  }
+
+  // Monitor selection: open on monitor 2 instead of monitor 1 by default when
+  // multiple monitors are connected; customizable via GLGEN_MONITOR (1-indexed).
+  int monitorCount = 0;
+  GLFWmonitor **monitors = glfwGetMonitors(&monitorCount);
+  int targetMonitor = -1;
+  if (const char *envMon = std::getenv("GLGEN_MONITOR")) {
+    int val = std::atoi(envMon);
+    if (val >= 1 && val <= monitorCount)
+      targetMonitor = val - 1;
+    else if (val == 0)
+      targetMonitor = 0;
+  } else if (monitorCount > 1) {
+    targetMonitor = 1; // monitor 2
+  }
+
+  if (targetMonitor >= 0 && targetMonitor < monitorCount) {
+    int mx = 0, my = 0, mw = 0, mh = 0;
+    glfwGetMonitorWorkarea(monitors[targetMonitor], &mx, &my, &mw, &mh);
+    glfwSetWindowPos(window, mx + (mw > 1280 ? (mw - 1280) / 2 : 50),
+                     my + (mh > 720 ? (mh - 720) / 2 : 50));
+  }
+  if (!background) {
+    glfwShowWindow(window);
+    glfwMaximizeWindow(window);
   }
 
   uint32_t glfwExtCount = 0;
@@ -354,6 +404,7 @@ int main() {
   // --- subsystem startup: Window -> Physics -> Script/Audio -> Editor -----
   auto audioOwned = std::make_unique<VkAudioSubsystem>(state);
   VkAudioSubsystem *audio = audioOwned.get();
+  state.audioSubsystem = audio;
   auto terrainOwned = std::make_unique<VkTerrainSubsystem>(state);
   VkTerrainSubsystem *terrain = terrainOwned.get();
   state.terrainSubsystem = terrain;
@@ -435,6 +486,8 @@ int main() {
         reg.get<TransformComponent>(state.gameplay.playerId).position =
             p.camPos;
     }
+    if (const char *t=std::getenv("GLGEN_FIXED_TIME"))
+      p.fixedTimeSeconds=static_cast<float>(std::atof(t));
     if (std::getenv("GLGEN_SMOKE_DUSK"))
       p.lightPitchDeg = 8.0f;
     // Pulls the camera back and raises fog density so the terrain/sky
@@ -744,8 +797,15 @@ int main() {
   float editPoseYaw = renderer.params().camYawDeg;
   float editPosePitch = renderer.params().camPitchDeg;
 
+  double nextBackgroundFrame = glfwGetTime();
   while (!glfwWindowShouldClose(window)) {
     glfwPollEvents();
+    if (background) {
+      const double wait = nextBackgroundFrame - glfwGetTime();
+      if (wait > 0.0)
+        std::this_thread::sleep_for(std::chrono::duration<double>(wait));
+      nextBackgroundFrame = glfwGetTime() + 1.0 / backgroundFps;
+    }
 
     static double prevTime = glfwGetTime();
     const double nowTime = glfwGetTime();
@@ -760,6 +820,9 @@ int main() {
       p.camPos.y =
           terrain->heightAt(glm::vec2(p.camPos.x, p.camPos.z)) + 12.0f;
     }
+    // The physics clamp must not slow the rifle's cadence and reload clock in
+    // a paced background window or during a long rendering frame.
+    const float rifleDt = std::min(dt, .25f);
     dt = std::min(dt, 1.0f / 30.0f); // clamp for physics stability
 
     ImGuiIO &io = ImGui::GetIO();
@@ -784,8 +847,9 @@ int main() {
     const bool inPlayMode = editor.isInPlayMode();
     static bool wasInPlayMode = false;
     if (inPlayMode != wasInPlayMode) {
-      glfwSetInputMode(window, GLFW_CURSOR,
-                       inPlayMode ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+      if (!background)
+        glfwSetInputMode(window, GLFW_CURSOR,
+                         inPlayMode ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
       if (inPlayMode) {
         // Entering play: remember the editor camera pose.
         editPosePos = p.camPos;
@@ -829,9 +893,9 @@ int main() {
       static bool panning = false;
       static double lastX = 0.0, lastY = 0.0;
       const bool rmb =
-          glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+          !background && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
       const bool mmb =
-          glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
+          !background && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
       const bool wasCaptured = looking || panning;
       // A drag that starts over a UI panel belongs to the UI; once a
       // viewport drag is in flight it keeps the capture until release.
@@ -886,6 +950,7 @@ int main() {
     // completely inert to keyboard/mouse gameplay input.
     VkCoreAppLayer::update(state, dt, simulate,
                            /*playerActive=*/inPlayMode && simulate);
+    state.rifleSystem.update(state,rifleDt,inPlayMode,simulate);
     if (inPlayMode && state.gameplay.playerId != 0 &&
         reg.has<TransformComponent>(state.gameplay.playerId)) {
       // Player camera <- character transform. The player's yaw convention
@@ -893,6 +958,13 @@ int main() {
       // both systems' forward-vector formulas: their default rotations
       // already point the same way, at rotation.y=0 / camYawDeg=180).
       const auto &tr = reg.get<TransformComponent>(state.gameplay.playerId);
+      for (EntityId bodyId : reg.viewAll<NameComponent, TransformComponent>()) {
+        if (reg.get<NameComponent>(bodyId).name == "Player Body") {
+          auto &body = reg.get<TransformComponent>(bodyId);
+          body.position = tr.position + glm::vec3(0.0f, -0.55f, 0.0f);
+          body.rotation.y = tr.rotation.y;
+        }
+      }
       p.camPos = tr.position;
       p.camYawDeg = tr.rotation.y + 180.0f;
       p.camPitchDeg = tr.rotation.x;
@@ -945,6 +1017,7 @@ int main() {
     // path. state.terrain.streamUpdate(...) itself runs earlier, from
     // VkCoreAppLayer::update().
     terrain->addFrameInstances();
+    state.rifleSystem.addFrameInstances(state);
 
     // Per-frame input deltas are drained by consumers above; clear whatever
     // is left so stale button-changed flags don't linger across frames.
@@ -1002,13 +1075,18 @@ int main() {
       // a model: the panels cover roughly a third of the frame, and a review
       // shot should show the scene, not the tool. ImGui::Render() still runs
       // so the (now empty) draw data stays valid for the overlay callback.
-      if (!agentBridge.wantsCleanFrame())
+      if (!agentBridge.wantsCleanFrame()) {
         editor.draw(ectx, view, proj);
+        if(inPlayMode)state.rifleSystem.drawHud(state);
+      }
 
-      // Session restore asked for the camera to be put on the restored
-      // ground; only EditorCamera can make that stick.
-      if (glm::vec3 seedPos; editor.takeCameraSeedRequest(seedPos)) {
+      // Session restore or terrain creation asked for the camera to be put on the
+      // restored ground; only EditorCamera can make that stick.
+      if (glm::vec3 seedPos; editor.takeCameraSeedRequest(seedPos, p.camYawDeg, p.camPitchDeg)) {
         p.camPos = seedPos;
+        editPosePos = seedPos;
+        editPoseYaw = p.camYawDeg;
+        editPosePitch = p.camPitchDeg;
         editorCam.seed(p.camPos, p.camYawDeg, p.camPitchDeg);
       }
 
@@ -1069,6 +1147,30 @@ int main() {
                    "(contentVersion now %u)\n",
                    frame, ok ? "ok" : "FAILED",
                    state.assets.assetContentVersion(kGenAssetId));
+    }
+    // Headless frame timing: wall-clock per frame over the run's final
+    // third, after streaming has settled. The editor HUD's fps is a smoothed
+    // display value and is not comparable between two captures.
+    if (maxFrames > 0) {
+      static std::vector<double> frameMs;
+      static auto last = std::chrono::steady_clock::now();
+      const auto now = std::chrono::steady_clock::now();
+      frameMs.push_back(
+          std::chrono::duration<double, std::milli>(now - last).count());
+      last = now;
+      if (frame + 1 >= maxFrames && frameMs.size() > 6) {
+        std::vector<double> tail(frameMs.end() - frameMs.size() / 3,
+                                 frameMs.end());
+        double sum = 0.0;
+        for (double v : tail)
+          sum += v;
+        std::sort(tail.begin(), tail.end());
+        std::fprintf(stderr,
+                     "[glGenVk] frame time over last %zu frames: mean %.2f ms, "
+                     "p95 %.2f ms\n",
+                     tail.size(), sum / tail.size(),
+                     tail[std::min(tail.size() - 1, tail.size() * 95 / 100)]);
+      }
     }
     if (maxFrames > 0 && ++frame >= maxFrames) {
       std::fprintf(stderr, "[glGenVk] Rendered %d frames; exiting.\n", frame);

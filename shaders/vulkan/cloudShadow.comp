@@ -1,0 +1,35 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#define FRAME_DATA_SET 2
+#include "frameData.glsl"
+#define CLOUD_NOISE_SET 1
+#define CLOUD_COMPUTE_DENSITY
+#include "cloudDensity.glsl"
+#include "skyLutModel.glsl"
+layout(local_size_x=8,local_size_y=8) in;
+layout(set=0,binding=25,r32f) uniform writeonly image2D outShadow;
+layout(push_constant) uniform Push {vec4 field;} pc;
+void main() {
+ ivec2 cell=ivec2(gl_GlobalInvocationID.xy);if(any(greaterThanEqual(cell,ivec2(512))))return;
+ vec3 light=normalize(-uFrame.lightDir.xyz);
+ float transmission=1;
+ if(light.y>.02) {
+  vec2 xz=pc.field.xy+(vec2(cell)+.5)/512*pc.field.z;
+  vec3 origin=skyPlanet(0);
+  float entry=max(skySphere(origin,light,SKY_BOTTOM+clLayerBottom()*.001).y,0)*1000;
+  float exit=max(skySphere(origin,light,SKY_BOTTOM+clLayerTop()*.001).y,0)*1000;
+  float step=(exit-entry)/32,tau=0;
+  for(int i=0;i<32;++i) {
+   vec3 p=vec3(xz.x,0,xz.y)+light*(entry+(float(i)+.5)*step);
+   float height=(length(origin+light*(entry+(float(i)+.5)*step)*.001)-SKY_BOTTOM)*1000;
+   float h=(height-clLayerBottom())/clLayerThickness();vec3 weather=clSampleWeather(p);
+   float profile=clProfileDensity(p,h,weather,1);
+   // The projected map resolves the macro shadow, at a 16 m texel footprint.
+   // Detail uses the same erosion as the visible volume at an appropriate LOD.
+   float density=clDetailDensity(p,h,profile,weather.z,10000,1);
+   tau+=density*max(uFrame.styleCloud3.x,0)*step;
+  }
+  transmission=exp(-tau);
+ }
+ imageStore(outShadow,cell,vec4(transmission));
+}

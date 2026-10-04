@@ -18,7 +18,7 @@
 
 #include "VkAppState.h"
 #include "ECS/Components.h"
-#include "ECS/Systems/PhysicsSystem.h"
+#include "Keyboard.h"
 #include "Logger.h"
 
 #include <algorithm>
@@ -34,6 +34,7 @@
 
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
+#include "AudioVoice.h"
 
 namespace {
 struct EngineHolder {
@@ -42,28 +43,15 @@ struct EngineHolder {
   bool footstepsGroupReady = false;
 };
 
-bool isVorbisPath(const std::string &path) {
-  const auto dot = path.find_last_of('.');
-  if (dot == std::string::npos)
-    return false;
-  std::string ext = path.substr(dot + 1);
-  std::transform(ext.begin(), ext.end(), ext.begin(),
-                 [](unsigned char c) { return (char)std::tolower(c); });
-  return ext == "ogg" || ext == "oga";
-}
 } // namespace
 
-struct VkAudioSubsystem::ManagedSound {
-  ma_sound sound{};
-  ma_decoder decoder{};
-  bool loaded = false;
-  bool decoderLoaded = false;
+struct VkAudioSubsystem::ManagedSound : audio::Voice {
   std::string path;
+  std::string requestedPath;
   bool looped = false;
   bool warnedMissing = false;
   bool warnedLoad = false;
   bool startedLogged = false;
-  std::vector<ma_uint8> encodedData;
 };
 
 VkAudioSubsystem::VkAudioSubsystem(VkAppState &state) : mState(state) {
@@ -75,9 +63,22 @@ VkAudioSubsystem::~VkAudioSubsystem() {
   delete mAmbient;
 }
 
-bool VkAudioSubsystem::initialize() { return initEngine_(); }
+bool VkAudioSubsystem::initialize() {
+  if(std::getenv("GLGEN_MUTE"))mSettings.mute=true;
+  const bool ok=initEngine_();
+  applyVolumes_();
+  if(mAudioAvailable) {syncFootsteps_();syncAmbient_();applyVolumes_();}
+  return ok;
+}
 
 void VkAudioSubsystem::shutdown() {
+  for(auto &[path,voices]:mOneShots)
+    for(auto *voice:voices){unloadSound_(*voice);delete voice;}
+  mOneShots.clear();mOneShotCursor.clear();
+  for(auto &[path,voices]:mFootstepVoices)
+    for(auto *voice:voices) delete voice;
+  mFootstepVoices.clear();mFootstepPoolReady=false;
+  mConfiguredFootstepPath.clear();
   if (mAmbient)
     unloadSound_(*mAmbient);
 
@@ -97,9 +98,8 @@ void VkAudioSubsystem::shutdown() {
   mBackendAvailable = false;
   mStatus = "Audio offline";
   mHasLastPlayerPos = false;
-  mLastHorizontalSpeed = 0.0f;
-  mFootstepTimer = 0.0f;
-  mFootstepWasMoving = false;
+  mLastPlayerId = 0;
+  mFootstepClock.reset();
   mFootstepClipPaths.clear();
   mFootstepClipIndex = 0;
 }
@@ -130,7 +130,7 @@ void VkAudioSubsystem::playTestFootstep() {
     mStatus = "Audio backend unavailable";
     return;
   }
-  refreshFootstepClipPool_();
+  syncFootsteps_();
   const std::string resolvedPath = nextFootstepClip_();
   if (resolvedPath.empty() || !std::filesystem::exists(resolvedPath)) {
     LOG_ERROR("Audio", "Footstep test clip not found");
@@ -140,6 +140,25 @@ void VkAudioSubsystem::playTestFootstep() {
   playFootstepOneShot_(resolvedPath);
   mStatus = "Test playback triggered";
   LOG_INFO("Audio", "Manual footstep test triggered: " + resolvedPath);
+}
+
+// Decode and create bounded voices once. Opening/decoding a WAV on every
+// automatic shot would hitch the main thread precisely when aiming matters.
+void VkAudioSubsystem::warmOneShot(const std::string &path,int voices) {
+  if(!mAudioAvailable||mOneShots.count(path))return;
+  auto &pool=mOneShots[path];
+  for(int i=0;i<std::clamp(voices,1,16);++i) {
+    auto *voice=new ManagedSound();
+    if(loadSound_(*voice,path,false,false))pool.push_back(voice);
+    else {delete voice;break;}
+  }
+}
+void VkAudioSubsystem::playOneShot(const std::string &path,float volume) {
+  if(!mAudioAvailable)return;
+  warmOneShot(path);
+  auto &pool=mOneShots[path];if(pool.empty())return;
+  auto *voice=pool[mOneShotCursor[path]++ % pool.size()];
+  voice->restart(std::clamp(volume,0.f,1.f));
 }
 
 bool VkAudioSubsystem::initEngine_() {
@@ -180,6 +199,15 @@ bool VkAudioSubsystem::loadSound_(ManagedSound &slot, const std::string &path,
   if (!mAudioAvailable || !mEngineStorage)
     return false;
 
+  // Keep a failed path cached as well. Retrying a missing or corrupt ambient
+  // file every frame flooded the log and repeatedly stalled the main thread.
+  if(slot.requestedPath==path && slot.looped==looped) {
+    if(slot.loaded) return true;
+    if(slot.warnedMissing || slot.warnedLoad) return false;
+  }
+  unloadSound_(slot);
+  slot.requestedPath=path;slot.looped=looped;
+
   const std::string resolvedPath = resolvePath_(path);
   if (resolvedPath.empty() || !std::filesystem::exists(resolvedPath)) {
     if (!slot.warnedMissing) {
@@ -187,82 +215,21 @@ bool VkAudioSubsystem::loadSound_(ManagedSound &slot, const std::string &path,
       slot.warnedMissing = true;
       mStatus = "Missing audio file";
     }
-    unloadSound_(slot);
     slot.warnedMissing = true;
     return false;
   }
   slot.warnedMissing = false;
 
-  if (slot.loaded && slot.path == resolvedPath && slot.looped == looped)
-    return true;
-
-  unloadSound_(slot);
-
-  std::ifstream file(resolvedPath, std::ios::binary | std::ios::ate);
-  if (!file.is_open()) {
-    LOG_ERROR("Audio", "Failed to open sound file: " + resolvedPath);
-    mStatus = "Failed to open audio";
-    return false;
-  }
-
-  const std::streamsize size = file.tellg();
-  if (size <= 0) {
-    LOG_ERROR("Audio", "Audio file is empty: " + resolvedPath);
-    mStatus = "Audio file is empty";
-    return false;
-  }
-
-  slot.encodedData.resize(static_cast<size_t>(size));
-  file.seekg(0, std::ios::beg);
-  if (!file.read(reinterpret_cast<char *>(slot.encodedData.data()), size)) {
-    LOG_ERROR("Audio", "Failed to read sound file: " + resolvedPath);
-    slot.encodedData.clear();
-    mStatus = "Failed to read audio";
-    return false;
-  }
-
-  ma_decoder_config decoderConfig = ma_decoder_config_init(ma_format_f32, 0, 0);
-  if (isVorbisPath(resolvedPath)) {
-    decoderConfig.encodingFormat = ma_encoding_format_vorbis;
-  }
-  ma_result res = ma_decoder_init_memory(slot.encodedData.data(),
-                                         slot.encodedData.size(),
-                                         &decoderConfig, &slot.decoder);
-  if (res != MA_SUCCESS) {
-    LOG_ERROR("Audio", "Failed to decode sound: " + resolvedPath +
-                           " (" + std::to_string((int) res) + ")");
-    slot.encodedData.clear();
-    mStatus =
-        "Failed to decode audio (" + std::to_string((int) res) + "): " +
-        resolvedPath;
-    return false;
-  }
-  slot.decoderLoaded = true;
-
   auto *holder = static_cast<EngineHolder *>(mEngineStorage);
-  ma_uint32 flags = MA_SOUND_FLAG_NO_SPATIALIZATION;
-  if (streamed)
-    flags |= MA_SOUND_FLAG_STREAM;
-
-  res = ma_sound_init_from_data_source(&holder->engine, &slot.decoder, flags,
-                                       nullptr, &slot.sound);
-  if (res != MA_SUCCESS) {
-    if (!slot.warnedLoad) {
-      LOG_ERROR("Audio", "Failed to create sound: " + resolvedPath +
-                             " (" + std::to_string((int)res) + ")");
-      slot.warnedLoad = true;
-      mStatus =
-          "Failed to create audio (" + std::to_string((int)res) + "): " +
-          resolvedPath;
-    }
-    ma_decoder_uninit(&slot.decoder);
-    slot.decoderLoaded = false;
-    slot.encodedData.clear();
+  const ma_result res=slot.load(holder->engine,resolvedPath,looped,streamed);
+  if(res!=MA_SUCCESS) {
+    if(!slot.warnedLoad) LOG_ERROR("Audio","Failed to load sound: "+resolvedPath+
+                                  " ("+std::to_string(int(res))+")");
+    slot.warnedLoad=true;
+    mStatus="Failed to load audio: "+resolvedPath;
     return false;
   }
   slot.warnedLoad = false;
-
-  ma_sound_set_looping(&slot.sound, looped ? MA_TRUE : MA_FALSE);
   slot.loaded = true;
   slot.path = resolvedPath;
   slot.looped = looped;
@@ -273,14 +240,9 @@ bool VkAudioSubsystem::loadSound_(ManagedSound &slot, const std::string &path,
 }
 
 void VkAudioSubsystem::unloadSound_(ManagedSound &slot) {
-  if (slot.loaded) {
-    ma_sound_stop(&slot.sound);
-    ma_sound_uninit(&slot.sound);
-  }
-  if (slot.decoderLoaded) {
-    ma_decoder_uninit(&slot.decoder);
-  }
-  slot = ManagedSound{};
+  slot.unload();
+  slot.path.clear();slot.requestedPath.clear();slot.looped=false;slot.startedLogged=false;
+  slot.warnedMissing=false;slot.warnedLoad=false;
 }
 
 std::string VkAudioSubsystem::resolvePath_(const std::string &path) const {
@@ -308,12 +270,15 @@ std::string VkAudioSubsystem::resolvePath_(const std::string &path) const {
     rel = rel.substr(assetPrefixCaps.size());
   }
 
+  const fs::path runtimeAsset=fs::path(mState.assetDir)/rel;
+  if(fs::exists(runtimeAsset)) return runtimeAsset.lexically_normal().string();
+
   const std::string assetResolved = mState.projectConfig.assetPath(rel);
   if (fs::exists(assetResolved))
     return fs::path(assetResolved).lexically_normal().string();
 
   static const fs::path kSourceRoot =
-      fs::path(__FILE__).parent_path().parent_path().parent_path();
+      fs::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
   const fs::path sourceResolved = kSourceRoot / path;
   if (fs::exists(sourceResolved))
     return sourceResolved.lexically_normal().string();
@@ -347,145 +312,76 @@ void VkAudioSubsystem::syncAmbient_() {
 }
 
 void VkAudioSubsystem::syncFootsteps_() {
-  const auto &audio = mSettings;
-  if (!audio.enabled || !audio.footstepsEnabled) {
-    mFootstepTimer = 0.0f;
-    mFootstepWasMoving = false;
-    return;
-  }
-  if (mFootstepClipPaths.empty())
+  if(!mFootstepPoolReady || mConfiguredFootstepPath!=mSettings.footstepPath)
     refreshFootstepClipPool_();
 }
 
 void VkAudioSubsystem::updateFootstepMotion_(float dt) {
-  if (!mAudioAvailable || !mEngineStorage) {
-    mFootstepTimer = 0.0f;
-    mFootstepWasMoving = false;
-    return;
+  auto &reg=mState.scene.registry();
+  const uint32_t player=mState.gameplay.playerId;
+  if(!player || !reg.has<TransformComponent>(player)) {
+    mHasLastPlayerPos=false;mLastPlayerId=0;mFootstepClock.reset();return;
   }
-
-  bool moveIntent = false;
-  if (mState.playState == VkAppState::PlayState::Playing && mState.window != nullptr) {
-    moveIntent =
-        glfwGetKey(mState.window, GLFW_KEY_W) == GLFW_PRESS ||
-        glfwGetKey(mState.window, GLFW_KEY_A) == GLFW_PRESS ||
-        glfwGetKey(mState.window, GLFW_KEY_S) == GLFW_PRESS ||
-        glfwGetKey(mState.window, GLFW_KEY_D) == GLFW_PRESS;
+  const auto pos=reg.get<TransformComponent>(player).position;
+  if(!mHasLastPlayerPos || player!=mLastPlayerId) {
+    mLastPlayerPos=pos;mHasLastPlayerPos=true;mLastPlayerId=player;
+    mFootstepClock.reset();return;
   }
-
-  const bool shouldStep = moveIntent;
-  if (!shouldStep) {
-    mFootstepTimer = 0.0f;
-    mFootstepWasMoving = false;
-    return;
-  }
-
-  const bool running =
-      mState.window != nullptr &&
-      (glfwGetKey(mState.window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
-       glfwGetKey(mState.window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
-  const float cadence = running
-                            ? std::clamp(mSettings.footstepRunCadence, 0.08f, 0.60f)
-                            : std::clamp(mSettings.footstepWalkCadence, 0.10f, 0.80f);
-  if (!mFootstepWasMoving) {
-    mFootstepTimer = 0.0f;
-  } else {
-    mFootstepTimer = std::max(0.0f, mFootstepTimer - dt);
-  }
-
-  if (mFootstepTimer > 0.0f) {
-    mFootstepWasMoving = true;
-    return;
-  }
-
-  const std::string resolvedPath = nextFootstepClip_();
-  if (resolvedPath.empty() || !std::filesystem::exists(resolvedPath)) {
-    mStatus = "Footstep file missing";
-    return;
-  }
-
-  playFootstepOneShot_(resolvedPath);
-  mFootstepTimer = cadence;
-  mFootstepWasMoving = true;
-  mStatus = "Footstep playback active";
+  const glm::vec2 travel(pos.x-mLastPlayerPos.x,pos.z-mLastPlayerPos.z);
+  mLastPlayerPos=pos;
+  // Match the controller's input, not GLFW's independent key state. Sound
+  // follows real motion after physics, and cannot play in midair or flight.
+  const bool running=Keyboard::key(GLFW_KEY_LEFT_SHIFT)||Keyboard::key(GLFW_KEY_RIGHT_SHIFT);
+  const float speed=5.f*(running?std::max(mState.input.runMult,1.f):1.f);
+  const float cadence=running?std::clamp(mSettings.footstepRunCadence,.08f,.60f)
+                             :std::clamp(mSettings.footstepWalkCadence,.10f,.80f);
+  const bool active=mSettings.enabled && !mSettings.mute && mSettings.footstepsEnabled &&
+      mState.playState==VkAppState::PlayState::Playing && !mState.input.creativeFlight &&
+      mState.playerController.grounded();
+  if(!mFootstepClock.tick(dt,glm::length(travel),active,speed,cadence)) return;
+  const auto path=nextFootstepClip_();
+  if(path.empty()) return;
+  playFootstepOneShot_(path);
+  mStatus="Footstep playback active";
 }
 
 void VkAudioSubsystem::applyVolumes_() {
   if (!mAudioAvailable || !mEngineStorage)
     return;
 
-  const auto &audio = mSettings;
-  const float master = (audio.enabled && !audio.mute)
-                           ? std::clamp(audio.masterVolume, 0.0f, 1.5f)
-                           : 0.0f;
   auto *holder = static_cast<EngineHolder *>(mEngineStorage);
-  ma_engine_set_volume(&holder->engine, master);
-
-  if (mAmbient->loaded) {
-    ma_sound_set_volume(&mAmbient->sound,
-                        master * std::clamp(audio.ambientVolume, 0.0f, 1.5f));
-  }
-  if (holder->footstepsGroupReady) {
-    ma_sound_group_set_volume(
-        &holder->footstepsGroup,
-        master * std::clamp(audio.footstepVolume, 0.0f, 1.5f));
-  }
+  audio::applyVolumes(holder->engine,mAmbient,
+      holder->footstepsGroupReady?&holder->footstepsGroup:nullptr,mSettings);
 }
 
 void VkAudioSubsystem::refreshFootstepClipPool_() {
-  namespace fs = std::filesystem;
-  mFootstepClipPaths.clear();
-  mFootstepClipIndex = 0;
-
-  const std::string ambientResolved = resolvePath_(mSettings.ambientPath);
-
-  auto scanDirectory = [&](const fs::path &dir) {
-    if (!fs::exists(dir) || !fs::is_directory(dir))
-      return;
-    std::error_code ec;
-    for (const auto &entry : fs::recursive_directory_iterator(dir, ec)) {
-      if (ec)
-        break;
-      if (!entry.is_regular_file())
-        continue;
-      std::string ext = entry.path().extension().string();
-      std::transform(ext.begin(), ext.end(), ext.begin(),
-                     [](unsigned char c) { return (char)std::tolower(c); });
-      if (ext == ".ogg" || ext == ".oga" || ext == ".wav") {
-        const std::string clipPath = entry.path().lexically_normal().string();
-        if (!ambientResolved.empty() && clipPath == ambientResolved)
-          continue;
-        mFootstepClipPaths.push_back(clipPath);
-      }
+  for(auto &[path,voices]:mFootstepVoices) for(auto *voice:voices) delete voice;
+  mFootstepVoices.clear();mFootstepClipPaths.clear();mFootstepClipIndex=0;
+  mFootstepClock.reset();
+  mConfiguredFootstepPath=mSettings.footstepPath;
+  mFootstepPoolReady=true; // Empty/missing banks must not rescan the disk every frame.
+  const auto root=mState.assetDir.empty()?mState.projectConfig.assetPath(""):mState.assetDir;
+  const auto configured=mSettings.footstepPath.empty()?std::string{}:resolvePath_(mSettings.footstepPath);
+  const auto clips=audio::footstepClips(root,configured,resolvePath_(mSettings.ambientPath));
+  auto *holder=static_cast<EngineHolder*>(mEngineStorage);
+  for(const auto &path:clips) {
+    auto &voices=mFootstepVoices[path];
+    // Two voices permit a natural tail, with a strict upper bound on overlap.
+    for(int i=0;i<2;++i) {
+      auto *voice=new ManagedSound();
+      const auto res=voice->load(holder->engine,path,false,false,
+          holder->footstepsGroupReady?&holder->footstepsGroup:nullptr);
+      if(res!=MA_SUCCESS) {delete voice;break;}
+      voice->path=path;voices.push_back(voice);
     }
-  };
-
-  if (!mSettings.footstepPath.empty()) {
-    const std::string resolved = resolvePath_(mSettings.footstepPath);
-    if (!resolved.empty() && fs::exists(resolved)) {
-      if (fs::is_regular_file(resolved)) {
-        if (ambientResolved.empty() || resolved != ambientResolved) {
-          mFootstepClipPaths.push_back(fs::path(resolved).lexically_normal().string());
-        }
-      } else if (fs::is_directory(resolved)) {
-        scanDirectory(fs::path(resolved));
-      }
-    }
+    if(!voices.empty()) mFootstepClipPaths.push_back(path);
+    else LOG_WARN("Audio","Skipping unreadable footstep: "+path);
   }
-
-  if (mFootstepClipPaths.empty()) {
-    const fs::path assetRoot = fs::path(mState.projectConfig.assetPath(""));
-    scanDirectory(assetRoot);
-  }
-
-  std::sort(mFootstepClipPaths.begin(), mFootstepClipPaths.end());
-  mFootstepClipPaths.erase(
-      std::unique(mFootstepClipPaths.begin(), mFootstepClipPaths.end()),
-      mFootstepClipPaths.end());
+  LOG_INFO("Audio","Cached "+std::to_string(mFootstepClipPaths.size())+" footstep clips");
 }
 
 std::string VkAudioSubsystem::nextFootstepClip_() {
-  if (mFootstepClipPaths.empty())
+  if (!mFootstepPoolReady)
     refreshFootstepClipPool_();
   if (mFootstepClipPaths.empty())
     return {};
@@ -495,16 +391,17 @@ std::string VkAudioSubsystem::nextFootstepClip_() {
 }
 
 void VkAudioSubsystem::playFootstepOneShot_(const std::string &path) {
-  if (!mAudioAvailable || !mEngineStorage || path.empty())
-    return;
-  auto *holder = static_cast<EngineHolder *>(mEngineStorage);
-  ma_sound_group *group =
-      holder->footstepsGroupReady ? &holder->footstepsGroup : nullptr;
-  const ma_result res = ma_engine_play_sound(&holder->engine, path.c_str(), group);
-  if (res != MA_SUCCESS) {
-    LOG_ERROR("Audio", "Footstep one-shot failed: " + path + " (" +
-                           std::to_string((int)res) + ")");
-    mStatus =
-        "Footstep one-shot failed (" + std::to_string((int)res) + ")";
+  if(!mAudioAvailable || !mSettings.enabled || mSettings.mute || !mSettings.footstepsEnabled) return;
+  auto found=mFootstepVoices.find(path);
+  if(found==mFootstepVoices.end() || found->second.empty()) return;
+  auto &voices=found->second;
+  auto *voice=voices.front();
+  for(auto *candidate:voices) if(!ma_sound_is_playing(&candidate->sound)) {voice=candidate;break;}
+  auto *holder=static_cast<EngineHolder*>(mEngineStorage);
+  const auto res=voice->restart(holder->footstepsGroupReady?1.f:
+      std::clamp(mSettings.footstepVolume,0.f,1.5f));
+  if(res!=MA_SUCCESS) {
+    LOG_ERROR("Audio","Footstep playback failed: "+path+" ("+std::to_string(int(res))+")");
+    mStatus="Footstep playback failed";
   }
 }

@@ -35,6 +35,13 @@ layout(location = 5) out vec3 vBiomeWeights;
 // Drives both the wind falloff here and the root-darkening in the fragment
 // stage (see ScatterLayer::groundOcclusion).
 layout(location = 6) out float vHeightFrac;
+// xyz = the instance's world origin (its base), w = its world height. Lets
+// the fragment stage treat the whole plant as one volume -- see the canopy
+// normal rounding in meshInstanced.frag.
+layout(location = 7) out vec4 vInstanceBase;
+// Ray-query BLAS geometry retains the rest pose; raster wind does not rebuild
+// it. Grass queries must originate on that pose to avoid striping themselves.
+layout(location = 8) out vec3 vShadowPos;
 
 #include "frameData.glsl"
 
@@ -77,6 +84,7 @@ float windHash(vec2 p) {
 void main() {
     mat4 instanceModel = mat4(inModelCol0, inModelCol1, inModelCol2, inModelCol3);
     vec4 world = instanceModel * vec4(inPos, 1.0);
+    vShadowPos = world.xyz;
 
     // Normalized height along the plant, shared by the wind falloff below
     // and by the fragment stage's root darkening. The instance matrix's Y
@@ -87,6 +95,7 @@ void main() {
     float worldHeight = max(pc.windMeshHeight * length(inModelCol1.xyz), 1e-4);
     float t01 = clamp((world.y - instanceOrigin.y) / worldHeight, 0.0, 1.0);
     vHeightFrac = t01;
+    vInstanceBase = vec4(instanceOrigin, worldHeight);
 
     // --- R5 vertex wind ---
     // Displacement is weighted by height above the instance's own origin, so
@@ -122,7 +131,13 @@ void main() {
     }
 
     gl_Position = uFrame.viewProj * world;
-    vNormalWS = transpose(inverse(mat3(instanceModel))) * inNormal;
+    // Scatter transforms are rotation * diagonal scale (no shear). The
+    // inverse-transpose is each orthogonal column divided by its squared
+    // length; a full matrix inverse per blade vertex wasted millions of ALU ops.
+    vec3 c0=inModelCol0.xyz,c1=inModelCol1.xyz,c2=inModelCol2.xyz;
+    vNormalWS = c0*(inNormal.x/max(dot(c0,c0),1e-8))
+              + c1*(inNormal.y/max(dot(c1,c1),1e-8))
+              + c2*(inNormal.z/max(dot(c2,c2),1e-8));
     vUV = inUV;
     vWorldPos = world.xyz;
     vViewZ = -(uFrame.view * world).z; // positive distance in front of camera

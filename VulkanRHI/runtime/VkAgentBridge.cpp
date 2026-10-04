@@ -63,6 +63,12 @@ bool VkAgentBridge::start(VkAppState &state, uint16_t port) {
 void VkAgentBridge::stop() { mServer.stop(); }
 
 void VkAgentBridge::registerHandlers_() {
+  mServer.setHandler("render.atmosphereProbe", [this](const json &params, uint64_t) {
+    if(!mState->renderer) return Response::fail("renderer unavailable");
+    mState->renderer->enableAtmosphereProbe(params.value("enabled",true));
+    return Response::ok(mState->renderer->atmosphereProbe());
+  });
+
   VkAppState *st = mState;
 
   mServer.setHandler("engine.info", [this, st](const json &, uint64_t) {
@@ -77,7 +83,7 @@ void VkAgentBridge::registerHandlers_() {
     info["methods"] = json::array(
         {"engine.info", "script.eval", "assets.generators", "assets.schema",
          "assets.define", "assets.info", "assets.exportGlb", "scene.spawn", "scene.query", "scene.clear",
-         "render.setParams", "render.getParams", "render.capture",
+         "render.setParams", "render.getParams", "render.atmosphereProbe", "render.capture",
          "render.turntable"});
     return Response::ok(info);
   });
@@ -340,11 +346,31 @@ void VkAgentBridge::registerHandlers_() {
     mTurntable.savedYaw = p.camYawDeg;
     mTurntable.savedPitch = p.camPitchDeg;
     mTurntable.savedAutoExposure = p.autoExposure;
+    mTurntable.savedTemporalAA = p.temporalAA;
+    mTurntable.savedDeterministicCapture = p.deterministicCapture;
+    mTurntable.savedExposure = p.exposure;
+    mTurntable.savedSunYaw = p.lightYawDeg;
+    mTurntable.savedSunPitch = p.lightPitchDeg;
+    mTurntable.savedAtmosphere = p.atmosphere;
+    mTurntable.savedCloudMaxSteps=p.style.cloudMaxSteps;
+    mTurntable.savedCloudLightTaps=p.style.cloudLightTaps;
+    mTurntable.savedCloudDetailScale=p.style.cloudDetailScale;
+    mTurntable.savedFogDensity = p.fogDensity;
+    mTurntable.savedFogMaxOpacity = p.fogMaxOpacity;
     // Fixed light, exposure AND clock: two turntables are only comparable if
     // everything except the asset is held still. The clock matters as much as
     // the light -- clouds drift and volumetrics shimmer with it, so without
     // pinning it no two renders of the same asset are ever the same image.
+    p.atmosphere.enabled = false;
+    p.atmosphere.bloomStrength = 0;
     p.autoExposure = false;
+    // History and the global jitter phase depend on when a review starts.
+    // Use the spatial resolve for reproducible goldens, then restore live AA.
+    p.temporalAA = false;
+    p.deterministicCapture = true;
+    // Canonical reviews use a fixed legacy background. Map cloud quality and
+    // the new periodic-noise scale must not alter a material comparison.
+    p.style.cloudMaxSteps=64;p.style.cloudLightTaps=3;p.style.cloudDetailScale=90;
     p.exposure = 0.95f;
     p.lightYawDeg = 215.0f;
     p.lightPitchDeg = 38.0f;
@@ -393,8 +419,20 @@ void VkAgentBridge::update() {
         p.camYawDeg = mTurntable.savedYaw;
         p.camPitchDeg = mTurntable.savedPitch;
         p.autoExposure = mTurntable.savedAutoExposure;
+        p.temporalAA = mTurntable.savedTemporalAA;
+        p.deterministicCapture = mTurntable.savedDeterministicCapture;
         p.fixedTimeSeconds = mTurntable.savedFixedTime;
         p.cameraGradeEnabled = mTurntable.savedCameraGrade;
+        // Review must not leave the user's world with turntable lighting/fog.
+        p.exposure = mTurntable.savedExposure;
+        p.lightYawDeg = mTurntable.savedSunYaw;
+        p.lightPitchDeg = mTurntable.savedSunPitch;
+        p.atmosphere = mTurntable.savedAtmosphere;
+        p.style.cloudMaxSteps=mTurntable.savedCloudMaxSteps;
+        p.style.cloudLightTaps=mTurntable.savedCloudLightTaps;
+        p.style.cloudDetailScale=mTurntable.savedCloudDetailScale;
+        p.fogDensity = mTurntable.savedFogDensity;
+        p.fogMaxOpacity = mTurntable.savedFogMaxOpacity;
         Registry &reg = mState->scene.registry();
         if (reg.valid(mTurntable.entity))
           reg.destroy(mTurntable.entity);
@@ -414,6 +452,11 @@ void VkAgentBridge::update() {
         p.camYawDeg = glm::degrees(angle) + 180.0f;
         p.camPitchDeg = -14.0f;
 
+        if (mTurntable.settleFrames > 0) {
+          --mTurntable.settleFrames;
+          return;
+        }
+
         char suffix[32];
         std::snprintf(suffix, sizeof(suffix), "_%02d.png", mTurntable.current);
         const std::string path = mTurntable.basePath + suffix;
@@ -426,6 +469,7 @@ void VkAgentBridge::update() {
         mTurntable.shotRequested = true;
         mHideUiThisFrame = true; // a turntable is always for review
         ++mTurntable.current;  // post-increment: advance AFTER requesting this frame's shot
+        mTurntable.settleFrames = 8;
       }
     }
   }

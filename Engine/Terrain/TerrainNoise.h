@@ -134,6 +134,10 @@ struct TerrainGroundFields {
   float wForest = 0.0f;
   float wMountain = 0.0f;
   float rockNoise = 0.0f; // 0..1
+  // Negative means procedural policy. Authored values are sampled in world
+  // space so material boundaries and tracks stay continuous at chunk edges.
+  float authoredTrack = -1.0f;
+  float authoredRock = -1.0f;
 };
 
 void sampleHeightGrid(const TerrainNoiseSet& noiseSet, const TerrainSettings& settings,

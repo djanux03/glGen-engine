@@ -1,0 +1,20 @@
+{
+  "tool": "Built-in image_gen.imagegen; generated 2026-09-30. Originals copied to this directory; no third-party assets downloaded.",
+  "assets": [
+    {
+      "path": "birch_spray_v2.png",
+      "prompt": "Use case: photorealistic-natural. Asset type: alpha-tested foliage texture for a realistic 3D woodland game. Create ONE botanically plausible silver birch twig spray photographed orthographically from above, on a truly transparent background. Thin brown branching twigs with 24–35 small spring/summer birch leaves, serrated triangular/ovate pointed edges, delicate leaf veins and slight variations of muted olive green. An irregular fan-shaped spray, fine twigs reach several smaller clusters with substantial transparent gaps between them. Entire spray fills most of the square image with a 5% transparent margin; all leaves visible and sharply focused. Flat diffuse lighting suitable for a base-color/albedo map: no dramatic lighting, no baked shadows, no glow, no vignette. Real leaf microtexture, subtle pale green veins, some slightly curled edges. No flowers, no text, no ground, no big single leaf, no stylized illustration or plastic. Actual alpha transparency.",
+      "alpha": "Retain original transparency; glTF MASK cutoff 0.45, coverage-preserving renderer mips."
+    },
+    {
+      "path": "birch_bark_v2.png",
+      "prompt": "Use case: photorealistic-natural. Asset type: seamless physically based 3D game bark albedo texture. Create a square seamless tile of realistic mature silver birch bark, camera perfectly straight on, flat unlit diffuse base color under neutral soft illumination. Ivory and warm pale grey papery bark, intricate tiny horizontal dark grey lenticels, occasional organic charcoal peeling fissures, slight beige grime and pale olive lichen traces. Show approximately 1 meter of bark width and 2 meters height represented in the square texture UV. Fine photographic surface detail, natural irregular marks distributed everywhere, not cartoon rectangles or repeated stripes. Texture wraps seamlessly along all edges; no trunk silhouette, no background, no roundness or lighting gradient, no branches, no foliage, no highlights or cast shadows, no text."
+    },
+    {
+      "path": "birch_bark_normal_v2.png",
+      "prompt": "Asset type: tangent-space normal map for a game PBR material. Convert this exact bark albedo into an aligned tangent-space normal map only. Preserve every feature's exact position and scale. Blue/purple dominant background (neutral flat areas RGB 128,128,255). Fine shallow papery flakes and lenticels embossed, larger grey peeling cavities recessed with curled raised lips. OpenGL +Y green convention, NO diffuse color/no grey/no photographs, no text. Exact same square crop and seamless edges."
+    }
+  ],
+  "rebuild": "python Tools/glgen-trees/make_woodland_birch.py (deterministic geometry; texture generation is not needed to rebuild).",
+  "material": "Bark V tiles per two meters of height, U spans circumference; smooth radial stem normals. Leaf sprays use curved cards up close and fewer enlarged cards at distance. All trees share three meshes and textures; grass remains excluded from TLAS."
+}

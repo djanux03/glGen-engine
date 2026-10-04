@@ -97,9 +97,12 @@ MeshData buildTerrainChunkMesh(const std::vector<float> &heights,
 
       MeshVertex v;
       v.pos = glm::vec3(worldX, h, worldZ);
-      v.uv = glm::vec2(worldX / uvTileWorldSize, field.moisture);
+      // Terrain shading projects textures from world position, leaving UV.x
+      // available for authored track coverage without widening every MeshVertex.
+      v.uv = glm::vec2(field.authoredTrack >= 0 ? field.authoredTrack : worldX / uvTileWorldSize,
+                       field.moisture);
       v.normal = normal;
-      v.terrainParams = glm::vec4(curvature01, rockMask, field.wForest, field.wMountain);
+      v.terrainParams = glm::vec4(curvature01, field.authoredRock >= 0 ? std::max(rockMask, field.authoredRock) : rockMask, field.wForest, field.wMountain);
       sub.vertices.push_back(v);
 
       aabbMin = glm::min(aabbMin, v.pos);

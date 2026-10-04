@@ -1,6 +1,7 @@
 #include "TerrainNoise.h"
 
 #include "TerrainWater.h"
+#include "WoodlandLayout.h"
 
 #include <algorithm>
 #include <cmath>
@@ -107,6 +108,15 @@ TerrainMacroSample sampleMacro(const TerrainNoiseSet &n, glm::vec2 worldXZ,
 
   TerrainMacroSample s;
 
+  if (settings.authoredWoodland) {
+    const auto authored = woodland::sample(worldXZ, settings.worldRadius);
+    s.warpedX = worldX;
+    s.warpedZ = worldZ;
+    s.forestField = authored.forest;
+    s.moisture = authored.moisture;
+    return s;
+  }
+
   // Mountain-region wavelength: ~2.8km base, narrower with higher
   // mountainRegionScale (more, smaller mountain regions) or wider with
   // lower (fewer, bigger ones).
@@ -185,13 +195,22 @@ TerrainMacroSample sampleMacro(const TerrainNoiseSet &n, glm::vec2 worldXZ,
   s.baseShape = erodedFbm(n.base, s.warpedX * terrainFreq * 0.65f,
                           s.warpedZ * terrainFreq * 0.65f, settings.octaves,
                           settings.lacunarity, settings.gain, settings.erosionStrength);
-  s.ridgeShape = settings.useRidgeNoise
-                     ? n.base.ridgeNoise(s.warpedX * terrainFreq * 0.80f,
-                                        s.warpedZ * terrainFreq * 0.80f, settings.octaves,
-                                        settings.lacunarity, settings.gain)
-                     : std::abs(n.base.fbm(s.warpedX * terrainFreq * 0.80f,
-                                           s.warpedZ * terrainFreq * 0.80f, settings.octaves,
-                                           settings.lacunarity, settings.gain));
+  const float roundedRidge =
+      std::abs(n.base.fbm(s.warpedX * terrainFreq * 0.80f,
+                          s.warpedZ * terrainFreq * 0.80f, settings.octaves,
+                          settings.lacunarity, settings.gain));
+  if (settings.useRidgeNoise) {
+    const float sharpRidge = n.base.ridgeNoise(
+        s.warpedX * terrainFreq * 0.80f, s.warpedZ * terrainFreq * 0.80f,
+        settings.octaves, settings.lacunarity, settings.gain);
+    // Full ridge noise made the alpine profile read as repeated teeth. Keep
+    // the sharp peaks available, but let scenery blend them back toward the
+    // rounded base shape without changing existing profiles (default 1).
+    s.ridgeShape = glm::mix(roundedRidge, sharpRidge,
+                            saturate01(settings.ridgeBlend));
+  } else {
+    s.ridgeShape = roundedRidge;
+  }
 
   // --- forest coverage field: independent ~400m-wavelength noise, gated
   // later by moisture/mountain/treeline in sampleBiomeWeights() ---
@@ -212,6 +231,12 @@ TerrainMacroSample sampleMacro(const TerrainNoiseSet &n, glm::vec2 worldXZ,
 float computeBaseHeight(const TerrainMacroSample &sample, const TerrainNoiseSet &n,
                         glm::vec2 worldXZ, const TerrainSettings &settings,
                         const HeightOffsetGrid *edits) {
+  if (settings.authoredWoodland) {
+    float h = woodland::sample(worldXZ, settings.worldRadius).height;
+    if (edits)
+      h += edits->sampleBilinear(worldXZ, settings.chunkWorldSize, settings.chunkResolution);
+    return h - settings.heightOffset;
+  }
   const float hs = settings.heightScale;
   const float macroStrength = std::max(0.0f, settings.macroStrength);
 
@@ -290,6 +315,13 @@ float computeHeight(const TerrainMacroSample &sample, const TerrainNoiseSet &n,
 
 BiomeWeights sampleBiomeWeights(const TerrainMacroSample &sample,
                                 const TerrainSettings &settings, float height) {
+  if (settings.authoredWoodland) {
+    BiomeWeights w;
+    w.forest = sample.forestField;
+    w.meadow = 1.0f - w.forest;
+    w.mountain = 0.0f;
+    return w;
+  }
   // Mountain weight: the region driver, softened on valley floors inside
   // mountain country so they shade/scatter like lowland (plan §4b': "a
   // mountain-region valley floor has low wMountain").
@@ -401,6 +433,11 @@ void sampleHeightGrid(const TerrainNoiseSet &n, const TerrainSettings &settings,
         f.wForest = bw.forest;
         f.wMountain = bw.mountain;
         f.rockNoise = saturate01(sample.outcropField * 0.5f + 0.5f);
+        if (settings.authoredWoodland) {
+          const auto authored = woodland::sample(worldXZ, settings.worldRadius);
+          f.authoredTrack = authored.track;
+          f.authoredRock = authored.rock;
+        }
         outFields->push_back(f);
       }
     }

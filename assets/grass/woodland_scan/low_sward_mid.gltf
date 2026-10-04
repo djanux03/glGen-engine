@@ -1,0 +1,156 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "glGen woodland scan conditioner"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "low_sward_mid.bin",
+      "byteLength": 7024
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 1968
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 1968,
+      "byteLength": 1968
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 3936,
+      "byteLength": 1312
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 5248,
+      "byteLength": 1776
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 164,
+      "type": "VEC3",
+      "min": [
+        -0.3317614197731018,
+        -0.016843827441334724,
+        -0.3522323966026306
+      ],
+      "max": [
+        0.2656826972961426,
+        0.20292578637599945,
+        0.331379234790802
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 164,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 164,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5125,
+      "count": 444,
+      "type": "SCALAR"
+    }
+  ],
+  "materials": [
+    {
+      "alphaMode": "MASK",
+      "doubleSided": true,
+      "name": "grass_medium_01",
+      "normalTexture": {
+        "index": 0
+      },
+      "pbrMetallicRoughness": {
+        "baseColorTexture": {
+          "index": 1
+        },
+        "metallicFactor": 0,
+        "metallicRoughnessTexture": {
+          "index": 2
+        },
+        "roughnessFactor": 0.9
+      },
+      "alphaCutoff": 0.45
+    }
+  ],
+  "images": [
+    {
+      "mimeType": "image/jpeg",
+      "name": "grass_medium_01_nor_gl",
+      "uri": "source/textures/grass_medium_01_nor_gl_2k.jpg"
+    },
+    {
+      "mimeType": "image/jpeg",
+      "name": "grass_medium_01_diff-grass_medium_01_alpha",
+      "uri": "grass_medium_01_woodland_grass_scan_rgba.png"
+    },
+    {
+      "mimeType": "image/jpeg",
+      "name": "grass_medium_01_rough",
+      "uri": "source/textures/grass_medium_01_arm_2k.jpg"
+    }
+  ],
+  "textures": [
+    {
+      "sampler": 0,
+      "source": 0
+    },
+    {
+      "sampler": 0,
+      "source": 1
+    },
+    {
+      "sampler": 0,
+      "source": 2
+    }
+  ],
+  "samplers": [
+    {
+      "magFilter": 9729,
+      "minFilter": 9987
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2
+          },
+          "indices": 3,
+          "material": 0
+        }
+      ]
+    }
+  ]
+}

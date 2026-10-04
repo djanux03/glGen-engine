@@ -1,79 +1,79 @@
 {
-  "ambientIntensity": 2.0,
-  "aoBias": 0.042100001126527786,
-  "aoRadius": 1.3580000400543213,
-  "aoStrength": 0.5910000205039978,
-  "atmosphereHaze": 0.6380000114440918,
+  "ambientIntensity": 1.0,
+  "aoBias": 0.004,
+  "aoRadius": 0.65,
+  "aoStrength": 2.5,
+  "atmosphereHaze": 0.35,
   "autoExposure": true,
-  "autoExposureMax": 4.419000148773193,
-  "autoExposureMin": 0.6980000138282776,
-  "autoExposureSpeed": 0.02800000086426735,
-  "bloomIntensity": 0.17599999904632568,
-  "contrast": 1.0770000219345093,
-  "exposure": 0.6980010271072388,
-  "fogAerialStrength": 135.0,
-  "fogAnisotropy": 0.8140000104904175,
+  "autoExposureMax": 3.2,
+  "autoExposureMin": 1.1,
+  "autoExposureSpeed": 0.035,
+  "bloomIntensity": 0.06,
+  "contrast": 1.02,
+  "exposure": 1.1,
+  "fogAerialStrength": 110,
+  "fogAnisotropy": 0.55,
   "fogDayColor": [
     0.7200000286102295,
     0.7900000214576721,
     0.8999999761581421
   ],
-  "fogDensity": 0.02070000022649765,
-  "fogHeightFalloff": 0.10700000077486038,
-  "fogHeightRef": 16.0,
-  "fogMaxOpacity": 0.9810000061988831,
+  "fogDensity": 0.004,
+  "fogHeightFalloff": 0.025,
+  "fogHeightRef": 0,
+  "fogMaxOpacity": 1.0,
   "fogNightColor": [
     0.09000000357627869,
     0.11999999731779099,
     0.20000000298023224
   ],
   "fogNoiseScale": 0.030799999833106995,
-  "fogNoiseStrength": 0.3230000138282776,
+  "fogNoiseStrength": 0.12,
   "fogNoiseWindSpeed": 1.3760000467300415,
   "fogSkyStrength": 1.0,
-  "fogStart": 143.0,
-  "fogSunInscatter": 3.322000026702881,
+  "fogStart": 30,
+  "fogSunInscatter": 0.15,
   "gamma": 2.200000047683716,
-  "iblSpecularIntensity": 0.9829999804496765,
-  "lightPitchDeg": 30.0,
+  "iblSpecularIntensity": 0.65,
+  "lightPitchDeg": 32,
   "lightYawDeg": 259.0,
   "moonGlowIntensity": 0.07999999821186066,
   "moonIntensity": 1.0,
   "nightSkyBrightness": 1.0,
-  "saturation": 1.75600004196167,
+  "saturation": 1.0,
   "shadowSamples": 6,
-  "shadowSoftness": 0.014999999664723873,
+  "shadowSoftness": 0.03,
   "shadowStrength": 1.0,
-  "skyBrightness": 3.0,
+  "skyBrightness": 1.25,
   "starIntensity": 1.0,
   "style": {
-    "autumnAmount": 0.6200000047683716,
+    "autumnAmount": 0.04,
     "cloudBase": [
-      0.38999998569488525,
-      0.4300000071525574,
-      0.5199999809265137
+      0.38,
+      0.46,
+      0.57
     ],
-    "cloudCoverage": 0.32199999690055847,
-    "cloudDeckHeight": 8000.0,
-    "cloudFeatureScale": 6000.0,
+    "cloudCoverage": 0.42,
+    "cloudDeckHeight": 1800,
+    "cloudFeatureScale": 6000,
     "cloudLit": [
-      1.0,
-      0.8799999952316284,
-      0.6800000071525574
+      0.94,
+      0.96,
+      1
     ],
     "cloudMid": [
-      0.7099999785423279,
-      0.7200000286102295,
-      0.7300000190734863
+      0.65,
+      0.72,
+      0.8
     ],
-    "cloudOpticalDensity": 1.6150000095367432,
-    "cloudSoftness": 0.17000000178813934,
-    "cloudSunOcclusion": 1.1510000228881836,
+    "cloudOpticalDensity": 0.8,
+    "cloudSoftness": 0.28,
+    "cloudSunOcclusion": 0.7,
     "cloudWind": [
       0.012000000104308128,
       0.006000000052154064
     ],
-    "facetStrength": 0.7799999713897705,
+    "facetStrength": 0.0,
     "fxaaEnabled": true,
     "outlineColor": [
       0.07500000298023224,
@@ -85,147 +85,158 @@
     "outlineNormalThreshold": 0.2199999988079071,
     "outlineStrength": 0.0,
     "outlineWidth": 0.9259999990463257,
-    "screenPaperStrength": 0.014000000432133675,
+    "screenPaperStrength": 0.0,
     "skyBandSoftness": 0.30000001192092896,
     "skyBands": 5.0,
-    "skyGradeStrength": 0.6200000047683716,
+    "skyGradeStrength": 0.0,
     "skyHorizon": [
-      1.0,
-      0.550000011920929,
-      0.2800000011920929
+      0.7,
+      0.79,
+      0.83
     ],
     "skyZenith": [
-      0.20000000298023224,
-      0.46000000834465027,
-      0.6200000047683716
+      0.2,
+      0.4,
+      0.56
     ],
     "splitBalance": 0.47999998927116394,
     "splitHighlight": [
       1.0,
-      0.7699999809265137,
-      0.47999998927116394
+      1.0,
+      1.0
     ],
     "splitShadow": [
-      0.800000011920929,
-      0.8600000143051147,
+      1.0,
+      1.0,
       1.0
     ],
     "sunSoftness": 0.44999998807907104,
     "terrain": [
       {
         "lit": [
-          0.3499999940395355,
-          0.5799999833106995,
-          0.20000000298023224
-        ],
-        "mottleScale": 10.800000190734863,
-        "overlayStrength": 0.0,
-        "shade": [
-          0.12999999523162842,
-          0.28999999165534973,
-          0.17000000178813934
-        ]
-      },
-      {
-        "lit": [
           0.25,
-          0.3799999952316284,
-          0.1599999964237213
+          0.34,
+          0.15
         ],
-        "mottleScale": 7.0,
-        "overlayStrength": 0.0,
+        "mottleScale": 12,
+        "overlayStrength": 0.08,
         "shade": [
-          0.10000000149011612,
-          0.20000000298023224,
-          0.1599999964237213
+          0.12,
+          0.18,
+          0.12
         ]
       },
       {
         "lit": [
-          0.47999998927116394,
-          0.3400000035762787,
-          0.20000000298023224
+          0.18,
+          0.24,
+          0.13
         ],
-        "mottleScale": 6.0,
-        "overlayStrength": 0.0,
+        "mottleScale": 12,
+        "overlayStrength": 0.08,
         "shade": [
-          0.25,
-          0.1899999976158142,
-          0.18000000715255737
+          0.08,
+          0.12,
+          0.09
         ]
       },
       {
         "lit": [
-          0.47999998927116394,
-          0.5,
-          0.550000011920929
+          0.3,
+          0.24,
+          0.16
         ],
-        "mottleScale": 9.0,
-        "overlayStrength": 0.0,
+        "mottleScale": 12,
+        "overlayStrength": 0.08,
         "shade": [
-          0.25,
-          0.30000001192092896,
-          0.38999998569488525
+          0.14,
+          0.12,
+          0.1
         ]
       },
       {
         "lit": [
-          0.550000011920929,
-          0.5199999809265137,
-          0.4699999988079071
+          0.36,
+          0.4,
+          0.43
         ],
-        "mottleScale": 8.0,
-        "overlayStrength": 0.0,
+        "mottleScale": 12,
+        "overlayStrength": 0.08,
         "shade": [
-          0.28999999165534973,
-          0.3100000023841858,
-          0.36000001430511475
+          0.18,
+          0.22,
+          0.26
+        ]
+      },
+      {
+        "lit": [
+          0.43,
+          0.42,
+          0.37
+        ],
+        "mottleScale": 12,
+        "overlayStrength": 0.08,
+        "shade": [
+          0.22,
+          0.24,
+          0.25
         ]
       }
     ],
     "version": 1,
-    "vibrance": 0.15000000596046448,
-    "washEdgeDarkening": 0.18000000715255737,
-    "worldPaperStrength": 0.04500000178813934
+    "vibrance": 0.0,
+    "washEdgeDarkening": 0.0,
+    "worldPaperStrength": 0.0,
+    "paintedClouds": true,
+    "cloudStrength": 1.0
   },
   "sunDiscIntensity": 100.0,
-  "sunIntensity": 1.1239999532699585,
-  "terrainSkyReflectIntensity": 1.2120000123977661,
+  "sunIntensity": 1.6,
+  "terrainSkyReflectIntensity": 0.2,
   "timeOfDayEnabled": false,
   "timeOfDaySpeed": 3.0,
-  "tonemapMode": 0,
+  "tonemapMode": 4,
   "vegDrawDistance": 0.0,
   "vegShadowDistance": 180.0,
   "vignette": 0.0,
-  "volumetricAnisotropy": 0.949999988079071,
+  "volumetricAnisotropy": 0.87,
   "volumetricEnabled": true,
-  "volumetricIntensity": 9.878000259399414,
-  "volumetricMaxDist": 250.0,
-  "volumetricSteps": 32,
+  "volumetricIntensity": 0.8,
+  "volumetricMaxDist": 170,
+  "volumetricSteps": 18,
   "waterClarity": 6.0,
   "waterDeepColor": [
-    0.019999999552965164,
-    0.09000000357627869,
-    0.14000000059604645
+    0.025,
+    0.07,
+    0.095
   ],
   "waterEnabled": true,
   "waterFoamDepth": 0.44999998807907104,
-  "waterFoamStrength": 0.699999988079071,
+  "waterFoamStrength": 0.3,
   "waterLevel": 0.0,
-  "waterReflectionStrength": 1.0,
-  "waterRoughness": 0.05999999865889549,
+  "waterReflectionStrength": 0.75,
+  "waterRoughness": 0.24,
   "waterShallowColor": [
-    0.2199999988079071,
-    0.4399999976158142,
-    0.41999998688697815
+    0.14,
+    0.27,
+    0.24
   ],
   "waterSsrSteps": 40,
-  "waterSsrThickness": 0.699999988079071,
-  "waveAmplitude": 0.2199999988079071,
+  "waterSsrThickness": 0.3,
+  "waveAmplitude": 0.12,
   "waveDirection": [
     1.0,
     0.3499999940395355
   ],
   "waveScale": 0.3499999940395355,
-  "waveSpeed": 0.550000011920929
+  "waveSpeed": 0.550000011920929,
+  "terrainPhotoAlbedo": 1.0,
+  "foliageNormalSoften": 0.6,
+  "specularOcclusion": 1.0,
+  "terrainTriplanar": 1.0,
+  "stylizedLightingRamp": 0.0,
+  "shadowCoolBias": 0.0,
+  "temporalAA": true,
+  "temporalSharpness": 0.035,
+  "edgeSoftness": 0.35
 }

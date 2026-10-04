@@ -7,6 +7,7 @@ struct VkAppState;
 class VkPlayerControllerSystem {
 public:
   void reset();
+  bool grounded() const { return mGrounded; }
   // `active` gates mouse-look/movement -- false while in editor mode (or
   // paused), so the player entity doesn't drift from stray mouse motion
   // over the viewport. Ground/camera-component bookkeeping still runs so

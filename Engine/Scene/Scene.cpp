@@ -1,4 +1,5 @@
 #include "Scene.h"
+#include "ScenePersistence.h"
 #include "AssetManager.h"
 
 #include "ECS/Components.h"
@@ -364,7 +365,8 @@ std::string Scene::serializeToString() const {
       ent["rigidbody"] = {{"type", typeStr},
                           {"mass", rb.mass},
                           {"friction", rb.friction},
-                          {"restitution", rb.restitution}};
+                          {"restitution", rb.restitution},
+                          {"lockRotation", rb.lockRotation}};
     }
     if (reg.has<ColliderComponent>(e)) {
       const auto &col = reg.get<ColliderComponent>(e);
@@ -420,6 +422,11 @@ std::string Scene::serializeToString() const {
           {"throttle", ship.throttle}};
     }
 
+    if (reg.has<RifleComponent>(e)) {
+      const auto &w = reg.get<RifleComponent>(e).state;
+      ent["rifle"] = {{"enabled", w.enabled}, {"automatic", w.automatic},
+                      {"magazine", w.magazine}, {"reserve", w.reserve}};
+    }
     if (reg.has<CameraComponent>(e)) {
       const auto &cam = reg.get<CameraComponent>(e);
       ent["camera"] = {{"fov", cam.fov},
@@ -428,6 +435,12 @@ std::string Scene::serializeToString() const {
                        {"yaw", cam.yaw},
                        {"pitch", cam.pitch},
                        {"isPrimary", cam.isPrimary}};
+    }
+
+    if (reg.has<ScriptComponent>(e)) {
+      const auto &sc = reg.get<ScriptComponent>(e);
+      if (!sc.scriptPath.empty())
+        ent["script"] = {{"scriptPath", sc.scriptPath}};
     }
 
     root["entities"].push_back(std::move(ent));
@@ -453,6 +466,7 @@ bool Scene::loadFromString(const std::string &jsonText) {
   std::vector<PendingParent> pendingParents;
 
   for (const auto &ent : root["entities"]) {
+    if (scenePersistence::isLegacyTerrainProxy(ent)) continue;
     const uint32_t oldId = ent.value("id", 0u);
     EntityId id = mRegistry.create();
     idMap[oldId] = id;
@@ -536,6 +550,14 @@ bool Scene::loadFromString(const std::string &jsonText) {
             mc.ufbxHandle = h;
             applyBounds(mAssets->getUFBXData(h));
           }
+        } else {
+          // Procedural or generic asset IDs (e.g. gen://kitbash.v1/... or
+          // gen://import.gltf/...). In the Vulkan runtime, these are resolved
+          // by assetId directly in VulkanRenderer::renderMeshComponent.
+          auto &mc = mRegistry.emplace<MeshComponent>(id);
+          mc.assetId = assetId;
+          mc.visible = visible;
+          mc.castsShadow = castsShadow;
         }
       }
     }
@@ -583,6 +605,7 @@ bool Scene::loadFromString(const std::string &jsonText) {
       rb.mass = r.value("mass", 1.0f);
       rb.friction = r.value("friction", 0.5f);
       rb.restitution = r.value("restitution", 0.0f);
+      rb.lockRotation = r.value("lockRotation", false);
     }
     if (ent.contains("collider")) {
       auto &col = mRegistry.emplace<ColliderComponent>(id);
@@ -648,6 +671,14 @@ bool Scene::loadFromString(const std::string &jsonText) {
       ship.throttle = sj.value("throttle", 0.0f);
     }
 
+    if (ent.contains("rifle")) {
+      auto &w = mRegistry.emplace<RifleComponent>(id).state;
+      const auto &j = ent["rifle"];
+      w.enabled = j.value("enabled", true);
+      w.automatic = j.value("automatic", true);
+      w.magazine = std::clamp(j.value("magazine", 30), 0, 30);
+      w.reserve = std::clamp(j.value("reserve", 120), 0, 9999);
+    }
     if (ent.contains("camera")) {
       auto &cam = mRegistry.emplace<CameraComponent>(id);
       const auto &c = ent["camera"];
@@ -661,6 +692,12 @@ bool Scene::loadFromString(const std::string &jsonText) {
       cam.yaw = c.value("yaw", -90.0f);
       cam.pitch = c.value("pitch", 0.0f);
       cam.isPrimary = c.value("isPrimary", true);
+    }
+
+    if (ent.contains("script")) {
+      const auto &s = ent["script"];
+      auto &sc = mRegistry.emplace<ScriptComponent>(id);
+      sc.scriptPath = s.value("scriptPath", "");
     }
   }
 

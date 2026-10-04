@@ -3,6 +3,13 @@
 #include <algorithm>
 #include <cmath>
 
+std::shared_ptr<const HeightOffsetGrid> HeightOffsetGrid::snapshot() const {
+  auto copy = std::make_shared<HeightOffsetGrid>();
+  std::shared_lock<std::shared_mutex> lock(mMutex);
+  copy->mGrids = mGrids;
+  return copy;
+}
+
 std::vector<float> &HeightOffsetGrid::gridFor(ChunkCoord coord,
                                               uint32_t chunkResolution) {
   auto it = mGrids.find(coord);

@@ -58,6 +58,7 @@ struct DebugGameplayOverlay {
   glm::vec3 debugGameplayAimOrigin = glm::vec3(0.0f);
   glm::vec3 debugGameplayAimDirection = glm::vec3(0.0f, 0.0f, -1.0f);
   glm::vec3 debugGameplayHitPosition = glm::vec3(0.0f);
+  glm::vec3 debugGameplayHitNormal = glm::vec3(0.0f, 1.0f, 0.0f);
 
   // Grab debug
   uint32_t debugGrabHitId = 0;

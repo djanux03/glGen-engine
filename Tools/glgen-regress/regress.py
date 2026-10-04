@@ -29,6 +29,7 @@ non-interlaced 8-bit files stb_image_write produces.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -193,6 +194,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="glGen asset regression check.")
     parser.add_argument("--update", action="store_true",
                         help="Overwrite the goldens with the current output.")
+    parser.add_argument("--update-images", action="store_true",
+                        help="Accept reviewed shading/framing changes; keep geometry metrics gated.")
     parser.add_argument("--views", type=int, default=2,
                         help="Turntable views rendered per recipe.")
     parser.add_argument("--only", help="Only recipes whose id contains this.")
@@ -201,6 +204,7 @@ def main() -> int:
                              "and does not need a visible window.")
     parser.add_argument("--port", type=int,
                         default=int(os.environ.get("GLGEN_AGENT_PORT", "8787")))
+    parser.add_argument("--report", help="Write metrics, image results and capture hashes as JSON.")
     args = parser.parse_args()
 
     os.makedirs(GOLDEN_DIR, exist_ok=True)
@@ -221,6 +225,7 @@ def main() -> int:
 
     failures: List[str] = []
     metrics: Dict[str, Any] = {}
+    review: Dict[str, Any] = {"recipes": {}, "failures": []}
 
     with client:
         recipe_ids = client.eval("assets.list()") or []
@@ -230,7 +235,7 @@ def main() -> int:
             print("error: the engine has no recipes loaded", file=sys.stderr)
             return 1
 
-        mode = "updating goldens" if args.update else "checking"
+        mode = "updating goldens" if args.update or args.update_images else "checking"
         print(f"{mode}: {len(recipe_ids)} recipes\n")
 
         for recipe_id in recipe_ids:
@@ -256,11 +261,14 @@ def main() -> int:
                 "boundsMax": [round(v, 5) for v in info["boundsMax"]],
             }
             metrics[recipe_id] = entry
+            record = {"metrics": entry, "metricFailures": [], "images": []}
+            review["recipes"][recipe_id] = record
             print(f"  {entry['triangles']} tris, {entry['vertices']} verts, "
                   f"{entry['submeshes']} submesh(es)")
 
             if not args.update and recipe_id in baseline:
                 problems = compare_metrics(recipe_id, baseline[recipe_id], entry)
+                record["metricFailures"] = problems
                 for problem in problems:
                     failures.append(problem)
                     print(f"  FAIL  {problem}")
@@ -284,12 +292,24 @@ def main() -> int:
             for index, produced in enumerate(paths):
                 name = f"{slug}_{index:02d}.png"
                 golden = os.path.join(GOLDEN_DIR, name)
-                if args.update or not os.path.exists(golden):
+                with open(produced, "rb") as capture:
+                    capture_hash = hashlib.sha256(capture.read()).hexdigest()
+                image_record = {"name": name, "actual": produced,
+                    "sha256": capture_hash}
+                record["images"].append(image_record)
+                if args.update or args.update_images:
                     shutil.copyfile(produced, golden)
                     print(f"  saved {name}")
+                    image_record["accepted"] = True
+                    continue
+                if not os.path.exists(golden):
+                    failures.append(f"{recipe_id} {name}: missing golden")
+                    print(f"  FAIL  {name}: missing golden (use --update after review)")
+                    image_record["comparison"] = {"ok": False, "reason": "missing golden"}
                     continue
                 try:
                     result = compare_png(golden, produced)
+                    image_record["comparison"] = result
                 except ValueError as exc:
                     failures.append(f"{recipe_id} {name}: {exc}")
                     print(f"  FAIL  {name}: {exc}")
@@ -302,6 +322,9 @@ def main() -> int:
                     print(f"  FAIL  {name}  {result['reason']}")
 
     if args.update or not baseline:
+        # A subset update must not erase references for all other recipes.
+        if args.only:
+            metrics = {**baseline, **metrics}
         with open(METRICS_FILE, "w", encoding="utf-8") as handle:
             json.dump(metrics, handle, indent=2, sort_keys=True)
             handle.write("\n")
@@ -314,6 +337,11 @@ def main() -> int:
                 print(f"note: '{recipe_id}' is in the baseline but was not "
                       f"rendered (deleted recipe?)")
 
+    if args.report:
+        review["failures"] = failures
+        with open(args.report, "w", encoding="utf-8") as handle:
+            json.dump(review, handle, indent=2, sort_keys=True)
+            handle.write("\n")
     print()
     if failures:
         print(f"FAILED: {len(failures)} difference(s)")

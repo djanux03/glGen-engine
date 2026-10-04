@@ -1,6 +1,8 @@
 #version 460
 #extension GL_EXT_ray_query : require
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
 
 // Ray-traced volumetric light scattering ("god rays"), half resolution.
 // For every pixel: march from the camera toward the depth buffer's surface
@@ -10,9 +12,9 @@
 // forward lobe; steps in shadow don't -- which is exactly what carves
 // crepuscular rays through tree canopies at a low sun.
 //
-// The medium is the SAME height fog the surface shaders apply (fogParams /
-// fogHeightRef), so shafts thicken with foggy weather and hug the ground
-// when height falloff is on. Output: rgb = in-scattered radiance
+// The scattering medium has its own base density so clear-weather scenes can
+// still show shafts; it shares the surface fog's altitude reference and can
+// share its height falloff. Output: rgb = in-scattered radiance
 // (transmittance-weighted, ready for additive composite), a = the linear
 // view distance this pixel marched against (consumed by the composite
 // pass's depth-aware upsample).
@@ -23,9 +25,9 @@ layout(set = 0, binding = 0) uniform sampler2D uDepth;
 
 #include "frameData.glsl"
 #include "skyModel.glsl"
-#include "fog.glsl"
 
 layout(set = 2, binding = 0) uniform accelerationStructureEXT uTLAS;
+#include "surfaceShadow.glsl"
 
 layout(push_constant) uniform Push {
     mat4 invViewProj; // NDC + depth -> world
@@ -86,19 +88,8 @@ float phaseHG(float mu, float g) {
               kPhaseCeiling);
 }
 
-float traceShadow(vec3 origin, vec3 dir) {
-    rayQueryEXT rq;
-    rayQueryInitializeEXT(rq, uTLAS,
-                          gl_RayFlagsTerminateOnFirstHitEXT |
-                              gl_RayFlagsOpaqueEXT |
-                              gl_RayFlagsSkipClosestHitShaderEXT,
-                          0xFFu, origin, 0.02, dir, 420.0);
-    rayQueryProceedEXT(rq);
-    return rayQueryGetIntersectionTypeEXT(rq, true) ==
-                   gl_RayQueryCommittedIntersectionNoneEXT
-               ? 1.0
-               : 0.0;
-}
+// Use the same opacity micromaps as surface and water shadows. Treating a
+// needle card as opaque blocked shafts through the gaps visible in its leaves.
 
 void main() {
     vec2 uv = vNdc * 0.5 + 0.5;
@@ -126,22 +117,16 @@ void main() {
     float mu = dot(rayDir, L);
     float phase = phaseHG(mu, g);
 
-    // Medium: the SAME ground fog layer the surfaces are shaded with, sampled
-    // through fog.glsl rather than reimplemented here. The two used to carry
-    // separate copies of the falloff curve, so a shaft could hang in air the
-    // surface shaders considered clear (and vice versa) whenever one of the
-    // copies was tuned and the other wasn't.
-    //
-    // The 0.25 scale stays: the surface dial is a tuned extinction constant,
-    // not a physical scattering coefficient, and used raw it made a 90 m
-    // march optically thick (~0.6) and painted the whole sun-ward sky white.
-    // densityScale (volumetricParams2.x) remains an independent knob on top,
-    // so ray visibility is not tied 1:1 to how foggy the scene looks;
-    // heightFalloffScale (volumetricParams2.y) still lets shafts hug the
-    // ground more or less than the surface fog does.
-    float densityScale = 0.25 * uFrame.volumetricParams2.x;
-    float falloffScale = uFrame.volumetricParams2.y;
-
+    // Scattering needs its own extinction coefficient: multiplying by the
+    // surface fog density made clear presets (and GLGEN_SMOKE_NOFOG) erase
+    // god rays even though their toggle and density control were on. Keep the
+    // altitude profile anchored to the surface fog reference so shafts still
+    // hug the same ground plane, but let the volumetric density control work
+    // independently. 0.001 per density unit preserves the old optical depth
+    // around the common 0.004 surface-fog / 1.75 volumetric-density setting.
+    float densityScale = 0.001 * uFrame.volumetricParams2.x;
+    float falloff = max(uFrame.fogParams.w, 0.0) *
+                    max(uFrame.volumetricParams2.y, 0.0);
     // Organic shaft movement (editor "God Ray Turbulence"/"Wind Speed"):
     // a coarse, slowly-drifting noise field perturbs density per march
     // step below. Frequency is low (large, tens-of-meters features) so it
@@ -163,12 +148,11 @@ void main() {
     float transmittance = 1.0;
     for (int i = 0; i < steps; ++i) {
         vec3 P = camPos + rayDir * t;
-        // Shared medium (fog.glsl). The ground layer's XZ patchiness is
-        // deliberately NOT sampled per step -- it is a two-octave noise and
-        // this loop already runs one 3D octave of its own turbulence up to 32
-        // times per half-res pixel; the two would mostly cancel visually while
-        // costing three times the noise.
-        float density = fogGroundDensityScaled(P.y, falloffScale) * densityScale;
+        // Surface fog's XZ patchiness is deliberately not sampled here: it is
+        // a separate medium, and this loop already evaluates its own 3D
+        // turbulence up to 32 times per half-res pixel.
+        float density = densityScale *
+                        exp(-max(P.y - uFrame.miscParams.y, 0.0) * falloff);
         if (turbStrength > 0.0005) {
             float n = volNoise3D(P * 0.045 + windOffset);
             density *= max(1.0 + (n - 0.5) * 2.0 * turbStrength, 0.0);

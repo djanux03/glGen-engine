@@ -1,0 +1,33 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "skySHBasis.glsl"
+layout(set=0,binding=26,std430) writeonly buffer SkyOutput {vec4 coefficients[16];} outputSH;
+layout(set=3,binding=0) uniform samplerCube uEnvironment;
+layout(local_size_x=64) in;
+// A single deterministic sphere quadrature projects the finished environment,
+// including its cloud fill. Direct-light discs are excluded by the env pass.
+// 16*64*vec4 = 16 KiB: within Vulkan's minimum shared-memory guarantee.
+shared vec4 sums[16][64];
+void main() {
+ uint lane=gl_LocalInvocationIndex;vec3 value[16];for(int j=0;j<16;++j)value[j]=vec3(0);
+ const int count=1024;const float weight=12.56637061436/count;
+ for(int k=0;k<count/64;++k) {
+  float i=float(lane+uint(k*64)),y=1-2*(i+.5)/count,az=i*2.39996323;
+  vec3 direction=vec3(cos(az)*sqrt(1-y*y),y,sin(az)*sqrt(1-y*y));
+  vec3 L=textureLod(uEnvironment,direction,1).rgb;float basis[9];skySHBasis(direction,basis);
+  for(int j=0;j<9;++j)value[j]+=L*basis[j]*weight;
+  // Independent cosine quadrature supplies six validation references E/pi.
+  value[9]+=L*max(direction.x,0)*weight/3.14159265359;
+  value[10]+=L*max(-direction.x,0)*weight/3.14159265359;
+  value[11]+=L*max(direction.y,0)*weight/3.14159265359;
+  value[12]+=L*max(-direction.y,0)*weight/3.14159265359;
+  value[13]+=L*max(direction.z,0)*weight/3.14159265359;
+  value[14]+=L*max(-direction.z,0)*weight/3.14159265359;
+  value[15]+=L/float(count);
+ }
+ for(int j=0;j<16;++j)sums[j][lane]=vec4(value[j],0);barrier();
+ for(uint step=32;step>0;step>>=1) {
+  if(lane<step)for(int j=0;j<16;++j)sums[j][lane]+=sums[j][lane+step];barrier();
+ }
+ if(lane==0)for(int j=0;j<16;++j)outputSH.coefficients[j]=sums[j][0];
+}

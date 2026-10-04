@@ -24,6 +24,12 @@ struct TransformComponent {
   }
 };
 
+#include "Gameplay/RifleState.h"
+
+struct RifleComponent {
+  gameplay::RifleState state;
+};
+
 struct MeshComponent {
   enum class AssetType { None, OBJ, GLTF, FBX };
 
@@ -140,7 +146,8 @@ struct RigidbodyComponent {
   float mass = 1.0f;
   float friction = 0.5f;
   float restitution = 0.0f;
-  // When true, physics does not override Transform rotation for this body.
+  // Disable angular motion and preserve Transform rotation. For camera bodies,
+  // physics uses yaw only: camera pitch never tilts the collision capsule.
   bool lockRotation = false;
 
   // Pending forces/velocities from scripts to be applied this frame

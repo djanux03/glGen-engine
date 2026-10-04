@@ -1,0 +1,13 @@
+#version 460
+layout(local_size_x=16,local_size_y=16) in;
+layout(set=0,binding=0) uniform sampler2D uWorld;
+layout(set=0,binding=1,std430) buffer Histogram {uint counts[256];} histogram;
+void main() {
+ ivec2 size=textureSize(uWorld,0),p=ivec2(gl_GlobalInvocationID.xy)*4+ivec2(2);
+ if(any(greaterThanEqual(p,size)))return;
+ float luminance=dot(max(texelFetch(uWorld,p,0).rgb,vec3(0)),vec3(.2126,.7152,.0722));
+ uint bin=0;
+ if(luminance>0&&!isnan(luminance)&&!isinf(luminance))
+  bin=1+uint(clamp((log2(luminance)+16)*(254.0/32.0),0,254));
+ atomicAdd(histogram.counts[bin],1);
+}

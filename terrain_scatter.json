@@ -16,7 +16,7 @@
         "stands": true
       },
       "collision": "capsule",
-      "cullCellSize": 0.0,
+      "cullCellSize": 16,
       "density": 0.05000000074505806,
       "densityFalloffStart": 1000000.0,
       "foliageSssStrength": 1.149999976158142,
@@ -28,11 +28,11 @@
       "interactive": true,
       "leanMaxDeg": 4.0,
       "maxDrawDistance": 1000000.0,
-      "mesh": "assets/terraingeneratorassets/tree.obj",
+      "mesh": "assets/trees/spruce/spruce_dense.gltf",
       "meshUpAxisFixDeg": [
         0.0,
         0.0,
-        90.0
+        0.0
       ],
       "minSpacing": 6.0,
       "moistureMin": 0.30000001192092896,
@@ -41,8 +41,8 @@
       "patchThreshold": 0.3499999940395355,
       "randomYaw": true,
       "scale": [
-        0.9,
-        1.5
+        2.0,
+        3.3
       ],
       "sinkIntoGround": 0.0,
       "slopeMax": 0.44999998807907104,
@@ -54,7 +54,17 @@
       "type": "tree",
       "wind": true,
       "windSpeed": 0.3499999940395355,
-      "windStrength": 0.550000011920929
+      "windStrength": 0.550000011920929,
+      "meshLods": [
+        {
+          "mesh": "assets/trees/spruce/woodland_spruce_mid.gltf",
+          "distance": 65
+        },
+        {
+          "mesh": "assets/trees/spruce/woodland_spruce_far.gltf",
+          "distance": 170
+        }
+      ]
     },
     {
       "alignToNormal": 0.3499999940395355,
@@ -72,7 +82,7 @@
         "stands": true
       },
       "collision": "none",
-      "cullCellSize": 0.0,
+      "cullCellSize": 16,
       "density": 0.07000000029802322,
       "densityFalloffStart": 1000000.0,
       "foliageSssStrength": 1.0499999523162842,
@@ -84,11 +94,11 @@
       "interactive": false,
       "leanMaxDeg": 11.0,
       "maxDrawDistance": 1000000.0,
-      "mesh": "assets/terraingeneratorassets/tree.obj",
+      "mesh": "assets/trees/spruce/spruce_dense.gltf",
       "meshUpAxisFixDeg": [
         0.0,
         0.0,
-        90.0
+        0.0
       ],
       "minSpacing": 2.4000000953674316,
       "moistureMin": 0.25,
@@ -97,8 +107,8 @@
       "patchThreshold": 0.3499999940395355,
       "randomYaw": true,
       "scale": [
-        0.28,
-        0.6
+        0.45,
+        1.1
       ],
       "sinkIntoGround": 0.0,
       "slopeMax": 0.6000000238418579,
@@ -110,7 +120,17 @@
       "type": "tree",
       "wind": true,
       "windSpeed": 0.800000011920929,
-      "windStrength": 0.30000001192092896
+      "windStrength": 0.30000001192092896,
+      "meshLods": [
+        {
+          "mesh": "assets/trees/spruce/woodland_spruce_mid.gltf",
+          "distance": 65
+        },
+        {
+          "mesh": "assets/trees/spruce/woodland_spruce_far.gltf",
+          "distance": 170
+        }
+      ]
     },
     {
       "alignToNormal": 0.15000000596046448,
@@ -128,7 +148,7 @@
         "stands": true
       },
       "collision": "capsule",
-      "cullCellSize": 0.0,
+      "cullCellSize": 16,
       "density": 0.03,
       "densityFalloffStart": 1000000.0,
       "foliageSssStrength": 1.149999976158142,
@@ -140,11 +160,11 @@
       "interactive": true,
       "leanMaxDeg": 4.0,
       "maxDrawDistance": 1000000.0,
-      "mesh": "assets/terraingeneratorassets/tree.obj",
+      "mesh": "assets/trees/spruce/spruce_dense.gltf",
       "meshUpAxisFixDeg": [
         0.0,
         0.0,
-        90.0
+        0.0
       ],
       "minSpacing": 9.0,
       "moistureMin": 0.30000001192092896,
@@ -153,8 +173,8 @@
       "patchThreshold": 0.3499999940395355,
       "randomYaw": true,
       "scale": [
-        0.8,
-        1.35
+        1.6,
+        2.8
       ],
       "sinkIntoGround": 0.0,
       "slopeMax": 0.44999998807907104,
@@ -166,7 +186,17 @@
       "type": "tree",
       "wind": true,
       "windSpeed": 0.3499999940395355,
-      "windStrength": 0.550000011920929
+      "windStrength": 0.550000011920929,
+      "meshLods": [
+        {
+          "mesh": "assets/trees/spruce/woodland_spruce_mid.gltf",
+          "distance": 65
+        },
+        {
+          "mesh": "assets/trees/spruce/woodland_spruce_far.gltf",
+          "distance": 170
+        }
+      ]
     },
     {
       "alignToNormal": 0.800000011920929,
@@ -184,7 +214,7 @@
         "stands": false
       },
       "collision": "convex-or-sphere",
-      "cullCellSize": 0.0,
+      "cullCellSize": 16,
       "density": 0.004000000189989805,
       "densityFalloffStart": 1000000.0,
       "foliageSssStrength": 0.3499999940395355,
@@ -195,12 +225,12 @@
       ],
       "interactive": false,
       "leanMaxDeg": 0.0,
-      "maxDrawDistance": 1000000.0,
-      "mesh": "assets/terraingeneratorassets/rock.obj",
+      "maxDrawDistance": 440,
+      "mesh": "assets/terrain_dressing/fractured_granite.gltf",
       "meshUpAxisFixDeg": [
-        0.0,
-        0.0,
-        0.0
+        0,
+        0,
+        0
       ],
       "minSpacing": 0.0,
       "moistureMin": 0.0,
@@ -212,7 +242,7 @@
         0.4000000059604645,
         2.200000047683716
       ],
-      "sinkIntoGround": 0.15000000596046448,
+      "sinkIntoGround": 0.08,
       "slopeMax": 1.0,
       "tint": [
         1.0,
@@ -222,15 +252,26 @@
       "type": "rock",
       "wind": false,
       "windSpeed": 1.0,
-      "windStrength": 0.0
+      "windStrength": 0.0,
+      "meshLods": [
+        {
+          "mesh": "assets/terrain_dressing/fractured_granite_mid.gltf",
+          "distance": 65
+        },
+        {
+          "mesh": "assets/terrain_dressing/fractured_granite_far.gltf",
+          "distance": 180
+        }
+      ],
+      "avoidTracks": true
     },
     {
-      "alignToNormal": 0.699999988079071,
+      "alignToNormal": 0.9,
       "alphaCutout": false,
       "biomes": {
-        "forest": 0.44999998807907104,
-        "meadow": 1.0,
-        "mountain": 0.11999999731779099
+        "meadow": 1,
+        "forest": 0.65,
+        "mountain": 0.32
       },
       "castRayShadow": false,
       "clustering": {
@@ -240,45 +281,55 @@
         "stands": false
       },
       "collision": "none",
-      "cullCellSize": 8.0,
-      "density": 1.2000000476837158,
-      "densityFalloffStart": 55.0,
-      "foliageSssStrength": 0.699999988079071,
-      "groundOcclusion": 0.6200000047683716,
+      "cullCellSize": 3,
+      "density": 1.3,
+      "densityFalloffStart": 85,
+      "foliageSssStrength": 1.0,
+      "groundOcclusion": 0.38,
       "heightScale": [
-        0.800000011920929,
-        1.2999999523162842
+        0.78,
+        1.18
       ],
       "interactive": false,
-      "leanMaxDeg": 14.0,
-      "maxDrawDistance": 95.0,
-      "mesh": "assets/terraingeneratorassets/grass.obj",
+      "leanMaxDeg": 7,
+      "maxDrawDistance": 115,
+      "mesh": "assets/grass/meadow_fine.gltf",
       "meshUpAxisFixDeg": [
-        0.0,
-        0.0,
-        90.0
+        0,
+        0,
+        0
       ],
       "minSpacing": 0.0,
       "moistureMin": 0.0,
       "name": "grass_meadow",
-      "patchScale": 1.0,
-      "patchThreshold": 0.3400000035762787,
+      "patchScale": 1.35,
+      "patchThreshold": 0.4,
       "randomYaw": true,
       "scale": [
-        0.44999998807907104,
-        0.8500000238418579
+        0.85,
+        1.15
       ],
-      "sinkIntoGround": 0.05999999865889549,
+      "sinkIntoGround": 0.015,
       "slopeMax": 0.7200000286102295,
       "tint": [
-        0.41999998688697815,
-        0.6600000262260437,
-        0.25999999046325684
+        1,
+        1,
+        1
       ],
       "type": "grass",
       "wind": true,
       "windSpeed": 1.600000023841858,
-      "windStrength": 0.12999999523162842
+      "windStrength": 0.045,
+      "meshLods": [
+        {
+          "mesh": "assets/grass/meadow_fine_mid.gltf",
+          "distance": 12
+        },
+        {
+          "mesh": "assets/grass/meadow_fine_far.gltf",
+          "distance": 40
+        }
+      ]
     },
     {
       "alignToNormal": 0.5,
@@ -296,45 +347,712 @@
         "stands": false
       },
       "collision": "none",
-      "cullCellSize": 10.0,
-      "density": 0.44999998807907104,
-      "densityFalloffStart": 70.0,
-      "foliageSssStrength": 0.800000011920929,
-      "groundOcclusion": 0.550000011920929,
+      "cullCellSize": 3,
+      "density": 0.28,
+      "densityFalloffStart": 80,
+      "foliageSssStrength": 1.0,
+      "groundOcclusion": 0.38,
       "heightScale": [
-        1.2999999523162842,
-        2.0
+        0.8,
+        1.15
       ],
       "interactive": false,
-      "leanMaxDeg": 20.0,
-      "maxDrawDistance": 110.0,
-      "mesh": "assets/terraingeneratorassets/grass.obj",
+      "leanMaxDeg": 5,
+      "maxDrawDistance": 110,
+      "mesh": "assets/grass/meadow_seedheads.gltf",
       "meshUpAxisFixDeg": [
-        0.0,
-        0.0,
-        90.0
+        0,
+        0,
+        0
       ],
       "minSpacing": 0.0,
       "moistureMin": 0.0,
       "name": "grass_tuft",
       "patchScale": 2.299999952316284,
-      "patchThreshold": 0.46000000834465027,
+      "patchThreshold": 0.46,
       "randomYaw": true,
       "scale": [
-        0.6000000238418579,
-        1.0
+        0.85,
+        1.15
       ],
-      "sinkIntoGround": 0.10000000149011612,
+      "sinkIntoGround": 0.015,
       "slopeMax": 0.800000011920929,
       "tint": [
-        0.550000011920929,
-        0.6200000047683716,
-        0.23999999463558197
+        1,
+        1,
+        1
       ],
       "type": "grass",
       "wind": true,
       "windSpeed": 1.25,
-      "windStrength": 0.25999999046325684
+      "windStrength": 0.045,
+      "meshLods": [
+        {
+          "mesh": "assets/grass/meadow_seedheads_mid.gltf",
+          "distance": 12
+        },
+        {
+          "mesh": "assets/grass/meadow_seedheads_far.gltf",
+          "distance": 40
+        }
+      ]
+    },
+    {
+      "name": "hazel_understory",
+      "mesh": "assets/terrain_dressing/hazel_bush.gltf",
+      "type": "tree",
+      "density": 0.055,
+      "biomes": {
+        "meadow": 0.3,
+        "forest": 1,
+        "mountain": 0.08
+      },
+      "scale": [
+        0.8,
+        1.5
+      ],
+      "heightScale": [
+        0.88,
+        1.12
+      ],
+      "meshUpAxisFixDeg": [
+        0,
+        0,
+        0
+      ],
+      "randomYaw": true,
+      "alignToNormal": 0.15,
+      "slopeMax": 0.55,
+      "minSpacing": 2.3,
+      "moistureMin": 0,
+      "sinkIntoGround": 0.035,
+      "collision": "none",
+      "interactive": false,
+      "castRayShadow": true,
+      "cullCellSize": 8,
+      "maxDrawDistance": 240,
+      "densityFalloffStart": 180.0,
+      "tint": [
+        1,
+        1,
+        1
+      ],
+      "groundOcclusion": 0.25,
+      "wind": true,
+      "windStrength": 0.09,
+      "windSpeed": 0.65,
+      "alphaCutout": true,
+      "foliageSssStrength": 0.7,
+      "patchScale": 1.2,
+      "patchThreshold": 0.43,
+      "clustering": {
+        "stands": false,
+        "outcrops": false,
+        "clearingChance": 0.15,
+        "standRadius": 12
+      },
+      "meshLods": [
+        {
+          "mesh": "assets/terrain_dressing/hazel_bush_mid.gltf",
+          "distance": 32
+        },
+        {
+          "mesh": "assets/terrain_dressing/hazel_bush_far.gltf",
+          "distance": 90
+        }
+      ],
+      "avoidTracks": false,
+      "receivesSnow": true
+    },
+    {
+      "name": "low_bank_scrub",
+      "mesh": "assets/terrain_dressing/low_scrub.gltf",
+      "type": "tree",
+      "density": 0.055,
+      "biomes": {
+        "meadow": 0.55,
+        "forest": 0.4,
+        "mountain": 0.5
+      },
+      "scale": [
+        0.85,
+        1.5
+      ],
+      "heightScale": [
+        0.88,
+        1.12
+      ],
+      "meshUpAxisFixDeg": [
+        0,
+        0,
+        0
+      ],
+      "randomYaw": true,
+      "alignToNormal": 0.15,
+      "slopeMax": 0.55,
+      "minSpacing": 2.4,
+      "moistureMin": 0,
+      "sinkIntoGround": 0.035,
+      "collision": "none",
+      "interactive": false,
+      "castRayShadow": true,
+      "cullCellSize": 8,
+      "maxDrawDistance": 210,
+      "densityFalloffStart": 157.5,
+      "tint": [
+        1,
+        1,
+        1
+      ],
+      "groundOcclusion": 0.25,
+      "wind": true,
+      "windStrength": 0.09,
+      "windSpeed": 0.65,
+      "alphaCutout": true,
+      "foliageSssStrength": 0.7,
+      "patchScale": 1.2,
+      "patchThreshold": 0.48,
+      "clustering": {
+        "stands": false,
+        "outcrops": false,
+        "clearingChance": 0.15,
+        "standRadius": 12
+      },
+      "meshLods": [
+        {
+          "mesh": "assets/terrain_dressing/low_scrub_mid.gltf",
+          "distance": 28
+        },
+        {
+          "mesh": "assets/terrain_dressing/low_scrub_far.gltf",
+          "distance": 75
+        }
+      ],
+      "avoidTracks": false,
+      "receivesSnow": true
+    },
+    {
+      "name": "woodland_fern_patches",
+      "mesh": "assets/terrain_dressing/woodland_fern.gltf",
+      "type": "grass",
+      "density": 0.26,
+      "biomes": {
+        "meadow": 0.08,
+        "forest": 1,
+        "mountain": 0.04
+      },
+      "scale": [
+        0.55,
+        1.1
+      ],
+      "heightScale": [
+        0.88,
+        1.12
+      ],
+      "meshUpAxisFixDeg": [
+        0,
+        0,
+        0
+      ],
+      "randomYaw": true,
+      "alignToNormal": 0.15,
+      "slopeMax": 0.55,
+      "minSpacing": 0.65,
+      "moistureMin": 0.35,
+      "sinkIntoGround": 0.035,
+      "collision": "none",
+      "interactive": false,
+      "castRayShadow": false,
+      "cullCellSize": 8,
+      "maxDrawDistance": 110,
+      "densityFalloffStart": 82.5,
+      "tint": [
+        1,
+        1,
+        1
+      ],
+      "groundOcclusion": 0.32,
+      "wind": true,
+      "windStrength": 0.055,
+      "windSpeed": 0.65,
+      "alphaCutout": false,
+      "foliageSssStrength": 0.5,
+      "patchScale": 1.2,
+      "patchThreshold": 0.43,
+      "clustering": {
+        "stands": false,
+        "outcrops": false,
+        "clearingChance": 0.15,
+        "standRadius": 12
+      },
+      "meshLods": [
+        {
+          "mesh": "assets/terrain_dressing/woodland_fern_mid.gltf",
+          "distance": 38
+        },
+        {
+          "mesh": "assets/terrain_dressing/woodland_fern_far.gltf",
+          "distance": 75
+        }
+      ],
+      "avoidTracks": false,
+      "receivesSnow": false
+    },
+    {
+      "name": "small_stone_beds",
+      "mesh": "assets/terrain_dressing/pebble_bed.gltf",
+      "type": "rock",
+      "density": 0.08,
+      "biomes": {
+        "meadow": 0.7,
+        "forest": 0.45,
+        "mountain": 1
+      },
+      "scale": [
+        0.7,
+        1.6
+      ],
+      "heightScale": [
+        0.88,
+        1.12
+      ],
+      "meshUpAxisFixDeg": [
+        0,
+        0,
+        0
+      ],
+      "randomYaw": true,
+      "alignToNormal": 0.8,
+      "slopeMax": 0.85,
+      "minSpacing": 1.3,
+      "moistureMin": 0,
+      "sinkIntoGround": 0.005,
+      "collision": "none",
+      "interactive": false,
+      "castRayShadow": false,
+      "cullCellSize": 8,
+      "maxDrawDistance": 90,
+      "densityFalloffStart": 67.5,
+      "tint": [
+        1,
+        1,
+        1
+      ],
+      "groundOcclusion": 0.25,
+      "wind": false,
+      "windStrength": 0.055,
+      "windSpeed": 0.65,
+      "alphaCutout": false,
+      "foliageSssStrength": 0,
+      "patchScale": 1.2,
+      "patchThreshold": 0.54,
+      "clustering": {
+        "stands": false,
+        "outcrops": false,
+        "clearingChance": 0.15,
+        "standRadius": 12
+      },
+      "meshLods": [
+        {
+          "mesh": "assets/terrain_dressing/pebble_bed_mid.gltf",
+          "distance": 35
+        },
+        {
+          "mesh": "assets/terrain_dressing/pebble_bed_far.gltf",
+          "distance": 65
+        }
+      ],
+      "avoidTracks": false,
+      "receivesSnow": true
+    },
+    {
+      "name": "fractured_rock_slabs",
+      "mesh": "assets/terrain_dressing/granite_slab.gltf",
+      "type": "rock",
+      "density": 0.0018,
+      "biomes": {
+        "meadow": 0.25,
+        "forest": 0.5,
+        "mountain": 1
+      },
+      "scale": [
+        0.55,
+        1.4
+      ],
+      "heightScale": [
+        0.88,
+        1.12
+      ],
+      "meshUpAxisFixDeg": [
+        0,
+        0,
+        0
+      ],
+      "randomYaw": true,
+      "alignToNormal": 0.55,
+      "slopeMax": 0.85,
+      "minSpacing": 5,
+      "moistureMin": 0,
+      "sinkIntoGround": 0.12,
+      "collision": "convex-or-sphere",
+      "interactive": false,
+      "castRayShadow": true,
+      "cullCellSize": 8,
+      "maxDrawDistance": 360,
+      "densityFalloffStart": 270.0,
+      "tint": [
+        1,
+        1,
+        1
+      ],
+      "groundOcclusion": 0.25,
+      "wind": false,
+      "windStrength": 0.055,
+      "windSpeed": 0.65,
+      "alphaCutout": false,
+      "foliageSssStrength": 0,
+      "patchScale": 1.2,
+      "patchThreshold": 0.43,
+      "clustering": {
+        "stands": false,
+        "outcrops": true,
+        "clearingChance": 0,
+        "standRadius": 25
+      },
+      "meshLods": [
+        {
+          "mesh": "assets/terrain_dressing/granite_slab_mid.gltf",
+          "distance": 65
+        },
+        {
+          "mesh": "assets/terrain_dressing/granite_slab_far.gltf",
+          "distance": 180
+        }
+      ],
+      "avoidTracks": true,
+      "receivesSnow": true
+    },
+    {
+      "name": "fractured_rock_crags",
+      "mesh": "assets/terrain_dressing/granite_crag.gltf",
+      "type": "rock",
+      "density": 0.0009,
+      "biomes": {
+        "meadow": 0.1,
+        "forest": 0.45,
+        "mountain": 1
+      },
+      "scale": [
+        0.55,
+        1.25
+      ],
+      "heightScale": [
+        0.88,
+        1.12
+      ],
+      "meshUpAxisFixDeg": [
+        0,
+        0,
+        0
+      ],
+      "randomYaw": true,
+      "alignToNormal": 0.25,
+      "slopeMax": 0.8,
+      "minSpacing": 7,
+      "moistureMin": 0,
+      "sinkIntoGround": 0.15,
+      "collision": "convex-or-sphere",
+      "interactive": false,
+      "castRayShadow": true,
+      "cullCellSize": 8,
+      "maxDrawDistance": 400,
+      "densityFalloffStart": 300.0,
+      "tint": [
+        1,
+        1,
+        1
+      ],
+      "groundOcclusion": 0.25,
+      "wind": false,
+      "windStrength": 0.055,
+      "windSpeed": 0.65,
+      "alphaCutout": false,
+      "foliageSssStrength": 0,
+      "patchScale": 1.2,
+      "patchThreshold": 0.43,
+      "clustering": {
+        "stands": false,
+        "outcrops": false,
+        "clearingChance": 0.15,
+        "standRadius": 12
+      },
+      "meshLods": [
+        {
+          "mesh": "assets/terrain_dressing/granite_crag_mid.gltf",
+          "distance": 65
+        },
+        {
+          "mesh": "assets/terrain_dressing/granite_crag_far.gltf",
+          "distance": 180
+        }
+      ],
+      "avoidTracks": true,
+      "receivesSnow": true
+    },
+    {
+      "name": "forest_floor_deadwood",
+      "mesh": "assets/terrain_dressing/forest_deadwood.gltf",
+      "type": "rock",
+      "density": 0.022,
+      "biomes": {
+        "meadow": 0.06,
+        "forest": 0.85,
+        "mountain": 0.03
+      },
+      "scale": [
+        0.8,
+        1.4
+      ],
+      "heightScale": [
+        0.88,
+        1.12
+      ],
+      "meshUpAxisFixDeg": [
+        0,
+        0,
+        0
+      ],
+      "randomYaw": true,
+      "alignToNormal": 0.8,
+      "slopeMax": 0.55,
+      "minSpacing": 2.1,
+      "moistureMin": 0,
+      "sinkIntoGround": 0.02,
+      "collision": "none",
+      "interactive": false,
+      "castRayShadow": false,
+      "cullCellSize": 8,
+      "maxDrawDistance": 120,
+      "densityFalloffStart": 90.0,
+      "tint": [
+        1,
+        1,
+        1
+      ],
+      "groundOcclusion": 0.25,
+      "wind": false,
+      "windStrength": 0.055,
+      "windSpeed": 0.65,
+      "alphaCutout": false,
+      "foliageSssStrength": 0,
+      "patchScale": 1.2,
+      "patchThreshold": 0.4,
+      "clustering": {
+        "stands": false,
+        "outcrops": false,
+        "clearingChance": 0.15,
+        "standRadius": 12
+      },
+      "avoidTracks": true,
+      "receivesSnow": true
+    },
+    {
+      "alignToNormal": 0.9,
+      "alphaCutout": false,
+      "biomes": {
+        "meadow": 1,
+        "forest": 0.65,
+        "mountain": 0.32
+      },
+      "castRayShadow": false,
+      "clustering": {
+        "clearingChance": 0.25,
+        "outcrops": false,
+        "standRadius": 25.0,
+        "stands": false
+      },
+      "collision": "none",
+      "cullCellSize": 3,
+      "density": 1.0,
+      "densityFalloffStart": 70,
+      "foliageSssStrength": 1.0,
+      "groundOcclusion": 0.38,
+      "heightScale": [
+        0.8,
+        1.2
+      ],
+      "interactive": false,
+      "leanMaxDeg": 3,
+      "maxDrawDistance": 90,
+      "mesh": "assets/grass/meadow_low.gltf",
+      "meshUpAxisFixDeg": [
+        0,
+        0,
+        0
+      ],
+      "minSpacing": 0.0,
+      "moistureMin": 0.0,
+      "name": "grass_low_sward",
+      "patchScale": 1.8,
+      "patchThreshold": 0.42,
+      "randomYaw": true,
+      "scale": [
+        0.85,
+        1.2
+      ],
+      "sinkIntoGround": 0.015,
+      "slopeMax": 0.7200000286102295,
+      "tint": [
+        1,
+        1,
+        1
+      ],
+      "type": "grass",
+      "wind": true,
+      "windSpeed": 1.600000023841858,
+      "windStrength": 0.025,
+      "meshLods": [
+        {
+          "mesh": "assets/grass/meadow_low_mid.gltf",
+          "distance": 12
+        },
+        {
+          "mesh": "assets/grass/meadow_low_far.gltf",
+          "distance": 40
+        }
+      ]
+    },
+    {
+      "alignToNormal": 0.9,
+      "alphaCutout": false,
+      "biomes": {
+        "meadow": 1,
+        "forest": 0.65,
+        "mountain": 0.32
+      },
+      "castRayShadow": false,
+      "clustering": {
+        "clearingChance": 0.25,
+        "outcrops": false,
+        "standRadius": 25.0,
+        "stands": false
+      },
+      "collision": "none",
+      "cullCellSize": 3,
+      "density": 0.8,
+      "densityFalloffStart": 85,
+      "foliageSssStrength": 1.0,
+      "groundOcclusion": 0.38,
+      "heightScale": [
+        0.78,
+        1.18
+      ],
+      "interactive": false,
+      "leanMaxDeg": 7,
+      "maxDrawDistance": 115,
+      "mesh": "assets/grass/meadow_broad.gltf",
+      "meshUpAxisFixDeg": [
+        0,
+        0,
+        0
+      ],
+      "minSpacing": 0.0,
+      "moistureMin": 0.0,
+      "name": "grass_broad_leaf",
+      "patchScale": 1.8,
+      "patchThreshold": 0.4,
+      "randomYaw": true,
+      "scale": [
+        0.85,
+        1.15
+      ],
+      "sinkIntoGround": 0.015,
+      "slopeMax": 0.7200000286102295,
+      "tint": [
+        1,
+        1,
+        1
+      ],
+      "type": "grass",
+      "wind": true,
+      "windSpeed": 1.600000023841858,
+      "windStrength": 0.045,
+      "meshLods": [
+        {
+          "mesh": "assets/grass/meadow_broad_mid.gltf",
+          "distance": 12
+        },
+        {
+          "mesh": "assets/grass/meadow_broad_far.gltf",
+          "distance": 40
+        }
+      ]
+    },
+    {
+      "alignToNormal": 0.9,
+      "alphaCutout": false,
+      "biomes": {
+        "meadow": 1,
+        "forest": 0.65,
+        "mountain": 0.32
+      },
+      "castRayShadow": false,
+      "clustering": {
+        "clearingChance": 0.25,
+        "outcrops": false,
+        "standRadius": 25.0,
+        "stands": false
+      },
+      "collision": "none",
+      "cullCellSize": 3,
+      "density": 0.5,
+      "densityFalloffStart": 85,
+      "foliageSssStrength": 1.0,
+      "groundOcclusion": 0.38,
+      "heightScale": [
+        0.78,
+        1.18
+      ],
+      "interactive": false,
+      "leanMaxDeg": 7,
+      "maxDrawDistance": 115,
+      "mesh": "assets/grass/meadow_dry.gltf",
+      "meshUpAxisFixDeg": [
+        0,
+        0,
+        0
+      ],
+      "minSpacing": 0.0,
+      "moistureMin": 0.0,
+      "name": "grass_dry_stems",
+      "patchScale": 2.1,
+      "patchThreshold": 0.4,
+      "randomYaw": true,
+      "scale": [
+        0.85,
+        1.15
+      ],
+      "sinkIntoGround": 0.015,
+      "slopeMax": 0.7200000286102295,
+      "tint": [
+        1,
+        1,
+        1
+      ],
+      "type": "grass",
+      "wind": true,
+      "windSpeed": 1.600000023841858,
+      "windStrength": 0.045,
+      "meshLods": [
+        {
+          "mesh": "assets/grass/meadow_dry_mid.gltf",
+          "distance": 12
+        },
+        {
+          "mesh": "assets/grass/meadow_dry_far.gltf",
+          "distance": 40
+        }
+      ]
     }
   ],
   "version": 6

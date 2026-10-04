@@ -1,0 +1,13 @@
+{
+  "generator": "Tools/bake_cloud_detail.py",
+  "algorithm": "Periodic cellular F1; fixed integer lattice hashing",
+  "dimensions": [
+    128,
+    128,
+    128,
+    4
+  ],
+  "seed": 74565,
+  "externalInputs": [],
+  "sha256": "bd970508bcd045908c671168ddd9375d9d5d62d80b9a336e0a712eab3d867e8e"
+}

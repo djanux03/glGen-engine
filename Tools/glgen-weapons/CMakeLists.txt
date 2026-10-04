@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.14)
+project(glgen_weapon_import LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 17)
+add_executable(weapon_import import.cpp ../../ThirdParty/src/ufbx.c)
+target_include_directories(weapon_import PRIVATE ../../ThirdParty/include)

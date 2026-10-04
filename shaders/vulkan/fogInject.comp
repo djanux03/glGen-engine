@@ -1,0 +1,70 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#include "frameData.glsl"
+#include "atmosphereData.glsl"
+#include "skyModel.glsl"
+#include "fog.glsl"
+#include "fogMedium.glsl"
+layout(set=2,binding=0) uniform accelerationStructureEXT uTLAS;
+layout(set=3,binding=0) uniform samplerCube uEnvironment;
+#define SKY_ENVIRONMENT_SET 3
+#include "skyIrradiance.glsl"
+#define CLOUD_SHADOW_SET 3
+#include "cloudShadow.glsl"
+#include "surfaceShadow.glsl"
+layout(set=0,binding=4,rgba16f) writeonly uniform image3D uFogOutput;
+layout(local_size_x=4,local_size_y=4,local_size_z=4) in;
+void main() {
+    ivec3 cell=ivec3(gl_GlobalInvocationID),size=imageSize(uFogOutput);
+    if(any(greaterThanEqual(cell,size))) return;
+    if(uAtmosphere.reference.a>=0) {
+        imageStore(uFogOutput,cell,vec4(uAtmosphere.reference.rgb*uAtmosphere.reference.a,uAtmosphere.reference.a));
+        return;
+    }
+    vec2 uv=(vec2(cell.xy)+.5)/vec2(size.xy);
+    float lo=fogBoundary(float(cell.z)),hi=fogBoundary(float(cell.z+1));
+    vec3 begin=fogPosition(uv,lo),end=fogPosition(uv,hi);
+    vec3 ray=normalize(end-begin);
+    float distance=length(end-begin);
+    // A repeatable eight-sample cycle; fixed time freezes medium animation.
+    float jitter=fract(float(cell.x*37+cell.y*17+cell.z*13)*.61803398875+uAtmosphere.history.z*.754877666);
+    vec3 p=mix(begin,end,.25+.5*jitter);
+    float startDistance=length(begin-uAtmosphere.camera.xyz);
+    float skip=clamp(uAtmosphere.ground.w-startDistance,0.0,distance);
+    float ground=fogHeightIntegral(begin.y+ray.y*skip,ray.y,distance-skip,uAtmosphere.ground.x,uAtmosphere.ground.y,uAtmosphere.ground.z)/max(distance,1e-6)*fogGroundNoise(p.xz);
+    float dust=uAtmosphere.dust.x*exp(-max(p.y-uAtmosphere.ground.z,0.0)*uAtmosphere.ground.y*uAtmosphere.dust.y);
+    vec3 turbulence=(p+vec3(uFrame.miscParams.z*uAtmosphere.artistic.w,0,uFrame.miscParams.z*uAtmosphere.artistic.w*.4))*.035;
+    float noise=(fogNoise2D(turbulence.xy)+fogNoise2D(turbulence.yz)+fogNoise2D(turbulence.zx))/3.0;
+    dust*=mix(1.0,.35+1.3*noise,clamp(uAtmosphere.artistic.z,0.0,1.0));
+    float blizzard=fogBlizzardExtinction(p);
+    ground+=blizzard;
+    ground+=fogTerrainExtinction(p,hi);
+    vec3 groundAlbedo=fogGroundScatteringAlbedo();
+    vec3 scattering=ground*groundAlbedo+dust*uAtmosphere.dustAlbedo.rgb;
+    float extinction=ground+dust;
+    vec3 source=vec3(0);
+    if(extinction>1e-7) {
+        vec3 L=normalize(-uFrame.lightDir.xyz);
+        float phaseGround=fogHG(dot(ray,L),uAtmosphere.groundAlbedo.w);
+        float phaseDust=fogHG(dot(ray,L),uAtmosphere.dust.z);
+        float visibility=uAtmosphere.controls.x>.5 && max(max(uFrame.sunRadiance.r,uFrame.sunRadiance.g),uFrame.sunRadiance.b)>1e-6 ? traceShadowMasked(p,L,420.0,0xffu) : 1;
+        source=(ground*groundAlbedo*phaseGround+dust*uAtmosphere.dustAlbedo.rgb*phaseDust)*uFrame.sunRadiance.rgb*visibility*cloudTransmission(p);
+        float canopy=texture(uFogVisibility,(vec3(cell)+.5)/vec3(size)).r;
+        vec3 ambient=(uFrame.skyLutParams.x>.5?skyMeanRadiance():textureLod(uEnvironment,vec3(0,1,0),4).rgb)*uFrame.lightParams.x;
+        source+=scattering*ambient*canopy;
+        for(int i=0;i<min(int(uFrame.pointLightParams.x),4);++i) {
+            vec3 delta=uFrame.pointLightPositionRadius[i].xyz-p;
+            float dist=max(length(delta),.0001),radius=uFrame.pointLightPositionRadius[i].w;
+            float window=pow(clamp(1.0-pow(dist/radius,4.0),0,1),2.0);
+            if(window<=0||uAtmosphere.pointControls[i].x<=0) continue;
+            vec3 direction=delta/dist;
+            float shadow=uAtmosphere.pointControls[i].y>.5 ? traceShadowMasked(p,direction,max(dist-.03,.003),0xffu) : 1;
+            vec3 radiance=uFrame.pointLightColorIntensity[i].rgb*uFrame.pointLightColorIntensity[i].w*window/max(dist*dist,.16);
+            source+=(ground*groundAlbedo*fogHG(dot(ray,direction),uAtmosphere.groundAlbedo.w)+dust*uAtmosphere.dustAlbedo.rgb*fogHG(dot(ray,direction),uAtmosphere.dust.z))*radiance*shadow*uAtmosphere.pointControls[i].x;
+        }
+    }
+    imageStore(uFogOutput,cell,vec4(max(source,vec3(0)),extinction));
+}

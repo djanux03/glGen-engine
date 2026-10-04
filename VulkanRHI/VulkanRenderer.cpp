@@ -1,6 +1,9 @@
+#include <filesystem>
 #include "VulkanRenderer.h"
 
 #include "Assets/MeshData.h" // engine CPU model data (::MeshData)
+#include "Rendering/Material.h" // MaterialAsset
+#include "Rendering/SkyAtmosphere.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -251,6 +254,9 @@ bool VulkanRenderer::init(
     return false;
   if (!createTonemapResources())
     return false;
+  if (!createTemporalResources())
+    return false;
+  updateTemporalSets();
   updateTonemapSets();
   // Before createScenePipeline: the scene pipeline layout's 4th descriptor
   // set (AO texture) is mAOSamplerSetLayout, created here.
@@ -258,14 +264,10 @@ bool VulkanRenderer::init(
     return false;
   updateSSAOSets();
   // Reuses mAOSamplerSetLayout from createSSAOResources() above.
-  if (!createBloomResources())
-    return false;
-  updateBloomSets();
   // Env cubemap + volumetric sampler sets also reuse mAOSamplerSetLayout;
   // the volumetric scatter image itself lives in createSceneTargets().
   if (!createEnvMapResources())
     return false;
-  updateVolumetricSets();
   // Cloud noise must load before createCloudPipelines (its descriptor set
   // layout is part of the march's pipeline layout) and before updateCloudSets
   // (which needs the pool the load allocates from).
@@ -280,13 +282,15 @@ bool VulkanRenderer::init(
     return false;
   if (!createDepthPrepassPipelines(shaderDir))
     return false;
+  if (!mAtmosphere.init(ctx, shaderDir, mFrameSetLayout, mTlasSetLayout, mEnvironmentSetLayout,mCloudNoiseSetLayout))
+    return false;
+  if(!mCloudHistory.init(ctx,shaderDir))return false;
+  if(!mExposureMeter.init(ctx,shaderDir))return false;
   if (!createSkyPipeline(shaderDir))
     return false;
   if (!createEnvMapPipeline(shaderDir))
     return false;
   if (!createWaterPipeline(shaderDir))
-    return false;
-  if (!createVolumetricPipelines(shaderDir))
     return false;
   if (!createCloudPipelines(shaderDir))
     return false;
@@ -294,13 +298,11 @@ bool VulkanRenderer::init(
     return false;
   if (!createBlurPipeline(shaderDir))
     return false;
-  if (!createBloomExtractPipeline(shaderDir))
-    return false;
-  if (!createBloomBlurPipeline(shaderDir))
-    return false;
   if (!createLinePipeline(shaderDir))
     return false;
   if (!createTonemapPipeline(shaderDir))
+    return false;
+  if (!createTemporalPipeline(shaderDir))
     return false;
   // Scene is supplied by the caller via createMeshFromObj()/addInstance() and
   // finalized with finalizeScene() before the first drawFrame().
@@ -422,6 +424,7 @@ void VulkanRenderer::flushPendingCopiesImmediate() {
 }
 
 VulkanRenderer::MeshHandle VulkanRenderer::acquireMeshSlot(Mesh &&mesh) {
+  ++mRtAlphaVersion;
   if (!mFreeMeshSlots.empty()) {
     const MeshHandle slot = mFreeMeshSlots.back();
     mFreeMeshSlots.pop_back();
@@ -443,12 +446,228 @@ bool VulkanRenderer::createSampler() {
   samplerCi.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
   samplerCi.maxLod = VK_LOD_CLAMP_NONE;
   VK_CHECK(vkCreateSampler(mCtx->device(), &samplerCi, nullptr, &mSampler));
+
+  // Material sampler: same addressing, plus anisotropy. Ground textures are
+  // seen at grazing angles almost everywhere in a terrain game; isotropic
+  // trilinear picks the mip from the LONG axis of the pixel footprint and
+  // blurs a meadow into a flat smear a few metres from the camera.
+  VkPhysicalDeviceFeatures feats{};
+  vkGetPhysicalDeviceFeatures(mCtx->physicalDevice(), &feats);
+  if (feats.samplerAnisotropy) {
+    samplerCi.anisotropyEnable = VK_TRUE;
+    samplerCi.maxAnisotropy =
+        std::min(16.0f, mCtx->properties().limits.maxSamplerAnisotropy);
+  }
+  VK_CHECK(vkCreateSampler(mCtx->device(), &samplerCi, nullptr,
+                           &mMaterialSampler));
   return true;
 }
 
+namespace {
+// Software opacity micromaps (after VK_EXT_opacity_micromap, which Ampere and
+// older lack). For each alpha-tested triangle, a 16x16 barycentric
+// subdivision gives 256 micro-triangles; each gets one bit: does the
+// material's alpha pass at that spot. A shadow ray's candidate hit then
+// costs one bit test instead of fetching three indices, three UVs and a
+// texel through buffer references -- measured at ~28 ms/frame in a spruce
+// forest with the direct lookup, versus ~1 ms for a free test. The mask is
+// built from a coarse COVERAGE grid rather than point samples, because a
+// micro-triangle on a needle card spans many needles; a shadow needs their
+// silhouette, which is what the eye resolves from a cast shadow anyway.
+//
+// Micro-triangle numbering (shared with surfaceShadow.glsl): with
+// x = b1*N, y = b2*N, row j = floor(y), column i = floor(x), and "upper"
+// when fract(x)+fract(y) > 1, index = 2Nj - j^2 + 2i + upper.
+void buildTriangleMicromap(const glm::vec2 uv[3], const std::vector<float> &cov,
+                           uint32_t gridW, uint32_t gridH, uint32_t *words) {
+  constexpr uint32_t N = 16;
+  const auto sample = [&](glm::vec2 t) {
+    t -= glm::floor(t); // REPEAT addressing, like the material sampler
+    const uint32_t gx = std::min(static_cast<uint32_t>(t.x * gridW), gridW - 1);
+    const uint32_t gy = std::min(static_cast<uint32_t>(t.y * gridH), gridH - 1);
+    return cov[static_cast<size_t>(gy) * gridW + gx];
+  };
+  for (uint32_t w = 0; w < N * N / 32; ++w)
+    words[w] = 0;
+  for (uint32_t j = 0; j < N; ++j)
+    for (uint32_t i = 0; i + j < N; ++i)
+      for (uint32_t upper = 0; upper < 2; ++upper) {
+        if (upper && i + j + 2 > N)
+          continue;
+        const float x = (static_cast<float>(i) + (upper ? 2.0f : 1.0f) / 3.0f) / N;
+        const float y = (static_cast<float>(j) + (upper ? 2.0f : 1.0f) / 3.0f) / N;
+        const glm::vec2 t = uv[0] * (1.0f - x - y) + uv[1] * x + uv[2] * y;
+        // Footprint threshold, as in the cut-out mips' distant levels: any
+        // meaningful share of needles in the cell makes it cast shadow.
+        if (sample(t) < 0.18f)
+          continue;
+        const uint32_t index = 2 * N * j - j * j + 2 * i + upper;
+        words[index >> 5] |= 1u << (index & 31u);
+      }
+}
+
+// Cut-out textures (foliage cards, fences, hair) need their mips built with
+// alpha COVERAGE preserved. Averaging alpha shrinks a sparse needle mask
+// toward its mean at every level -- a spray covering 13% of its card has
+// alpha ~0.13 by mip 3 -- so past a few metres every texel fails a 0.5
+// cutoff and whole branches vanish. Castano (2010): after box-filtering each
+// level, rescale its alpha so the fraction of texels passing the cutoff
+// matches the base level. Colour is averaged in linear space for sRGB data.
+// Returns the concatenated levels, largest first.
+std::vector<uint8_t> buildCoveragePreservingMips(const uint8_t *rgba, uint32_t w,
+                                                 uint32_t h, bool srgb,
+                                                 uint32_t levels,
+                                                 std::vector<VkDeviceSize> &offsets,
+                                                 bool growFootprint) {
+  static float toLinear[256];
+  static bool tableReady = false;
+  if (!tableReady) {
+    for (int i = 0; i < 256; ++i) {
+      const float c = i / 255.0f;
+      toLinear[i] = c <= 0.04045f ? c / 12.92f
+                                  : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    }
+    tableReady = true;
+  }
+  const auto encode = [&](float v) -> uint8_t {
+    v = std::clamp(v, 0.0f, 1.0f);
+    if (srgb)
+      v = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+    return static_cast<uint8_t>(std::lround(v * 255.0f));
+  };
+  constexpr float kCutoff = 0.5f;
+  const auto coverage = [&](const std::vector<float> &a, float scale) {
+    size_t n = 0;
+    for (float v : a)
+      n += (v * scale >= kCutoff) ? 1 : 0;
+    return static_cast<float>(n) / static_cast<float>(std::max<size_t>(a.size(), 1));
+  };
+
+  // Linear float working copy of the current level.
+  uint32_t cw = w, ch = h;
+  std::vector<float> cur(static_cast<size_t>(w) * h * 4);
+  for (size_t i = 0; i < static_cast<size_t>(w) * h; ++i) {
+    for (int c = 0; c < 3; ++c)
+      cur[i * 4 + c] = srgb ? toLinear[rgba[i * 4 + c]] : rgba[i * 4 + c] / 255.0f;
+    cur[i * 4 + 3] = rgba[i * 4 + 3] / 255.0f;
+  }
+  std::vector<float> alpha0(static_cast<size_t>(w) * h);
+  for (size_t i = 0; i < alpha0.size(); ++i)
+    alpha0[i] = cur[i * 4 + 3];
+  const float targetCoverage = coverage(alpha0, 1.0f);
+
+  std::vector<uint8_t> out;
+  offsets.clear();
+  for (uint32_t level = 0; level < levels; ++level) {
+    if (level > 0) {
+      const uint32_t nw = std::max(cw / 2, 1u), nh = std::max(ch / 2, 1u);
+      std::vector<float> next(static_cast<size_t>(nw) * nh * 4, 0.0f);
+      for (uint32_t y = 0; y < nh; ++y)
+        for (uint32_t x = 0; x < nw; ++x) {
+          float sum[4] = {0, 0, 0, 0};
+          float alphaSum = 0.0f;
+          int taps = 0;
+          for (uint32_t dy = 0; dy < 2; ++dy)
+            for (uint32_t dx = 0; dx < 2; ++dx) {
+              const uint32_t sx = std::min(x * 2 + dx, cw - 1);
+              const uint32_t sy = std::min(y * 2 + dy, ch - 1);
+              const float *p = &cur[(static_cast<size_t>(sy) * cw + sx) * 4];
+              // Alpha-weighted colour: transparent texels in cut-out art are
+              // often black or garbage, and would darken the fringe.
+              for (int c = 0; c < 3; ++c)
+                sum[c] += p[c] * p[3];
+              alphaSum += p[3];
+              sum[3] += p[3];
+              ++taps;
+            }
+          float *q = &next[(static_cast<size_t>(y) * nw + x) * 4];
+          for (int c = 0; c < 3; ++c)
+            q[c] = alphaSum > 1e-5f ? sum[c] / alphaSum : 0.0f;
+          q[3] = sum[3] / static_cast<float>(taps);
+        }
+      cur.swap(next);
+      cw = nw;
+      ch = nh;
+      // Binary-search the alpha scale that restores the base coverage.
+      std::vector<float> a(static_cast<size_t>(cw) * ch);
+      for (size_t i = 0; i < a.size(); ++i)
+        a[i] = cur[i * 4 + 3];
+      // ...except that preserving the base coverage exactly is too thin for
+      // foliage. A needle spray covers ~13% of its card; far away, many
+      // sub-pixel needles on overlapping sprays merge into a solid mass,
+      // but a 13%-opaque card stays 13% opaque at any distance and a
+      // spruce stand turns into bare poles. From mip 2 on, the target eases
+      // toward the spray's FOOTPRINT -- texels with any real alpha in them
+      // -- which is the silhouette the eye resolves at that distance.
+      size_t footprint = 0;
+      for (float v : a)
+        footprint += v > 0.12f ? 1 : 0;
+      const float footprintCoverage =
+          static_cast<float>(footprint) / static_cast<float>(std::max<size_t>(a.size(), 1));
+      const float grow = growFootprint
+          ? std::clamp((static_cast<float>(level) - 1.0f) / 3.0f, 0.0f, 1.0f) : 0.0f;
+      const float levelTarget =
+          std::max(targetCoverage,
+                   targetCoverage + (footprintCoverage * 0.85f - targetCoverage) * grow);
+      float lo = 0.0f, hi = 8.0f, scale = 1.0f;
+      for (int it = 0; it < 12; ++it) {
+        scale = 0.5f * (lo + hi);
+        if (coverage(a, scale) < levelTarget)
+          lo = scale;
+        else
+          hi = scale;
+      }
+      for (size_t i = 0; i < a.size(); ++i)
+        cur[i * 4 + 3] = std::min(a[i] * scale, 1.0f);
+    }
+    offsets.push_back(out.size());
+    const size_t px = static_cast<size_t>(cw) * ch;
+    const size_t base = out.size();
+    out.resize(base + px * 4);
+    for (size_t i = 0; i < px; ++i) {
+      for (int c = 0; c < 3; ++c)
+        out[base + i * 4 + c] = level == 0 ? rgba[i * 4 + c] : encode(cur[i * 4 + c]);
+      out[base + i * 4 + 3] = level == 0 ? rgba[i * 4 + 3]
+          : static_cast<uint8_t>(std::lround(std::clamp(cur[i * 4 + 3], 0.0f, 1.0f) * 255.0f));
+    }
+  }
+  return out;
+}
+
+// True for a genuine cut-out mask: a meaningful share of texels on each side
+// of the cutoff. Opaque textures (alpha all 255) and soft vignettes are not.
+bool isCutoutAlpha(const uint8_t *rgba, uint32_t w, uint32_t h) {
+  const size_t px = static_cast<size_t>(w) * h;
+  if (px < 64)
+    return false;
+  size_t below = 0;
+  for (size_t i = 0; i < px; ++i)
+    below += rgba[i * 4 + 3] < 128 ? 1 : 0;
+  const double f = static_cast<double>(below) / static_cast<double>(px);
+  return f > 0.02 && f < 0.98;
+}
+} // namespace
+
 uint32_t VulkanRenderer::addTexture(const uint8_t *rgba, uint32_t w, uint32_t h,
-                                    VkFormat format) {
-  const VkDeviceSize byteSize = static_cast<VkDeviceSize>(w) * h * 4;
+                                    VkFormat format, bool growCutoutFootprint) {
+  // Full mip count; cut-out textures get a CPU-built, coverage-preserving
+  // chain (see buildCoveragePreservingMips), everything else GPU blits.
+  const uint32_t fullMips =
+      static_cast<uint32_t>(std::floor(std::log2(
+          static_cast<float>(std::max(w, h))))) + 1u;
+  std::vector<VkDeviceSize> cpuMipOffsets;
+  std::vector<uint8_t> cpuMips;
+  if (fullMips > 1 && isCutoutAlpha(rgba, w, h)) {
+    cpuMips = buildCoveragePreservingMips(
+        rgba, w, h, format == VK_FORMAT_R8G8B8A8_SRGB, fullMips, cpuMipOffsets,
+        growCutoutFootprint);
+    rgba = cpuMips.data();
+    std::fprintf(stderr, "[VulkanRHI] cut-out texture %ux%u: coverage-preserving mips\n", w, h);
+  }
+  const bool cpuMipped = !cpuMips.empty();
+  const VkDeviceSize byteSize =
+      cpuMipped ? static_cast<VkDeviceSize>(cpuMips.size())
+                : static_cast<VkDeviceSize>(w) * h * 4;
 
   VkBufferCreateInfo stagingCi{};
   stagingCi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -471,12 +690,25 @@ uint32_t VulkanRenderer::addTexture(const uint8_t *rgba, uint32_t w, uint32_t h,
   imageCi.imageType = VK_IMAGE_TYPE_2D;
   imageCi.format = format;
   imageCi.extent = {w, h, 1};
-  imageCi.mipLevels = 1;
+  // Full mip chain. Every material texture used to be created with ONE
+  // level: a 2048^2 ground texture minified to a few pixels per texel
+  // aliased into shimmering noise past ~10 m, which is why the terrain
+  // leaned on flat painted colours and kept its photo layers at a few
+  // percent. Mips are generated on the GPU below with linear blits, which
+  // all desktop drivers support for R8G8B8A8 UNORM/SRGB (checked anyway).
+  VkFormatProperties formatProps{};
+  vkGetPhysicalDeviceFormatProperties(mCtx->physicalDevice(), format,
+                                      &formatProps);
+  const bool canBlit =
+      (formatProps.optimalTilingFeatures &
+       VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+  const uint32_t mipLevels = (canBlit || cpuMipped) ? fullMips : 1u;
+  imageCi.mipLevels = mipLevels;
   imageCi.arrayLayers = 1;
   imageCi.samples = VK_SAMPLE_COUNT_1_BIT;
   imageCi.tiling = VK_IMAGE_TILING_OPTIMAL;
-  imageCi.usage =
-      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  imageCi.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   imageCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   VmaAllocationCreateInfo imageAlloc{};
   imageAlloc.usage = VMA_MEMORY_USAGE_AUTO;
@@ -487,21 +719,76 @@ uint32_t VulkanRenderer::addTexture(const uint8_t *rgba, uint32_t w, uint32_t h,
 
   immediateSubmit([&](VkCommandBuffer cmd) {
     imageBarrier(cmd, image, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                 VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                  VK_IMAGE_LAYOUT_UNDEFINED,
-                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, mipLevels);
+    if (cpuMipped) {
+      std::vector<VkBufferImageCopy> regions(mipLevels);
+      for (uint32_t level = 0; level < mipLevels; ++level) {
+        VkBufferImageCopy &r = regions[level];
+        r = {};
+        r.bufferOffset = cpuMipOffsets[level];
+        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+        r.imageExtent = {std::max(w >> level, 1u), std::max(h >> level, 1u), 1};
+      }
+      vkCmdCopyBufferToImage(cmd, staging, image,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             static_cast<uint32_t>(regions.size()),
+                             regions.data());
+      imageBarrier(cmd, image, VK_PIPELINE_STAGE_2_COPY_BIT,
+                   VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                   VK_IMAGE_ASPECT_COLOR_BIT, 1, 0, mipLevels);
+      return;
+    }
     VkBufferImageCopy region{};
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
     region.imageExtent = {w, h, 1};
     vkCmdCopyBufferToImage(cmd, staging, image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    imageBarrier(cmd, image, VK_PIPELINE_STAGE_2_COPY_BIT,
+    // Downsample level i-1 -> i. Each source level is flipped to
+    // TRANSFER_SRC just before it is read, then straight to SHADER_READ once
+    // its child exists, so every level ends in the same layout.
+    int32_t mw = static_cast<int32_t>(w), mh = static_cast<int32_t>(h);
+    for (uint32_t level = 1; level < mipLevels; ++level) {
+      imageBarrier(cmd, image, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                   VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                   VK_ACCESS_2_TRANSFER_READ_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   VK_IMAGE_ASPECT_COLOR_BIT, 1, level - 1, 1);
+      const int32_t nw = std::max(mw / 2, 1), nh = std::max(mh / 2, 1);
+      VkImageBlit blit{};
+      blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level - 1, 0, 1};
+      blit.srcOffsets[1] = {mw, mh, 1};
+      blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+      blit.dstOffsets[1] = {nw, nh, 1};
+      vkCmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                     VK_FILTER_LINEAR);
+      imageBarrier(cmd, image, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                   VK_ACCESS_2_TRANSFER_READ_BIT,
+                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                   VK_IMAGE_ASPECT_COLOR_BIT, 1, level - 1, 1);
+      mw = nw;
+      mh = nh;
+    }
+    imageBarrier(cmd, image, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                  VK_ACCESS_2_TRANSFER_WRITE_BIT,
                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                 VK_IMAGE_ASPECT_COLOR_BIT, 1, mipLevels - 1, 1);
   });
   vmaDestroyBuffer(mCtx->allocator(), staging, stagingMem);
 
@@ -511,7 +798,7 @@ uint32_t VulkanRenderer::addTexture(const uint8_t *rgba, uint32_t w, uint32_t h,
   viewCi.viewType = VK_IMAGE_VIEW_TYPE_2D;
   viewCi.format = format;
   viewCi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  viewCi.subresourceRange.levelCount = 1;
+  viewCi.subresourceRange.levelCount = mipLevels;
   viewCi.subresourceRange.layerCount = 1;
   VkImageView view = VK_NULL_HANDLE;
   VK_CHECK(vkCreateImageView(mCtx->device(), &viewCi, nullptr, &view));
@@ -519,7 +806,7 @@ uint32_t VulkanRenderer::addTexture(const uint8_t *rgba, uint32_t w, uint32_t h,
   mTextureImages.push_back(image);
   mTextureAllocs.push_back(alloc);
   mTextureViews.push_back(view);
-  return mBindless.registerTexture(*mCtx, view, mSampler);
+  return mBindless.registerTexture(*mCtx, view, mMaterialSampler);
 }
 
 uint32_t VulkanRenderer::createDefaultTexture() {
@@ -564,22 +851,27 @@ uint32_t VulkanRenderer::loadTextureFile(const std::string &path, bool flipY,
 void VulkanRenderer::resolveTerrainMaterialsIfDirty() {
   if (!mParams.terrainMaterialsDirty)
     return;
-  for (size_t i = 0; i < mParams.terrainMaterialSlots.size(); ++i) {
-    const auto &slot = mParams.terrainMaterialSlots[i];
-    TerrainMaterialResolved resolved;
-    // flipY=true matches every other file-loaded texture in this renderer
-    // (loadTextureFile's own doc comment: raw/unflipped model UVs expect
-    // it); terrain UVs are mesher-authored world-position-derived, same
-    // convention as the detail texture terrainChunk.frag already sampled
-    // pre-R2.
-    if (!slot.albedoPath.empty())
-      resolved.albedoTex = loadTextureFile(slot.albedoPath, /*flipY=*/true, /*srgb=*/true);
-    if (!slot.normalPath.empty())
-      resolved.normalTex = loadTextureFile(slot.normalPath, /*flipY=*/true, /*srgb=*/false);
-    if (!slot.roughnessPath.empty())
-      resolved.roughnessTex = loadTextureFile(slot.roughnessPath, /*flipY=*/true, /*srgb=*/false);
-    mTerrainMaterialTex[i] = resolved;
-  }
+  // Preset switching must reuse texture descriptors, not exhaust the bindless array.
+  auto map = [&](const std::string &path, bool srgb) -> uint32_t {
+    if (path.empty() || !std::filesystem::exists(path)) return UINT32_MAX;
+    const std::string key = path + (srgb ? "#srgb" : "#linear");
+    auto found = mTerrainTextureCache.find(key);
+    if (found != mTerrainTextureCache.end()) return found->second;
+    uint32_t tex = loadTextureFile(path, true, srgb);
+    if (tex == mDefaultTexIndex) return UINT32_MAX;
+    return mTerrainTextureCache.emplace(key, tex).first->second;
+  };
+  auto resolve = [&](const Params::TerrainMaterialSlot &slot) {
+    TerrainMaterialResolved r;
+    r.albedoTex = map(slot.albedoPath, true);
+    r.normalTex = map(slot.normalPath, false);
+    r.roughnessTex = map(slot.roughnessPath, false);
+    r.heightTex = map(slot.heightPath, false);
+    return r;
+  };
+  for (size_t i = 0; i < mParams.terrainMaterialSlots.size(); ++i)
+    mTerrainMaterialTex[i] = resolve(mParams.terrainMaterialSlots[i]);
+  mSnowMaterialTex = resolve(mParams.snowMaterial);
   mParams.terrainMaterialsDirty = false;
 }
 
@@ -594,7 +886,7 @@ bool VulkanRenderer::createDescriptorsAndFrameData() {
   // Also read from the task/mesh stages for terrain.
   binding.stageFlags =
       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
-      VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT;
+      VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_COMPUTE_BIT;
 
   VkDescriptorSetLayoutCreateInfo layoutCi{};
   layoutCi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -664,6 +956,9 @@ bool VulkanRenderer::createSceneTargets() {
   mDepthImages.resize(kFramesInFlight);
   mDepthAllocs.resize(kFramesInFlight);
   mDepthViews.resize(kFramesInFlight);
+  mViewmodelDepthImages.resize(kFramesInFlight);
+  mViewmodelDepthAllocs.resize(kFramesInFlight);
+  mViewmodelDepthViews.resize(kFramesInFlight);
 
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
     VkImageCreateInfo hdrCi{};
@@ -679,7 +974,7 @@ bool VulkanRenderer::createSceneTargets() {
     // sample the opaque scene it is about to draw over (refraction + SSR).
     hdrCi.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_SAMPLED_BIT |
-                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     hdrCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VmaAllocationCreateInfo hdrAlloc{};
     hdrAlloc.usage = VMA_MEMORY_USAGE_AUTO;
@@ -727,6 +1022,20 @@ bool VulkanRenderer::createSceneTargets() {
     VK_CHECK(vkCreateImageView(mCtx->device(), &depthView, nullptr,
                                &mDepthViews[i]));
 
+    // Separate foreground depth preserves terrain depth for SSAO, water and
+    // temporal history. Cleared each frame, with no world occlusion of the gun.
+    depthCi.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    VK_CHECK(vmaCreateImage(mCtx->allocator(), &depthCi, &depthAlloc,
+        &mViewmodelDepthImages[i], &mViewmodelDepthAllocs[i], nullptr));
+    depthView.image = mViewmodelDepthImages[i];
+    VK_CHECK(vkCreateImageView(mCtx->device(), &depthView, nullptr, &mViewmodelDepthViews[i]));
+    immediateSubmit([&](VkCommandBuffer cmd) {
+      imageBarrier(cmd, mViewmodelDepthImages[i], VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+          VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+          VK_IMAGE_ASPECT_DEPTH_BIT);
+    });
     immediateSubmit([&](VkCommandBuffer cmd) {
       imageBarrier(cmd, mDepthImages[i], VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                    VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
@@ -773,15 +1082,13 @@ bool VulkanRenderer::createSceneTargets() {
                                &mSceneCopyViews[i]));
   }
 
-  // Shared half-resolution extent: the SSAO raw target and bloom's chain
-  // both render here (SSAO's blurred/upsampled target below stays full-res).
+  // Bloom and volumetrics keep their half-resolution targets.
   const VkExtent2D halfExtent = {std::max(1u, extent.width / 2),
                                  std::max(1u, extent.height / 2)};
 
-  // SSAO targets: raw occlusion at half-res (the priciest part of this
-  // pass -- 16 taps with derivative normals -- so this is the resolution
-  // that actually saves cost) + a full-res blurred/bilateral-upsampled copy
-  // the scene pass samples directly (see blur.frag), per frame in flight.
+  // SSAO resolves at full resolution: half-res sampling skipped thin grass
+  // roots, and upsampling erased their contact pockets. Keep the bounded
+  // 24-tap kernel; this adds depth samples, never grass shadow rays.
   mSSAOImages.resize(kFramesInFlight);
   mSSAOAllocs.resize(kFramesInFlight);
   mSSAOViews.resize(kFramesInFlight);
@@ -793,7 +1100,7 @@ bool VulkanRenderer::createSceneTargets() {
       VkImage &img = pass == 0 ? mSSAOImages[i] : mSSAOBlurImages[i];
       VmaAllocation &alloc = pass == 0 ? mSSAOAllocs[i] : mSSAOBlurAllocs[i];
       VkImageView &view = pass == 0 ? mSSAOViews[i] : mSSAOBlurViews[i];
-      const VkExtent2D aoExtent = pass == 0 ? halfExtent : extent;
+      const VkExtent2D aoExtent = extent;
 
       VkImageCreateInfo aoCi{};
       aoCi.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -823,146 +1130,10 @@ bool VulkanRenderer::createSceneTargets() {
     }
   }
 
-  // Bloom targets: half-res bright-pass extract + 2-pass separable blur,
-  // same HDR format as the main scene target (bloom carries real linear
-  // light values, needs the same dynamic range).
-  mBloomExtractImages.resize(kFramesInFlight);
-  mBloomExtractAllocs.resize(kFramesInFlight);
-  mBloomExtractViews.resize(kFramesInFlight);
-  mBloomBlurHImages.resize(kFramesInFlight);
-  mBloomBlurHAllocs.resize(kFramesInFlight);
-  mBloomBlurHViews.resize(kFramesInFlight);
-  mBloomBlurVImages.resize(kFramesInFlight);
-  mBloomBlurVAllocs.resize(kFramesInFlight);
-  mBloomBlurVViews.resize(kFramesInFlight);
-  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-    for (int pass = 0; pass < 3; ++pass) {
-      VkImage &img = pass == 0   ? mBloomExtractImages[i]
-                     : pass == 1 ? mBloomBlurHImages[i]
-                                 : mBloomBlurVImages[i];
-      VmaAllocation &alloc = pass == 0   ? mBloomExtractAllocs[i]
-                             : pass == 1 ? mBloomBlurHAllocs[i]
-                                         : mBloomBlurVAllocs[i];
-      VkImageView &view = pass == 0   ? mBloomExtractViews[i]
-                          : pass == 1 ? mBloomBlurHViews[i]
-                                      : mBloomBlurVViews[i];
-
-      VkImageCreateInfo bloomCi{};
-      bloomCi.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-      bloomCi.imageType = VK_IMAGE_TYPE_2D;
-      bloomCi.format = mHdrFormat;
-      bloomCi.extent = {halfExtent.width, halfExtent.height, 1};
-      bloomCi.mipLevels = 1;
-      bloomCi.arrayLayers = 1;
-      bloomCi.samples = VK_SAMPLE_COUNT_1_BIT;
-      bloomCi.tiling = VK_IMAGE_TILING_OPTIMAL;
-      bloomCi.usage =
-          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-      bloomCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      VmaAllocationCreateInfo bloomAlloc{};
-      bloomAlloc.usage = VMA_MEMORY_USAGE_AUTO;
-      VK_CHECK(vmaCreateImage(mCtx->allocator(), &bloomCi, &bloomAlloc, &img,
-                              &alloc, nullptr));
-
-      VkImageViewCreateInfo bloomView{};
-      bloomView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-      bloomView.image = img;
-      bloomView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-      bloomView.format = mHdrFormat;
-      bloomView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-      bloomView.subresourceRange.levelCount = 1;
-      bloomView.subresourceRange.layerCount = 1;
-      VK_CHECK(vkCreateImageView(mCtx->device(), &bloomView, nullptr, &view));
-    }
-  }
-
-  // Second, quarter-res bloom blur pass: downsampled from the half-res
-  // result above (its own linear-sampler box-downsample, same trick
-  // bloomExtract.frag's comment describes), then blurred again -- a wider,
-  // softer glow summed with the tight half-res one in tonemap.frag.
-  const VkExtent2D quarterExtent = {std::max(1u, halfExtent.width / 2),
-                                    std::max(1u, halfExtent.height / 2)};
-  mBloomBlurQ2HImages.resize(kFramesInFlight);
-  mBloomBlurQ2HAllocs.resize(kFramesInFlight);
-  mBloomBlurQ2HViews.resize(kFramesInFlight);
-  mBloomBlurQ2VImages.resize(kFramesInFlight);
-  mBloomBlurQ2VAllocs.resize(kFramesInFlight);
-  mBloomBlurQ2VViews.resize(kFramesInFlight);
-  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-    for (int pass = 0; pass < 2; ++pass) {
-      VkImage &img = pass == 0 ? mBloomBlurQ2HImages[i] : mBloomBlurQ2VImages[i];
-      VmaAllocation &alloc =
-          pass == 0 ? mBloomBlurQ2HAllocs[i] : mBloomBlurQ2VAllocs[i];
-      VkImageView &view = pass == 0 ? mBloomBlurQ2HViews[i] : mBloomBlurQ2VViews[i];
-
-      VkImageCreateInfo q2Ci{};
-      q2Ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-      q2Ci.imageType = VK_IMAGE_TYPE_2D;
-      q2Ci.format = mHdrFormat;
-      q2Ci.extent = {quarterExtent.width, quarterExtent.height, 1};
-      q2Ci.mipLevels = 1;
-      q2Ci.arrayLayers = 1;
-      q2Ci.samples = VK_SAMPLE_COUNT_1_BIT;
-      q2Ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-      q2Ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-      q2Ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      VmaAllocationCreateInfo q2Alloc{};
-      q2Alloc.usage = VMA_MEMORY_USAGE_AUTO;
-      VK_CHECK(vmaCreateImage(mCtx->allocator(), &q2Ci, &q2Alloc, &img, &alloc,
-                              nullptr));
-
-      VkImageViewCreateInfo q2View{};
-      q2View.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-      q2View.image = img;
-      q2View.viewType = VK_IMAGE_VIEW_TYPE_2D;
-      q2View.format = mHdrFormat;
-      q2View.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-      q2View.subresourceRange.levelCount = 1;
-      q2View.subresourceRange.layerCount = 1;
-      VK_CHECK(vkCreateImageView(mCtx->device(), &q2View, nullptr, &view));
-    }
-  }
-
-  // Volumetric scattering target: half-res RGBA16F (rgb = in-scattered
-  // radiance, a = march distance for the composite pass's depth-aware
-  // upsample), per frame in flight like every other offscreen target.
-  mVolumetricImages.resize(kFramesInFlight);
-  mVolumetricAllocs.resize(kFramesInFlight);
-  mVolumetricViews.resize(kFramesInFlight);
-  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-    VkImageCreateInfo volCi{};
-    volCi.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    volCi.imageType = VK_IMAGE_TYPE_2D;
-    volCi.format = mHdrFormat;
-    volCi.extent = {halfExtent.width, halfExtent.height, 1};
-    volCi.mipLevels = 1;
-    volCi.arrayLayers = 1;
-    volCi.samples = VK_SAMPLE_COUNT_1_BIT;
-    volCi.tiling = VK_IMAGE_TILING_OPTIMAL;
-    volCi.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    volCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VmaAllocationCreateInfo volAlloc{};
-    volAlloc.usage = VMA_MEMORY_USAGE_AUTO;
-    VK_CHECK(vmaCreateImage(mCtx->allocator(), &volCi, &volAlloc,
-                            &mVolumetricImages[i], &mVolumetricAllocs[i],
-                            nullptr));
-
-    VkImageViewCreateInfo volView{};
-    volView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    volView.image = mVolumetricImages[i];
-    volView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    volView.format = mHdrFormat;
-    volView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    volView.subresourceRange.levelCount = 1;
-    volView.subresourceRange.layerCount = 1;
-    VK_CHECK(vkCreateImageView(mCtx->device(), &volView, nullptr,
-                               &mVolumetricViews[i]));
-  }
-
-  // Cloud march target: RGBA16F, rgb = premultiplied scattered
-  // light, a = transmittance. Rendered at full resolution to match
-  // 1:1 viewport fidelity.
-  mCloudExtent = extent;
+  // Fog and bloom images are owned by VulkanAtmosphereRenderer.
+  // Cloud details are kilometres away. Half-resolution plus temporal resolve
+  // retains their shape while leaving GPU time for foreground foliage.
+  mCloudExtent = halfExtent;
   mCloudImages.resize(kFramesInFlight);
   mCloudAllocs.resize(kFramesInFlight);
   mCloudViews.resize(kFramesInFlight);
@@ -971,12 +1142,12 @@ bool VulkanRenderer::createSceneTargets() {
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ci.imageType = VK_IMAGE_TYPE_2D;
     ci.format = mHdrFormat;
-    ci.extent = {extent.width, extent.height, 1};
+    ci.extent = {mCloudExtent.width, mCloudExtent.height, 1};
     ci.mipLevels = 1;
     ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VmaAllocationCreateInfo alloc{};
     alloc.usage = VMA_MEMORY_USAGE_AUTO;
@@ -993,10 +1164,61 @@ bool VulkanRenderer::createSceneTargets() {
     view.subresourceRange.layerCount = 1;
     VK_CHECK(vkCreateImageView(mCtx->device(), &view, nullptr, &mCloudViews[i]));
   }
+  mTemporalValid = false;
+  mTemporalImages.resize(kFramesInFlight);
+  mTemporalAllocs.resize(kFramesInFlight);
+  mTemporalViews.resize(kFramesInFlight);
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    VkImageCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = mHdrFormat;
+    ci.extent = {extent.width, extent.height, 1};
+    ci.mipLevels = ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    VmaAllocationCreateInfo alloc{};
+    alloc.usage = VMA_MEMORY_USAGE_AUTO;
+    VK_CHECK(vmaCreateImage(mCtx->allocator(), &ci, &alloc, &mTemporalImages[i],
+                            &mTemporalAllocs[i], nullptr));
+    VkImageViewCreateInfo view{};
+    view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view.image = mTemporalImages[i];
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = mHdrFormat;
+    view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    view.subresourceRange.levelCount = view.subresourceRange.layerCount = 1;
+    VK_CHECK(vkCreateImageView(mCtx->device(), &view, nullptr, &mTemporalViews[i]));
+  }
+  // Invalid history still has a statically used descriptor in the shader.
+  // Initialize both images so the first frame can bind it safely.
+  immediateSubmit([&](VkCommandBuffer cmd) {
+    for (VkImage image : mTemporalImages) {
+      imageBarrier(cmd, image, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+          VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+      VkClearColorValue black{};
+      VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           &black, 1, &range);
+      imageBarrier(cmd, image, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+          VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+  });
   return true;
 }
 
 void VulkanRenderer::destroySceneTargets() {
+  mTemporalValid = false;
+  for (VkImageView view : mTemporalViews)
+    vkDestroyImageView(mCtx->device(), view, nullptr);
+  for (uint32_t i = 0; i < mTemporalImages.size(); ++i)
+    vmaDestroyImage(mCtx->allocator(), mTemporalImages[i], mTemporalAllocs[i]);
+  mTemporalViews.clear(); mTemporalImages.clear(); mTemporalAllocs.clear();
   for (VkImageView v : mSceneCopyViews)
     vkDestroyImageView(mCtx->device(), v, nullptr);
   for (uint32_t i = 0; i < mSceneCopyImages.size(); ++i)
@@ -1034,6 +1256,10 @@ void VulkanRenderer::destroySceneTargets() {
     vkDestroyImageView(mCtx->device(), v, nullptr);
   for (uint32_t i = 0; i < mDepthImages.size(); ++i)
     vmaDestroyImage(mCtx->allocator(), mDepthImages[i], mDepthAllocs[i]);
+  for (auto v : mViewmodelDepthViews) vkDestroyImageView(mCtx->device(), v, nullptr);
+  for (size_t i=0; i<mViewmodelDepthImages.size(); ++i)
+    vmaDestroyImage(mCtx->allocator(),mViewmodelDepthImages[i],mViewmodelDepthAllocs[i]);
+  mViewmodelDepthViews.clear(); mViewmodelDepthImages.clear(); mViewmodelDepthAllocs.clear();
   mDepthViews.clear();
   mDepthImages.clear();
   mDepthAllocs.clear();
@@ -1106,7 +1332,7 @@ bool VulkanRenderer::createTlasDescriptors() {
   binding.binding = 0;
   binding.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
   binding.descriptorCount = 1;
-  binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
   VkDescriptorSetLayoutCreateInfo layoutCi{};
   layoutCi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
   layoutCi.bindingCount = 1;
@@ -1216,11 +1442,11 @@ void VulkanRenderer::updateTonemapSets() {
     hdrImage.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkDescriptorImageInfo bloomImage{};
     bloomImage.sampler = mSampler;
-    bloomImage.imageView = mBloomBlurVViews[i];
+    bloomImage.imageView = mHdrViews[i];
     bloomImage.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkDescriptorImageInfo bloomWideImage{};
     bloomWideImage.sampler = mSampler;
-    bloomWideImage.imageView = mBloomBlurQ2VViews[i];
+    bloomWideImage.imageView = mHdrViews[i];
     bloomWideImage.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkDescriptorImageInfo depthImage{};
     depthImage.sampler = mSampler;
@@ -1256,6 +1482,47 @@ void VulkanRenderer::updateTonemapSets() {
   }
 }
 
+bool VulkanRenderer::createTemporalResources() {
+  VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight * 4};
+  VkDescriptorPoolCreateInfo pool{};
+  pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  pool.maxSets = kFramesInFlight;
+  pool.poolSizeCount = 1;
+  pool.pPoolSizes = &size;
+  VK_CHECK(vkCreateDescriptorPool(mCtx->device(), &pool, nullptr, &mTemporalPool));
+  mTemporalSets.resize(kFramesInFlight);
+  for (auto &set : mTemporalSets) {
+    VkDescriptorSetAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc.descriptorPool = mTemporalPool;
+    alloc.descriptorSetCount = 1;
+    alloc.pSetLayouts = &mTonemapSetLayout;
+    VK_CHECK(vkAllocateDescriptorSets(mCtx->device(), &alloc, &set));
+  }
+  return true;
+}
+
+void VulkanRenderer::updateTemporalSets() {
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    VkDescriptorImageInfo images[4]{};
+    images[0] = {mSampler, mHdrViews[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    images[1] = {mSampler, mDepthViews[i], VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL};
+    images[2] = {mSampler, mTemporalViews[(i + kFramesInFlight - 1) % kFramesInFlight],
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    images[3] = images[1]; // unused binding, shared descriptor layout
+    VkWriteDescriptorSet writes[4]{};
+    for (uint32_t b = 0; b < 4; ++b) {
+      writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[b].dstSet = mTemporalSets[i];
+      writes[b].dstBinding = b;
+      writes[b].descriptorCount = 1;
+      writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      writes[b].pImageInfo = &images[b];
+    }
+    vkUpdateDescriptorSets(mCtx->device(), 4, writes, 0, nullptr);
+  }
+}
+
 // Three single-sampler descriptor sets per frame in flight, one shared
 // layout (mirrors the tonemap pattern): SSAO pass samples depth, blur pass
 // samples raw AO, the main scene pass samples the blurred AO.
@@ -1264,7 +1531,7 @@ bool VulkanRenderer::createSSAOResources() {
   binding.binding = 0;
   binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   binding.descriptorCount = 1;
-  binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
   VkDescriptorSetLayoutCreateInfo layoutCi{};
   layoutCi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1403,6 +1670,13 @@ void VulkanRenderer::updateBloomSets() {
 // pool; the scatter IMAGE is swapchain-sized and lives in
 // createSceneTargets, so its set is (re)written in updateVolumetricSets).
 bool VulkanRenderer::createEnvMapResources() {
+  VkDescriptorSetLayoutBinding environmentBindings[]={
+    {0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT|VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+    {1,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT|VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+    {2,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_FRAGMENT_BIT|VK_SHADER_STAGE_COMPUTE_BIT,nullptr}};
+  VkDescriptorSetLayoutCreateInfo environmentLayout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  environmentLayout.bindingCount=3;environmentLayout.pBindings=environmentBindings;
+  VK_CHECK(vkCreateDescriptorSetLayout(mCtx->device(),&environmentLayout,nullptr,&mEnvironmentSetLayout));
   mEnvImages.resize(kFramesInFlight);
   mEnvAllocs.resize(kFramesInFlight);
   mEnvCubeViews.resize(kFramesInFlight);
@@ -1454,16 +1728,17 @@ bool VulkanRenderer::createEnvMapResources() {
     }
   }
 
-  // One pool for the env (set 4) + volumetric-scatter sampler sets, all on
-  // the shared single-sampler layout.
+  // Environment sets also carry cloud transmission and queue-ordered sky SH;
+  // the legacy scatter sets retain the single-sampler layout.
   VkDescriptorPoolSize poolSize{};
   poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  poolSize.descriptorCount = kFramesInFlight * 2;
+  poolSize.descriptorCount = kFramesInFlight * 3;
   VkDescriptorPoolCreateInfo poolCi{};
   poolCi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   poolCi.maxSets = kFramesInFlight * 2;
-  poolCi.poolSizeCount = 1;
-  poolCi.pPoolSizes = &poolSize;
+  VkDescriptorPoolSize envPoolSizes[]={poolSize,{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,kFramesInFlight}};
+  poolCi.poolSizeCount = 2;
+  poolCi.pPoolSizes = envPoolSizes;
   VK_CHECK(vkCreateDescriptorPool(mCtx->device(), &poolCi, nullptr,
                                   &mEnvVolPool));
 
@@ -1475,7 +1750,7 @@ bool VulkanRenderer::createEnvMapResources() {
       alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
       alloc.descriptorPool = mEnvVolPool;
       alloc.descriptorSetCount = 1;
-      alloc.pSetLayouts = &mAOSamplerSetLayout;
+      alloc.pSetLayouts = set==&mSceneEnvSets[i]?&mEnvironmentSetLayout:&mAOSamplerSetLayout;
       VK_CHECK(vkAllocateDescriptorSets(mCtx->device(), &alloc, set));
     }
   }
@@ -1513,6 +1788,8 @@ void VulkanRenderer::destroyEnvMapResources() {
   if (mEnvVolPool)
     vkDestroyDescriptorPool(mCtx->device(), mEnvVolPool, nullptr);
   mEnvVolPool = VK_NULL_HANDLE;
+  if(mEnvironmentSetLayout)vkDestroyDescriptorSetLayout(mCtx->device(),mEnvironmentSetLayout,nullptr);
+  mEnvironmentSetLayout=VK_NULL_HANDLE;
   mSceneEnvSets.clear();
   mVolScatterSets.clear();
 }
@@ -1563,7 +1840,7 @@ bool VulkanRenderer::createScenePipeline(const std::string &shaderDir) {
   // ever binding/reading them.
   VkDescriptorSetLayout setLayouts[5] = {mBindless.layout(), mFrameSetLayout,
                                          mTlasSetLayout, mAOSamplerSetLayout,
-                                         mAOSamplerSetLayout};
+                                         mEnvironmentSetLayout};
   // model (vertex) + textureIndex (fragment). Terrain reuses this layout.
   VkPushConstantRange pcRange{};
   pcRange.stageFlags =
@@ -1687,6 +1964,15 @@ bool VulkanRenderer::createScenePipeline(const std::string &shaderDir) {
     return p;
   });
 
+  depthStencil.depthWriteEnable = VK_TRUE;
+  // Keep temporal-history alpha untouched: it stores WORLD depth, not opacity.
+  blendAttachment.colorWriteMask &= ~VK_COLOR_COMPONENT_A_BIT;
+  mViewmodelPipeline = mPipelineCache.getOrCreate(fnv1a64Str("mesh.viewmodel.depthwrite.rgb"),
+    [&](VkPipelineCache pc) {
+      VkPipeline p = VK_NULL_HANDLE;
+      VK_CHECK(vkCreateGraphicsPipelines(mCtx->device(), pc, 1, &pipelineCi, nullptr, &p));
+      return p;
+    });
   vkDestroyShaderModule(mCtx->device(), vert, nullptr);
   vkDestroyShaderModule(mCtx->device(), frag, nullptr);
   return true;
@@ -1718,18 +2004,20 @@ bool VulkanRenderer::createTerrainChunkPipeline(const std::string &shaderDir) {
   binding.binding = 0;
   binding.stride = sizeof(MeshVertex);
   binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-  VkVertexInputAttributeDescription attrs[4]{};
+  VkVertexInputAttributeDescription attrs[5]{};
   attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)};
   attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal)};
   attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(MeshVertex, uv)};
   attrs[3] = {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
               offsetof(MeshVertex, terrainParams)};
+  attrs[4] = {4, 0, VK_FORMAT_R32_SFLOAT,
+              offsetof(MeshVertex, grassGroundOcclusion)};
   VkPipelineVertexInputStateCreateInfo vertexInput{};
   vertexInput.sType =
       VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
   vertexInput.vertexBindingDescriptionCount = 1;
   vertexInput.pVertexBindingDescriptions = &binding;
-  vertexInput.vertexAttributeDescriptionCount = 4;
+  vertexInput.vertexAttributeDescriptionCount = 5;
   vertexInput.pVertexAttributeDescriptions = attrs;
 
   VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -2186,10 +2474,10 @@ bool VulkanRenderer::createSkyPipeline(const std::string &shaderDir) {
   // one sky pipeline layout rather than two: when the cloud assets failed to
   // load the set is never bound and the shader is told so through
   // passFlags.z, which short-circuits the sample.
-  VkDescriptorSetLayout skySetLayouts[2] = {mFrameSetLayout, mAOSamplerSetLayout};
+  VkDescriptorSetLayout skySetLayouts[3] = {mFrameSetLayout, mAOSamplerSetLayout,mAtmosphere.layout()};
   VkPipelineLayoutCreateInfo layoutCi{};
   layoutCi.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  layoutCi.setLayoutCount = 2;
+  layoutCi.setLayoutCount = 3;
   layoutCi.pSetLayouts = skySetLayouts;
   layoutCi.pushConstantRangeCount = 1;
   layoutCi.pPushConstantRanges = &pcRange;
@@ -2671,8 +2959,83 @@ bool VulkanRenderer::createSSAOPipeline(const std::string &shaderDir) {
   return true;
 }
 
+bool VulkanRenderer::createTemporalPipeline(const std::string &shaderDir) {
+  VkPushConstantRange pcRange{};
+  pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  pcRange.offset = 0;
+  pcRange.size = sizeof(glm::mat4) * 2;
+
+  VkPipelineLayoutCreateInfo layoutCi{};
+  layoutCi.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  layoutCi.setLayoutCount = 1;
+  layoutCi.pSetLayouts = &mTonemapSetLayout;
+  layoutCi.pushConstantRangeCount = 1;
+  layoutCi.pPushConstantRanges = &pcRange;
+  VK_CHECK(vkCreatePipelineLayout(mCtx->device(), &layoutCi, nullptr,
+                                  &mTemporalPipelineLayout));
+
+  VkShaderModule vert = loadShaderModule(shaderDir + "/tonemap.vert.spv");
+  VkShaderModule frag = loadShaderModule(shaderDir + "/temporal.frag.spv");
+  VkPipelineShaderStageCreateInfo stages[2]{};
+  stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = vert;
+  stages[0].pName = "main";
+  stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = frag;
+  stages[1].pName = "main";
+
+  VkPipelineVertexInputStateCreateInfo vertexInput{};
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+  VkPipelineViewportStateCreateInfo viewport{};
+  VkPipelineRasterizationStateCreateInfo raster{};
+  VkPipelineMultisampleStateCreateInfo multisample{};
+  VkPipelineDepthStencilStateCreateInfo depthStencil{};
+  VkPipelineColorBlendAttachmentState blendAttachment{};
+  VkPipelineColorBlendStateCreateInfo colorBlend{};
+  VkPipelineDynamicStateCreateInfo dynamicState{};
+  VkDynamicState dynamics[2]{};
+  fullscreenAOPipelineState(vertexInput, inputAssembly, viewport, raster,
+                            multisample, depthStencil, blendAttachment,
+                            colorBlend, dynamicState, dynamics);
+
+  VkPipelineRenderingCreateInfo renderingCi{};
+  renderingCi.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+  renderingCi.colorAttachmentCount = 1;
+  renderingCi.pColorAttachmentFormats = &mHdrFormat;
+
+  VkGraphicsPipelineCreateInfo pipelineCi{};
+  pipelineCi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipelineCi.pNext = &renderingCi;
+  pipelineCi.stageCount = 2;
+  pipelineCi.pStages = stages;
+  pipelineCi.pVertexInputState = &vertexInput;
+  pipelineCi.pInputAssemblyState = &inputAssembly;
+  pipelineCi.pViewportState = &viewport;
+  pipelineCi.pRasterizationState = &raster;
+  pipelineCi.pMultisampleState = &multisample;
+  pipelineCi.pDepthStencilState = &depthStencil;
+  pipelineCi.pColorBlendState = &colorBlend;
+  pipelineCi.pDynamicState = &dynamicState;
+  pipelineCi.layout = mTemporalPipelineLayout;
+
+  uint64_t key = fnv1a64Str("temporal.resolve");
+  key = fnv1a64(&mHdrFormat, sizeof(mHdrFormat), key);
+  mTemporalPipeline = mPipelineCache.getOrCreate(key, [&](VkPipelineCache pc) {
+    VkPipeline p = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateGraphicsPipelines(mCtx->device(), pc, 1, &pipelineCi,
+                                       nullptr, &p));
+    return p;
+  });
+
+  vkDestroyShaderModule(mCtx->device(), vert, nullptr);
+  vkDestroyShaderModule(mCtx->device(), frag, nullptr);
+  return true;
+}
+
 bool VulkanRenderer::createBlurPipeline(const std::string &shaderDir) {
-  // Set 0: half-res raw AO (mBlurInputSets). Set 1: full-res depth
+  // Set 0: full-res raw AO (mBlurInputSets). Set 1: full-res depth
   // (mSSAODepthSets, reused from the SSAO pass -- same layout shape, same
   // image) for the bilateral upsample weight. Both use mAOSamplerSetLayout.
   VkDescriptorSetLayout blurSetLayouts[2] = {mAOSamplerSetLayout,
@@ -2953,24 +3316,24 @@ bool VulkanRenderer::createCloudNoiseResources(const std::string &assetDir) {
   // With no assets the march simply never runs and the buffer stays cleared
   // to "no light, full transmittance", which blends to nothing.
   {
-    VkDescriptorSetLayoutBinding bindings[4]{};
-    for (uint32_t i = 0; i < 4; ++i) {
+    VkDescriptorSetLayoutBinding bindings[5]{};
+    for (uint32_t i = 0; i < 5; ++i) {
       bindings[i].binding = i;
       bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
       bindings[i].descriptorCount = 1;
-      bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+      bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT|VK_SHADER_STAGE_COMPUTE_BIT;
     }
     VkDescriptorSetLayoutCreateInfo layoutCi{};
     layoutCi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutCi.bindingCount = 4;
+    layoutCi.bindingCount = 5;
     layoutCi.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(mCtx->device(), &layoutCi, nullptr,
                                          &mCloudNoiseSetLayout));
 
-    // 4 for the noise set + one per frame in flight for the sky's input.
+    // Five noise images + one per frame in flight for the sky's input.
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 4 + kFramesInFlight;
+    poolSize.descriptorCount = 5 + kFramesInFlight;
     VkDescriptorPoolCreateInfo poolCi{};
     poolCi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolCi.maxSets = 1 + kFramesInFlight;
@@ -3091,7 +3454,7 @@ bool VulkanRenderer::createCloudNoiseResources(const std::string &assetDir) {
       };
 
       barrier(0, mips, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-              VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+              VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
               VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
       VkBufferImageCopy region{};
@@ -3104,7 +3467,7 @@ bool VulkanRenderer::createCloudNoiseResources(const std::string &assetDir) {
       int32_t mw = static_cast<int32_t>(w), mh = static_cast<int32_t>(h),
               md = static_cast<int32_t>(d);
       for (uint32_t level = 1; level < mips; ++level) {
-        barrier(level - 1, 1, VK_PIPELINE_STAGE_2_COPY_BIT,
+        barrier(level - 1, 1, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -3202,6 +3565,8 @@ bool VulkanRenderer::createCloudNoiseResources(const std::string &assetDir) {
                   &mCloudShapeAlloc, &mCloudShapeView) ||
       !loadVolume(dir + "/nubis_detail.glvol", &mCloudDetailImage,
                   &mCloudDetailAlloc, &mCloudDetailView) ||
+      !loadVolume(dir + "/cloud_detail_periodic.glvol", &mCloudPeriodicDetailImage,
+                  &mCloudPeriodicDetailAlloc, &mCloudPeriodicDetailView) ||
       !loadMap(dir + "/weather.png", &mCloudWeatherImage, &mCloudWeatherAlloc,
                &mCloudWeatherView) ||
       !loadMap(dir + "/curl_noise.png", &mCloudCurlImage, &mCloudCurlAlloc,
@@ -3218,11 +3583,14 @@ bool VulkanRenderer::createCloudNoiseResources(const std::string &assetDir) {
   setAlloc.pSetLayouts = &mCloudNoiseSetLayout;
   VK_CHECK(vkAllocateDescriptorSets(mCtx->device(), &setAlloc, &mCloudNoiseSet));
 
-  VkImageView views[4] = {mCloudShapeView, mCloudDetailView, mCloudWeatherView,
-                          mCloudCurlView};
-  VkDescriptorImageInfo images[4]{};
-  VkWriteDescriptorSet writes[4]{};
-  for (uint32_t i = 0; i < 4; ++i) {
+  VmaAllocationInfo periodicAllocation{};
+  vmaGetAllocationInfo(mCtx->allocator(),mCloudPeriodicDetailAlloc,&periodicAllocation);
+  mCloudPeriodicDetailBytes=periodicAllocation.size;
+  VkImageView views[5] = {mCloudShapeView, mCloudDetailView, mCloudWeatherView,
+                          mCloudCurlView,mCloudPeriodicDetailView};
+  VkDescriptorImageInfo images[5]{};
+  VkWriteDescriptorSet writes[5]{};
+  for (uint32_t i = 0; i < 5; ++i) {
     images[i].sampler = mCloudSampler;
     images[i].imageView = views[i];
     images[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -3233,7 +3601,7 @@ bool VulkanRenderer::createCloudNoiseResources(const std::string &assetDir) {
     writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[i].pImageInfo = &images[i];
   }
-  vkUpdateDescriptorSets(mCtx->device(), 4, writes, 0, nullptr);
+  vkUpdateDescriptorSets(mCtx->device(), 5, writes, 0, nullptr);
 
   mCloudNoiseReady = true;
   return true;
@@ -3241,8 +3609,8 @@ bool VulkanRenderer::createCloudNoiseResources(const std::string &assetDir) {
 
 void VulkanRenderer::destroyCloudNoiseResources() {
   VkDevice device = mCtx->device();
-  VkImageView views[4] = {mCloudShapeView, mCloudDetailView, mCloudWeatherView,
-                          mCloudCurlView};
+  VkImageView views[5] = {mCloudShapeView, mCloudDetailView, mCloudWeatherView,
+                          mCloudCurlView,mCloudPeriodicDetailView};
   for (VkImageView v : views)
     if (v)
       vkDestroyImageView(device, v, nullptr);
@@ -3250,6 +3618,8 @@ void VulkanRenderer::destroyCloudNoiseResources() {
     vmaDestroyImage(mCtx->allocator(), mCloudShapeImage, mCloudShapeAlloc);
   if (mCloudDetailImage)
     vmaDestroyImage(mCtx->allocator(), mCloudDetailImage, mCloudDetailAlloc);
+  if(mCloudPeriodicDetailImage)
+    vmaDestroyImage(mCtx->allocator(),mCloudPeriodicDetailImage,mCloudPeriodicDetailAlloc);
   if (mCloudWeatherImage)
     vmaDestroyImage(mCtx->allocator(), mCloudWeatherImage, mCloudWeatherAlloc);
   if (mCloudCurlImage)
@@ -3264,6 +3634,8 @@ void VulkanRenderer::destroyCloudNoiseResources() {
       VK_NULL_HANDLE;
   mCloudShapeImage = mCloudDetailImage = mCloudWeatherImage = mCloudCurlImage =
       VK_NULL_HANDLE;
+  mCloudPeriodicDetailImage=VK_NULL_HANDLE;mCloudPeriodicDetailView=VK_NULL_HANDLE;
+  mCloudPeriodicDetailBytes=0;
   mCloudSampler = VK_NULL_HANDLE;
   mCloudPool = VK_NULL_HANDLE;
   mCloudNoiseSetLayout = VK_NULL_HANDLE;
@@ -3339,10 +3711,14 @@ bool VulkanRenderer::createCloudPipelines(const std::string &shaderDir) {
                               colorBlend, dynamicState, dynamics);
     (void)overBlend;
 
+    VkPipelineColorBlendAttachmentState cloudAttachments[]={blendAttachment,blendAttachment};
+    colorBlend.attachmentCount=2;colorBlend.pAttachments=cloudAttachments;
+
     VkPipelineRenderingCreateInfo renderingCi{};
     renderingCi.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingCi.colorAttachmentCount = 1;
-    renderingCi.pColorAttachmentFormats = &mHdrFormat;
+    const VkFormat cloudFormats[]={mHdrFormat,VK_FORMAT_R32_SFLOAT};
+    renderingCi.colorAttachmentCount = 2;
+    renderingCi.pColorAttachmentFormats = cloudFormats;
 
     VkGraphicsPipelineCreateInfo pipelineCi{};
     pipelineCi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -3373,7 +3749,7 @@ bool VulkanRenderer::createCloudPipelines(const std::string &shaderDir) {
     return pipeline;
   };
 
-  mCloudPipeline = build("clouds.frag", mCloudPipelineLayout, false, "clouds.march");
+  mCloudPipeline = build("clouds.frag", mCloudPipelineLayout, false, "clouds.march.depth.v2");
   return true;
 }
 
@@ -3505,6 +3881,7 @@ void VulkanRenderer::setWaterHeightField(const float *heights, uint32_t resoluti
     view.subresourceRange.layerCount = 1;
     VK_CHECK(vkCreateImageView(mCtx->device(), &view, nullptr, &mWaterFieldView));
     mWaterFieldResolution = resolution;
+    mSnowWaterTex = mBindless.registerTexture(*mCtx, mWaterFieldView, mSampler);
 
     if (mWaterFieldSet == VK_NULL_HANDLE) {
       VkDescriptorPoolSize poolSize{};
@@ -3584,17 +3961,17 @@ void VulkanRenderer::setWaterHeightField(const float *heights, uint32_t resoluti
 // scene, and it returns coverage in alpha, so untouched pixels cost a blend
 // with alpha 0 instead of a full-screen read-modify-write of the HDR image.
 bool VulkanRenderer::createWaterPipeline(const std::string &shaderDir) {
-  VkDescriptorSetLayout setLayouts[5] = {mAOSamplerSetLayout,
+  VkDescriptorSetLayout setLayouts[7] = {mAOSamplerSetLayout,
                                          mAOSamplerSetLayout, mFrameSetLayout,
-                                         mAOSamplerSetLayout,
-                                         mAOSamplerSetLayout};
+                                         mEnvironmentSetLayout,
+                                         mAOSamplerSetLayout, mTlasSetLayout, mAtmosphere.layout()};
   VkPushConstantRange pcRange{};
   pcRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
   pcRange.offset = 0;
   pcRange.size = sizeof(WaterPush);
   VkPipelineLayoutCreateInfo layoutCi{};
   layoutCi.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  layoutCi.setLayoutCount = 5;
+  layoutCi.setLayoutCount = 7;
   layoutCi.pSetLayouts = setLayouts;
   layoutCi.pushConstantRangeCount = 1;
   layoutCi.pPushConstantRanges = &pcRange;
@@ -3884,7 +4261,74 @@ VulkanAccel::BlasInput VulkanRenderer::blasInputForMesh(const Mesh &mesh) const 
   in.vertexStride = sizeof(MeshVertex);
   in.indexAddress = deviceAddress(mesh.indexBuffer);
   in.indexCount = mesh.indexCount;
+  in.opaque = !mesh.alphaTested;
   return in;
+}
+
+glm::uvec4 VulkanRenderer::updateRtAlphaTable(uint32_t frame) {
+  if (mRtAlphaBuffers.size() < kFramesInFlight)
+    mRtAlphaBuffers.resize(kFramesInFlight);
+  RtAlphaFrameBuffer &fb = mRtAlphaBuffers[frame];
+  const auto packed = [&]() {
+    if (!fb.address)
+      return glm::uvec4(0u);
+    return glm::uvec4(static_cast<uint32_t>(fb.address & 0xFFFFFFFFull),
+                      static_cast<uint32_t>(fb.address >> 32), 0u, 0u);
+  };
+  if (fb.version == mRtAlphaVersion)
+    return packed();
+
+  std::vector<RtAlphaMeshGpu> meshes(mMeshes.size());
+  bool any = false;
+  for (size_t m = 0; m < mMeshes.size(); ++m) {
+    RtAlphaMeshGpu rec{};
+    if (mMeshes[m].alphaMaskBuffer) {
+      VkBufferDeviceAddressInfo info{};
+      info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+      info.buffer = mMeshes[m].alphaMaskBuffer;
+      rec.masks = vkGetBufferDeviceAddress(mCtx->device(), &info);
+      any = true;
+    }
+    meshes[m] = rec;
+  }
+  fb.version = mRtAlphaVersion;
+  if (!any) {
+    fb.address = 0; // keep the buffer for reuse; the shader sees "none"
+    return glm::uvec4(0u);
+  }
+  const VkDeviceSize total = meshes.size() * sizeof(RtAlphaMeshGpu);
+  if (total > fb.capacity) {
+    // This frame slot's fence has signalled, so the old buffer is idle.
+    if (fb.buffer)
+      vmaDestroyBuffer(mCtx->allocator(), fb.buffer, fb.alloc);
+    VkBufferCreateInfo bci{};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = std::max<VkDeviceSize>(total * 3 / 2, 4096);
+    bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VmaAllocationInfo info{};
+    VK_CHECK(vmaCreateBuffer(mCtx->allocator(), &bci, &aci, &fb.buffer,
+                             &fb.alloc, &info));
+    fb.mapped = info.pMappedData;
+    fb.capacity = bci.size;
+    VkBufferDeviceAddressInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    ai.buffer = fb.buffer;
+    fb.address = vkGetBufferDeviceAddress(mCtx->device(), &ai);
+  }
+  std::memcpy(fb.mapped, meshes.data(), static_cast<size_t>(total));
+  vmaFlushAllocation(mCtx->allocator(), fb.alloc, 0, VK_WHOLE_SIZE);
+  if (!fb.address) {
+    VkBufferDeviceAddressInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    ai.buffer = fb.buffer;
+    fb.address = vkGetBufferDeviceAddress(mCtx->device(), &ai);
+  }
+  return packed();
 }
 
 VulkanRenderer::MeshHandle
@@ -3935,6 +4379,9 @@ bool VulkanRenderer::updateMeshFromData(MeshHandle handle,
   // flight reference them (this used to be an unguarded destroy, and the
   // BLAS swap used to vkDeviceWaitIdle per brush stroke).
   Mesh &old = mMeshes[handle];
+  ++mRtAlphaVersion;
+  if (old.alphaMaskBuffer)
+    mPendingGarbage.buffers.emplace_back(old.alphaMaskBuffer, old.alphaMaskAlloc);
   if (old.vertexBuffer)
     mPendingGarbage.buffers.emplace_back(old.vertexBuffer, old.vertexAlloc);
   if (old.indexBuffer)
@@ -3955,10 +4402,12 @@ void VulkanRenderer::destroyMesh(MeshHandle handle) {
   Mesh &mesh = mMeshes[handle];
   if (!mesh.vertexBuffer && !mesh.indexBuffer)
     return; // already dead
+  ++mRtAlphaVersion;
   // Created and evicted within the same frame: drop the not-yet-recorded
   // copies into these buffers along with the buffers themselves.
   for (auto it = mPendingCopies.begin(); it != mPendingCopies.end();) {
-    if (it->dst == mesh.vertexBuffer || it->dst == mesh.indexBuffer)
+    if (it->dst == mesh.vertexBuffer || it->dst == mesh.indexBuffer ||
+        (mesh.alphaMaskBuffer && it->dst == mesh.alphaMaskBuffer))
       it = mPendingCopies.erase(it);
     else
       ++it;
@@ -3967,6 +4416,8 @@ void VulkanRenderer::destroyMesh(MeshHandle handle) {
     mPendingGarbage.buffers.emplace_back(mesh.vertexBuffer, mesh.vertexAlloc);
   if (mesh.indexBuffer)
     mPendingGarbage.buffers.emplace_back(mesh.indexBuffer, mesh.indexAlloc);
+  if (mesh.alphaMaskBuffer)
+    mPendingGarbage.buffers.emplace_back(mesh.alphaMaskBuffer, mesh.alphaMaskAlloc);
   mesh = Mesh{};
   mAccel.releaseBlas(handle, mPendingGarbage);
   // Drop any not-yet-recorded BLAS build for this slot (created and evicted
@@ -4057,7 +4508,12 @@ bool VulkanRenderer::buildMeshFromData(const ::MeshData &data,
       tex = addTexture(rgba.data(), static_cast<uint32_t>(img->width),
                        static_cast<uint32_t>(img->height),
                        srgb ? VK_FORMAT_R8G8B8A8_SRGB
-                            : VK_FORMAT_R8G8B8A8_UNORM);
+                            : VK_FORMAT_R8G8B8A8_UNORM,
+                       // This stock grass atlas must retain gaps between its
+                       // leaves. Tree-crown footprint growth merged the fine
+                       // photographed blades into opaque fern-like clumps.
+                       path.find("meadow_grass_atlas.png") == std::string::npos &&
+                       path.find("woodland_grass_scan_rgba.png") == std::string::npos);
     } else {
       // Engine model UVs are raw (OBJ bottom-left origin); flip the file
       // like the GL engine does so sampling matches.
@@ -4067,6 +4523,7 @@ bool VulkanRenderer::buildMeshFromData(const ::MeshData &data,
     return tex;
   };
 
+  std::vector<AlphaSource> alphaSources;
   for (const auto &sd : data.submeshes) {
     if (sd.vertices.empty())
       continue;
@@ -4075,7 +4532,7 @@ bool VulkanRenderer::buildMeshFromData(const ::MeshData &data,
     DrawItem item{};
     item.indexOffset = static_cast<uint32_t>(indices.size());
     for (const auto &v : sd.vertices) {
-      vertices.push_back({v.pos, v.normal, v.uv, v.terrainParams});
+      vertices.push_back({v.pos, v.normal, v.uv, v.terrainParams, v.grassGroundOcclusion});
       if (!mesh.hasBounds) {
         mesh.boundsMin = mesh.boundsMax = v.pos;
         mesh.hasBounds = true;
@@ -4126,6 +4583,14 @@ bool VulkanRenderer::buildMeshFromData(const ::MeshData &data,
       flags |= kHasOpacityMap;
     }
     item.alphaCutoff = std::max(mat.alphaCutoff, 0.0f);
+    if (item.alphaCutoff > 0.0f) {
+      const bool opacityMap = !mat.texOpacityPath.empty();
+      alphaSources.push_back(
+          {item.indexOffset, 0u,
+           opacityMap ? mat.texOpacityPath : mat.texDiffusePath,
+           opacityMap ? static_cast<uint32_t>(mat.opacityChannel & 0x3) : 3u,
+           item.alphaCutoff});
+    }
     item.emissiveColor = glm::max(mat.emissiveColor, glm::vec3(0.0f));
     item.emissiveStrength = std::max(mat.emissiveStrength, 0.0f);
     if (mat.roughnessMapIsGloss)
@@ -4140,6 +4605,15 @@ bool VulkanRenderer::buildMeshFromData(const ::MeshData &data,
     item.materialFlags = flags;
     mesh.drawItems.push_back(item);
   }
+
+  for (const DrawItem &di : mesh.drawItems)
+    mesh.alphaTested = mesh.alphaTested || di.alphaCutoff > 0.0f;
+  // Draw items and alpha sources were pushed in the same order; the index
+  // counts are only final now.
+  for (AlphaSource &src : alphaSources)
+    for (const DrawItem &di : mesh.drawItems)
+      if (di.indexOffset == src.indexOffset)
+        src.indexCount = di.indexCount;
 
   if (vertices.empty() || indices.empty()) {
     std::fprintf(stderr, "[VulkanRHI] mesh data '%s' has no geometry\n",
@@ -4160,17 +4634,100 @@ bool VulkanRenderer::buildMeshFromData(const ::MeshData &data,
   createDeviceLocalBuffer(indices.data(), indices.size() * sizeof(uint32_t),
                           VK_BUFFER_USAGE_INDEX_BUFFER_BIT | asInput,
                           mesh.indexBuffer, mesh.indexAlloc);
+
+  if (mesh.alphaTested) {
+    // Opacity micromaps: every triangle starts fully opaque (bark, and any
+    // submesh without a cut-out); alpha-masked submeshes are then carved
+    // from a coverage grid of their alpha source.
+    const size_t triCount = indices.size() / 3;
+    std::vector<uint32_t> words(triCount * kRtMicroWords, 0xFFFFFFFFu);
+    for (const AlphaSource &src : alphaSources) {
+      std::vector<uint8_t> rgba;
+      int w = 0, h = 0;
+      if (const ::MeshImage *img = data.findImage(src.path)) {
+        w = img->width;
+        h = img->height;
+        rgba.resize(static_cast<size_t>(w) * h * 4, 255);
+        for (size_t p = 0; p < static_cast<size_t>(w) * h; ++p)
+          for (int c = 0; c < std::min(img->component, 4); ++c)
+            rgba[p * 4 + c] = img->pixels[p * img->component + c];
+      } else {
+        // Same orientation as loadTextureFile's GPU upload (flipped).
+        stbi_set_flip_vertically_on_load(1);
+        int channels = 0;
+        stbi_uc *px = stbi_load(src.path.c_str(), &w, &h, &channels, STBI_rgb_alpha);
+        stbi_set_flip_vertically_on_load(0);
+        if (px) {
+          rgba.assign(px, px + static_cast<size_t>(w) * h * 4);
+          stbi_image_free(px);
+        }
+      }
+      if (rgba.empty() || w <= 0 || h <= 0)
+        continue; // leave opaque: better a solid shadow than none
+      // Coverage grid: fraction of texels passing the cutoff per cell.
+      const uint32_t gw = std::min<uint32_t>(64u, static_cast<uint32_t>(w));
+      const uint32_t gh = std::min<uint32_t>(64u, static_cast<uint32_t>(h));
+      std::vector<float> cov(static_cast<size_t>(gw) * gh, 0.0f);
+      std::vector<uint32_t> cnt(cov.size(), 0);
+      const uint8_t cut = static_cast<uint8_t>(std::clamp(src.cutoff, 0.0f, 1.0f) * 255.0f);
+      for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+          const size_t cell = static_cast<size_t>(y * gh / h) * gw + (x * gw / w);
+          cov[cell] += rgba[(static_cast<size_t>(y) * w + x) * 4 + src.channel] >= cut ? 1.0f : 0.0f;
+          ++cnt[cell];
+        }
+      for (size_t c = 0; c < cov.size(); ++c)
+        cov[c] /= static_cast<float>(std::max(cnt[c], 1u));
+      for (uint32_t t = src.indexOffset / 3; t < (src.indexOffset + src.indexCount) / 3; ++t) {
+        const glm::vec2 uv[3] = {vertices[indices[t * 3 + 0]].uv,
+                                 vertices[indices[t * 3 + 1]].uv,
+                                 vertices[indices[t * 3 + 2]].uv};
+        buildTriangleMicromap(uv, cov, gw, gh, &words[t * kRtMicroWords]);
+      }
+    }
+    createDeviceLocalBuffer(words.data(), words.size() * sizeof(uint32_t),
+                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                            mesh.alphaMaskBuffer, mesh.alphaMaskAlloc);
+  }
   return true;
 }
 
 void VulkanRenderer::addInstance(MeshHandle mesh, const glm::mat4 &transform,
-                                 bool isTerrain) {
+                                 bool isTerrain, const MaterialAsset *material,
+                                 bool castsShadow, bool isViewModel, uint32_t viewModelFlags) {
   if (mesh >= mMeshes.size())
     return;
   Instance inst;
   inst.meshIndex = mesh;
   inst.model = transform;
   inst.isTerrain = isTerrain;
+  inst.castsShadow = castsShadow;
+  inst.isViewModel = isViewModel;
+  inst.viewModelFlags = viewModelFlags;
+  if(material) {
+    inst.hasMaterialOverride=true;
+    auto &out=inst.materialOverride;
+    // Share the solid-color texture cache with imported/procedural assets.
+    // Scalar ECS overrides previously never reached this backend at all.
+    uint8_t rgba[4];uint32_t key=0;
+    for(int i=0;i<4;++i){
+      rgba[i]=static_cast<uint8_t>(glm::clamp(material->baseColor[i],0.0f,1.0f)*255.0f);
+      key=(key<<8)|rgba[i];
+    }
+    auto found=mSolidColorTex.find(key);
+    if(found==mSolidColorTex.end()) {
+      const uint32_t texture=addTexture(rgba,1,1,VK_FORMAT_R8G8B8A8_SRGB);
+      found=mSolidColorTex.emplace(key,texture).first;
+    }
+    out.textureIndex=found->second;
+    out.roughnessScalar=glm::clamp(material->roughness,.06f,1.0f);
+    out.metallicScalar=glm::clamp(material->metallic,0.0f,1.0f);
+    out.aoScalar=glm::clamp(material->ao,0.0f,1.0f);
+    out.alphaCutoff=glm::clamp(material->alphaCutoff,0.0f,1.0f);
+    out.emissiveColor=glm::max(material->emissiveColor,glm::vec3(0));
+    out.emissiveStrength=std::max(material->emissiveStrength,0.0f);
+  }
   mInstances.push_back(inst);
 }
 
@@ -4184,7 +4741,7 @@ void VulkanRenderer::setVegetationBatches(const std::vector<VegBatch> &batches) 
 
     VegSpeciesBuffer *vb = nullptr;
     for (VegSpeciesBuffer &existing : mVegBuffers) {
-      if (existing.mesh == batch.mesh) {
+      if (existing.mesh == batch.mesh && existing.layerKey == batch.layerKey) {
         vb = &existing;
         break;
       }
@@ -4193,6 +4750,7 @@ void VulkanRenderer::setVegetationBatches(const std::vector<VegBatch> &batches) 
       mVegBuffers.push_back(VegSpeciesBuffer{});
       vb = &mVegBuffers.back();
       vb->mesh = batch.mesh;
+      vb->layerKey = batch.layerKey;
     }
 
     const size_t needed = batch.instances.size();
@@ -4227,12 +4785,16 @@ void VulkanRenderer::setVegetationBatches(const std::vector<VegBatch> &batches) 
     vb->cpu = batch.instances;
     vb->ranges = batch.ranges;
     vb->drawDistance = batch.drawDistance;
+    vb->meshLods = batch.meshLods;
+    vb->shadowMesh = batch.shadowMesh;
+    vb->grass = batch.grass;
     vb->rayTracedShadows = batch.rayTracedShadows;
     vb->windStrength = batch.windStrength;
     vb->windSpeed = batch.windSpeed;
     vb->windMeshHeight = batch.windMeshHeight;
     vb->groundOcclusion = batch.groundOcclusion;
     vb->foliageSssStrength = batch.foliageSssStrength;
+    vb->receivesSnow = batch.receivesSnow;
     // A batch without range info still draws, just uncullable as one span.
     if (vb->ranges.empty() && vb->count > 0) {
       VegRange all{};
@@ -4248,7 +4810,7 @@ void VulkanRenderer::setVegetationBatches(const std::vector<VegBatch> &batches) 
   for (VegSpeciesBuffer &vb : mVegBuffers) {
     bool stillPresent = false;
     for (const VegBatch &batch : batches) {
-      if (batch.mesh == vb.mesh && !batch.instances.empty()) {
+      if (batch.mesh == vb.mesh && batch.layerKey == vb.layerKey && !batch.instances.empty()) {
         stillPresent = true;
         break;
       }
@@ -4293,7 +4855,7 @@ bool VulkanRenderer::finalizeScene() {
   std::vector<VulkanAccel::InstanceInput> instInputs;
   instInputs.reserve(mInstances.size());
   for (const Instance &inst : mInstances) {
-    if (!mMeshes[inst.meshIndex].vertexBuffer)
+    if (inst.isViewModel || !inst.castsShadow || !mMeshes[inst.meshIndex].vertexBuffer)
       continue;
     VulkanAccel::InstanceInput in;
     in.blasIndex = inst.meshIndex;
@@ -4371,10 +4933,9 @@ void VulkanRenderer::recreateSwapchain() {
   if (!mSwapchain.create(*mCtx, mSurface, w, h))
     return;
   createSceneTargets();
+  updateTemporalSets();
   updateTonemapSets();
   updateSSAOSets();
-  updateBloomSets();
-  updateVolumetricSets(); // scatter target is swapchain-sized; env map is not
   updateCloudSets();      // cloud march target is swapchain-derived too
 
   mRenderFinished.resize(mSwapchain.imageCount());
@@ -4448,6 +5009,46 @@ void VulkanRenderer::drawFrame() {
   mAccel.freeGarbage(*mCtx, mFrameGarbage[mCurrentFrame]);
   mFrameStats = FrameStats{};
 
+  if (!mGpuTimestampsInitialized) {
+    mGpuTimestampsInitialized = true;
+    uint32_t families = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(mCtx->physicalDevice(), &families, nullptr);
+    std::vector<VkQueueFamilyProperties> props(families);
+    vkGetPhysicalDeviceQueueFamilyProperties(mCtx->physicalDevice(), &families, props.data());
+    mGpuTimestampBits = props[mCtx->graphicsQueueFamily()].timestampValidBits;
+    if (mGpuTimestampBits) {
+      VkQueryPoolCreateInfo ci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+      ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+      ci.queryCount = kGpuTimestampCount;
+      for (auto &pool : mGpuTimestampPools)
+        VK_CHECK(vkCreateQueryPool(device, &ci, nullptr, &pool));
+    }
+  }
+  const VkQueryPool gpuQueries = mGpuTimestampPools[mCurrentFrame];
+  if (gpuQueries && mGpuTimestampsWritten[mCurrentFrame]) {
+    uint64_t ticks[kGpuTimestampCount]{};
+    if (vkGetQueryPoolResults(device, gpuQueries, 0, kGpuTimestampCount,
+                             sizeof(ticks), ticks, sizeof(uint64_t),
+                             VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+      const uint64_t mask = mGpuTimestampBits == 64 ? UINT64_MAX
+                              : (uint64_t{1} << mGpuTimestampBits) - 1;
+      const double toMs = mCtx->properties().limits.timestampPeriod * 1e-6;
+      auto elapsed = [&](int a, int b) {
+        return float(((ticks[b] - ticks[a]) & mask) * toMs);
+      };
+      mFrameStats.gpuTotalMs = elapsed(0, 6);
+      mFrameStats.gpuPrepareMs = elapsed(0, 1);
+      mFrameStats.gpuDepthMs = elapsed(1, 2);
+      mFrameStats.gpuAtmosphereMs = elapsed(2, 3);
+      mFrameStats.gpuSceneMs = elapsed(3, 4);
+      mFrameStats.gpuWaterMs = elapsed(11, 12);
+      mFrameStats.gpuPostMs = elapsed(5, 6);
+      mFrameStats.gpuCloudsMs = elapsed(7, 13);
+      mFrameStats.gpuSkyEnvironmentMs = elapsed(8, 9);
+      mFrameStats.gpuSSAOMs = elapsed(2, 10);
+    }
+  }
+
   uint32_t imageIndex = 0;
   VkResult acquire = vkAcquireNextImageKHR(
       device, mSwapchain.handle(), UINT64_MAX, mImageAvailable[mCurrentFrame],
@@ -4483,6 +5084,44 @@ void VulkanRenderer::drawFrame() {
   glm::mat4 proj = glm::perspective(glm::radians(mParams.fovDeg), aspect,
                                     0.05f, std::max(mParams.farPlane, 10.0f));
   proj[1][1] *= -1.0f;
+  const glm::mat4 unjitteredProjection = proj;
+  mAtmosphere.prepare(mCurrentFrame, mFrameCounter, extent, mParams.atmosphere.quality);
+  mAtmosphere.updateInputs(mCurrentFrame, mSceneCopyViews[mCurrentFrame], mDepthViews[mCurrentFrame]);
+  mCloudHistory.prepare(mCurrentFrame,mFrameCounter,mCloudExtent);
+  mFrameStats.gpuCloudHistoryMs=mCloudHistory.milliseconds();
+  mFrameStats.cloudHistoryAllocatedBytes=mCloudHistory.allocatedBytes();
+  VkDescriptorImageInfo cloudShadowInput{mSampler,mAtmosphere.cloudShadowView(),VK_IMAGE_LAYOUT_GENERAL};
+  VkWriteDescriptorSet cloudShadowWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};cloudShadowWrite.dstSet=mSceneEnvSets[mCurrentFrame];cloudShadowWrite.dstBinding=1;
+  cloudShadowWrite.descriptorCount=1;cloudShadowWrite.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;cloudShadowWrite.pImageInfo=&cloudShadowInput;
+  vkUpdateDescriptorSets(mCtx->device(),1,&cloudShadowWrite,0,nullptr);
+  VkDescriptorBufferInfo irradianceInput{mAtmosphere.skyIrradianceBuffer(),0,16*sizeof(glm::vec4)};
+  cloudShadowWrite.dstBinding=2;cloudShadowWrite.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  cloudShadowWrite.pImageInfo=nullptr;cloudShadowWrite.pBufferInfo=&irradianceInput;
+  vkUpdateDescriptorSets(mCtx->device(),1,&cloudShadowWrite,0,nullptr);
+  const auto fogTimings = mAtmosphere.timings();
+  mFrameStats.gpuFogVisibilityMs = fogTimings.visibility;
+  mFrameStats.gpuFogInjectionMs = fogTimings.injection;
+  mFrameStats.gpuFogHistoryMs = fogTimings.history;
+  mFrameStats.gpuFogIntegrationMs = fogTimings.integration + fogTimings.composition;
+  // Cloud reconstruction is a new atmosphere allocation, rather than an
+  // existing cloud asset. Include it in the total; the separate statistic
+  // explains the phase-two increase without hiding it from budget reports.
+  mFrameStats.cloudDetailAllocatedBytes=mCloudPeriodicDetailBytes;
+  mFrameStats.atmosphereAllocatedBytes = mAtmosphere.allocatedBytes()+mCloudHistory.allocatedBytes()+mExposureMeter.allocatedBytes()+mCloudPeriodicDetailBytes;
+  mFrameStats.gpuBloomMs = mAtmosphere.bloomMilliseconds();
+  mFrameStats.gpuSkyLutsMs = mAtmosphere.skyMilliseconds();
+  mFrameStats.gpuCloudShadowMs = mAtmosphere.cloudShadowMilliseconds();
+  const bool temporalOn = mParams.temporalAA && mParams.debugViewMode == 0;
+  if (temporalOn) {
+    // Eight sub-pixel positions cover both axes without shifting camera state,
+    // picking rays, or the user's saved view. Depth/sky/water use this matrix.
+    static constexpr glm::vec2 jitter[8] = {
+        {0.0f,-.166667f},{-.25f,.166667f},{.25f,-.388889f},{-.375f,-.055556f},
+        {.125f,.277778f},{-.125f,-.277778f},{.375f,.055556f},{-.4375f,.388889f}};
+    const auto offset = jitter[mFrameCounter % 8];
+    proj[2][0] += offset.x * 2.0f / extent.width;
+    proj[2][1] += offset.y * 2.0f / extent.height;
+  }
 
   const float ly = glm::radians(mParams.lightYawDeg);
   const float lp = glm::radians(mParams.lightPitchDeg);
@@ -4500,12 +5139,17 @@ void VulkanRenderer::drawFrame() {
   const float sunEl = toSun.y;
   const float haze = glm::clamp(mParams.atmosphereHaze, 0.0f, 1.0f);
   const float sunOuterScale = atm::kSunOuterRadiance * mParams.sunIntensity;
-  const glm::vec3 sunRad = sunOuterScale * atm::transmittance(sunEl, haze);
+  const bool physicalSky=mParams.atmosphere.enabled&&mParams.atmosphere.physicalSky&&mParams.debugViewMode==0;
+  const auto directTransmission=[&](float elevation) {
+    return physicalSky?glm::vec3(atmosphere::sky::transmittance(6371+std::clamp(double(eye.y+4)*.001,.002,40.0),elevation,haze))
+                     :atm::transmittance(elevation,haze);
+  };
+  const glm::vec3 sunRad = sunOuterScale * directTransmission(sunEl);
   const float moonOuterScale = sunOuterScale * atm::kMoonOuterFactor *
                                std::max(mParams.moonIntensity, 0.0f);
   const glm::vec3 toMoon = -toSun;
   const glm::vec3 moonRad =
-      atm::kMoonTint * moonOuterScale * atm::transmittance(toMoon.y, haze);
+      atm::kMoonTint * moonOuterScale * directTransmission(toMoon.y);
   const bool sunActive = sunEl > -0.035f;
   const glm::vec3 lightDir = sunActive ? sunTravelDir : -sunTravelDir;
   const glm::vec3 activeRad = sunActive ? sunRad : moonRad;
@@ -4515,18 +5159,38 @@ void VulkanRenderer::drawFrame() {
       glm::dot(activeSurfaceIrradiance,
                glm::vec3(0.2126f, 0.7152f, 0.0722f));
 
+  mExposureMeter.prepare(mCurrentFrame);
+  mFrameStats.gpuExposureMeterMs=mExposureMeter.milliseconds();mFrameStats.meteredLuminance=float(mExposureMeter.luminance());
+  const bool histogramExposure=mParams.atmosphere.enabled&&mParams.atmosphere.histogramExposure&&mParams.debugViewMode==0;
+  const auto exposureNow=std::chrono::steady_clock::now();
+  float exposureDt=mHasLastExposureUpdate?
+      std::chrono::duration<float>(exposureNow-mLastExposureUpdate).count():1.0f/60.0f;
+  mLastExposureUpdate=exposureNow;
+  mHasLastExposureUpdate=true;
+  if(mParams.fixedTimeSeconds>=0.0f)exposureDt=1.0f/60.0f;
   if (mParams.autoExposure) {
     // Bright noon -> autoExposureMin, dark night -> autoExposureMax, driven
     // by the TRUE sun elevation (lightDir itself flips to the moon at
     // night). Eased rather than snapped so a moving sun doesn't pop.
     const float day = glm::smoothstep(-0.10f, 0.18f, sunEl);
-    const float target =
+    float target =
         glm::mix(mParams.autoExposureMax, mParams.autoExposureMin, day);
-    mParams.exposure +=
-        (target - mParams.exposure) * glm::clamp(mParams.autoExposureSpeed, 0.0f, 1.0f);
+    if(histogramExposure&&mExposureMeter.ready())target=float(atmosphere::exposureTarget(
+        mExposureMeter.luminance(),mParams.atmosphere.exposureKey,mParams.atmosphere.exposureMin,mParams.atmosphere.exposureMax));
+    // Preserve the existing speed dial at 60 Hz while making adaptation
+    // independent of frame rate. Per-frame easing flickered during stalls.
+    const float alpha=1.0f-std::pow(1.0f-glm::clamp(mParams.autoExposureSpeed,0.0f,1.0f),
+                                  glm::clamp(exposureDt,0.0f,.1f)*60.0f);
+    if(histogramExposure&&mExposureMeter.ready())mParams.exposure=float(atmosphere::adaptExposure(mParams.exposure,target,alpha));
+    else mParams.exposure += (target-mParams.exposure)*alpha;
   }
 
+  const auto physicalAtmosphere=atmosphere::fromLegacy(mParams);
   FrameDataGpu frameData{};
+  frameData.atmosphereParams=glm::vec4(physicalAtmosphere.enabled?1.f:0.f,physicalAtmosphere.range,physicalAtmosphere.dustExtinction,mParams.volumetricHeightFalloffScale);
+  frameData.skyLutParams=glm::vec4(physicalSky?1.f:0.f,32000,0,0);
+  const bool cloudShadowEnabled=physicalAtmosphere.enabled&&physicalAtmosphere.cloudShadows&&mCloudNoiseReady&&mParams.style.cloudVolumetricEnabled&&!mParams.style.paintedClouds&&mParams.style.cloudStrength>0&&mParams.debugViewMode==0;
+  frameData.cloudShadowField=glm::vec4(glm::floor(glm::vec2(eye.x,eye.z)/128.f)*128.f-glm::vec2(4096),8192,cloudShadowEnabled?glm::clamp(mParams.style.cloudStrength,0.f,1.f):0.f);
   frameData.viewProj = proj * viewMat;
   frameData.view = viewMat;
   // w = the active light's LUMINANCE: legacy scalar consumers (grass
@@ -4599,7 +5263,14 @@ void VulkanRenderer::drawFrame() {
                                      tex[4].roughnessTex, 0u);
   frameData.terrainTiling0 =
       glm::vec4(slots[0].tiling, slots[1].tiling, slots[2].tiling, slots[3].tiling);
-  frameData.terrainTiling1 = glm::vec4(slots[4].tiling, 0.0f, 0.0f, 0.0f);
+  frameData.terrainTiling1 = glm::vec4(slots[4].tiling, mAuthoredTerrainSurface ? 1.0f : 0.0f, 0.0f, 0.0f);
+  frameData.terrainHeightTex = glm::uvec4(tex[0].heightTex, tex[1].heightTex,
+                                       tex[2].heightTex, tex[3].heightTex);
+  frameData.terrainHeightTexExtra = glm::uvec4(tex[4].heightTex, UINT32_MAX,
+                                            UINT32_MAX, UINT32_MAX);
+  frameData.terrainReliefDepth0 = glm::vec4(slots[0].reliefDepth, slots[1].reliefDepth,
+                                         slots[2].reliefDepth, slots[3].reliefDepth);
+  frameData.terrainReliefDepth1 = glm::vec4(slots[4].reliefDepth, 0, 0, 0);
 
   // R3: biome lighting & atmosphere.
   frameData.biomeAmbientMeadow =
@@ -4693,6 +5364,13 @@ void VulkanRenderer::drawFrame() {
                 glm::clamp(style.cloudMaxSteps, 24.0f, 192.0f),
                 glm::clamp(style.cloudLightTaps, 1.0f, 6.0f),
                 glm::clamp(style.cloudTypeBias, -1.0f, 1.0f));
+  frameData.snowParams = glm::vec4(mParams.snowCoverage, mParams.snowPatchScale,
+      mParams.snowSlopeLimit, mParams.snowAltitudeBoost);
+  frameData.snowColor = glm::vec4(mParams.snowTint, mParams.snowRoughness);
+  frameData.snowTextures = glm::uvec4(mSnowMaterialTex.albedoTex,
+      mSnowMaterialTex.normalTex, mSnowMaterialTex.roughnessTex,
+      mParams.waterEnabled ? mSnowWaterTex : UINT32_MAX);
+  frameData.snowExtra = glm::vec4(mParams.snowMaterial.tiling, 0, 0, 0);
   frameData.styleCloud6 =
       glm::vec4(glm::clamp(style.cloudDetailStrength, 0.0f, 1.0f), 0.0f, 0.0f,
                 0.0f);
@@ -4739,6 +5417,33 @@ void VulkanRenderer::drawFrame() {
   frameData.pointLightParams =
       glm::vec4(static_cast<float>(pointLightCount), 0.0f, 0.0f, 0.0f);
 
+  // The Long Dark graphics overhaul parameters
+  frameData.snowParams2 =
+      glm::vec4(mParams.snowSparkle, 120.0f, mParams.snowWindDrift,
+                mParams.snowSubsurface);
+  frameData.iceParams =
+      glm::vec4(mParams.iceEnabled ? 1.0f : 0.0f, mParams.iceCracksStrength,
+                mParams.iceFrostCoverage, mParams.iceClarity);
+  frameData.iceColor = glm::vec4(mParams.iceTint, mParams.iceRoughness);
+  frameData.auroraParams =
+      glm::vec4(mParams.auroraEnabled ? mParams.auroraIntensity : 0.0f,
+                mParams.auroraSpeed, 1.0f, mParams.auroraGroundGlow);
+  frameData.auroraColorBase = glm::vec4(0.08f, 0.96f, 0.58f, 1.0f);
+  frameData.auroraColorTip = glm::vec4(0.72f, 0.16f, 0.88f, 1.0f);
+  frameData.blizzardParams =
+      glm::vec4(mParams.blizzardStrength, 12.0f, mParams.blizzardStrength,
+                mParams.frostVignetteStrength);
+  frameData.tldStyleParams =
+      glm::vec4(mParams.stylizedLightingRamp, mParams.shadowCoolBias, 1.0f,
+                temporalOn ? glm::clamp(mParams.temporalSharpness, 0.0f, .5f) : 0.0f);
+  frameData.realismParams = glm::clamp(
+      glm::vec4(mParams.terrainPhotoAlbedo, mParams.foliageNormalSoften,
+                mParams.specularOcclusion, mParams.terrainTriplanar),
+      glm::vec4(0.0f), glm::vec4(1.0f));
+
+  frameData.rtAlphaTable = updateRtAlphaTable(mCurrentFrame);
+  frameData.postAAParams = glm::vec4(glm::clamp(mParams.edgeSoftness, 0.0f, 1.0f),
+                                    mParams.grassGroundDrawDistance, 0.0f, 0.0f);
   std::memcpy(mFrameUBOMapped[mCurrentFrame], &frameData, sizeof(frameData));
   // Flush for non-coherent memory (VMA may select non-HOST_COHERENT heaps).
   vmaFlushAllocation(mCtx->allocator(), mFrameUBOAllocs[mCurrentFrame], 0, VK_WHOLE_SIZE);
@@ -4752,7 +5457,7 @@ void VulkanRenderer::drawFrame() {
     mTlasSceneInputs.clear();
     mTlasSceneInputs.reserve(mInstances.size());
     for (const Instance &inst : mInstances) {
-      if (inst.meshIndex >= mMeshes.size() ||
+      if (inst.isViewModel || !inst.castsShadow || inst.meshIndex >= mMeshes.size() ||
           !mMeshes[inst.meshIndex].vertexBuffer)
         continue;
       VulkanAccel::InstanceInput in{};
@@ -4765,10 +5470,15 @@ void VulkanRenderer::drawFrame() {
     // hundreds of meters away contributes no visible ray-traced shadow but
     // costs TLAS build time and traversal. Recomputed when the scatter set
     // changes or the camera has moved far enough to shift the eligible set.
+    const bool grassCasters = std::any_of(mVegBuffers.begin(),mVegBuffers.end(),
+        [](const VegSpeciesBuffer &vb){return vb.grass && vb.rayTracedShadows;});
+    // Fine grass has much shorter LOD thresholds than trees. A 16m cache
+    // step could leave coarse shadows beneath full-detail foreground blades.
+    const float shadowCameraStep = grassCasters ? 4.0f : 16.0f;
     const bool vegStale =
         mVegGeneration != mVegTlasGeneration || !mHasVegTlasCamPos ||
         glm::distance(glm::vec2(eye.x, eye.z),
-                      glm::vec2(mVegTlasCamPos.x, mVegTlasCamPos.z)) > 16.0f;
+                      glm::vec2(mVegTlasCamPos.x, mVegTlasCamPos.z)) > shadowCameraStep;
     bool tlasListChanged = false;
     if (vegStale) {
       mTlasVegInputs.clear();
@@ -4777,22 +5487,46 @@ void VulkanRenderer::drawFrame() {
         if (vb.count == 0 || vb.mesh >= mMeshes.size() ||
             !mMeshes[vb.mesh].vertexBuffer)
           continue;
-        // R5: opt-out batches (grass) never enter the TLAS at all. Checked
+        // Opt-out batches never enter the TLAS at all. Checked
         // before the per-range loop, not inside it -- the whole point is to
         // not pay per-instance costs for these.
         if (!vb.rayTracedShadows)
           continue;
+        // Individual short-blade shadows are sub-pixel past 45m; distant
+        // swards retain root occlusion and SSAO. Tying casting to the entire
+        // draw radius put >100k dense grass instances into the TLAS after the
+        // bare gaps were filled. Keep full casting nearby, plus a cache-step
+        // margin, without making distant coverage pay for invisible leaf rays.
+        const float grassShadowDist = vb.drawDistance > 0.0f
+            ? std::min(vb.drawDistance,45.0f) : 45.0f;
+        const float batchShadowDist = vb.grass
+            ? std::min(shadowDist,grassShadowDist+shadowCameraStep) : shadowDist;
         for (const VegRange &r : vb.ranges) {
           if (r.boundsMin != r.boundsMax) {
             const glm::vec3 cp = glm::clamp(eye, r.boundsMin, r.boundsMax);
-            if (glm::distance(cp, eye) > shadowDist)
+            if (glm::distance(cp, eye) > batchShadowDist)
               continue;
           }
+          // Ordinary shadow casters use the same detail policy as raster geometry.
+          // Leaving distant crowns at full detail kept ray queries walking
+          // thousands of tiny leaves even after raster LOD reduced the draw.
+          MeshHandle shadowMesh = vb.mesh;
+          const float distance = glm::distance(eye, glm::clamp(eye, r.boundsMin, r.boundsMax));
+          for (const auto &lod : vb.meshLods)
+            if (distance >= lod.distance && lod.mesh < mMeshes.size() &&
+                mMeshes[lod.mesh].vertexBuffer)
+              shadowMesh = lod.mesh;
+          // Grass casts with selected real blades, not every rendered ribbon.
+          // Keep this independent of raster LOD so nearby swards have soft,
+          // interrupted shade rather than a dense cage of black blade lines.
+          if (vb.shadowMesh < mMeshes.size() && mMeshes[vb.shadowMesh].vertexBuffer)
+            shadowMesh = vb.shadowMesh;
           const uint32_t rangeEnd = std::min<uint32_t>(
               r.first + r.count, static_cast<uint32_t>(vb.cpu.size()));
           for (uint32_t i = r.first; i < rangeEnd; ++i) {
             VulkanAccel::InstanceInput in{};
-            in.blasIndex = vb.mesh;
+            in.blasIndex = shadowMesh;
+            in.grass = vb.grass;
             in.transform = vb.cpu[i].model;
             mTlasVegInputs.push_back(in);
           }
@@ -4809,7 +5543,7 @@ void VulkanRenderer::drawFrame() {
       if (a.size() != b.size())
         return false;
       for (size_t i = 0; i < a.size(); ++i)
-        if (a[i].blasIndex != b[i].blasIndex ||
+        if (a[i].blasIndex != b[i].blasIndex || a[i].grass != b[i].grass ||
             a[i].transform != b[i].transform)
           return false;
       return true;
@@ -4867,6 +5601,12 @@ void VulkanRenderer::drawFrame() {
   begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
+  auto gpuStamp = [&](uint32_t point) {
+    if (gpuQueries)
+      vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, gpuQueries, point);
+  };
+  if (gpuQueries) vkCmdResetQueryPool(cmd, gpuQueries, 0, kGpuTimestampCount);
+  gpuStamp(0);
 
   // ---- Batched streaming uploads: record every queued staging->device
   // copy and BLAS build into THIS command buffer, replacing the old
@@ -4890,10 +5630,12 @@ void VulkanRenderer::drawFrame() {
       barrier.dstStageMask =
           VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT |
           VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
-          VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+          VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT; // opacity micromaps
       barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
                               VK_ACCESS_2_INDEX_READ_BIT |
-                              VK_ACCESS_2_SHADER_READ_BIT;
+                              VK_ACCESS_2_SHADER_READ_BIT |
+                              VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
       VkDependencyInfo dep{};
       dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
       dep.memoryBarrierCount = 1;
@@ -4934,6 +5676,7 @@ void VulkanRenderer::drawFrame() {
     mFrameStats.tlasRebuiltThisFrame = true;
   }
 
+  gpuStamp(7);
   // ---- Pass C: volumetric cloud march (half-res) ----
   // Runs before BOTH sky passes because sky.frag consumes the result: the
   // clouds are blended into the sky's radiance there, ahead of the painterly
@@ -4949,6 +5692,7 @@ void VulkanRenderer::drawFrame() {
   // image must be in a readable layout regardless, and a transmittance of 1
   // with no scattered light makes the blend an exact no-op.
   const bool cloudsOn = mCloudNoiseReady && mParams.style.cloudVolumetricEnabled &&
+                        !mParams.style.paintedClouds &&
                         mParams.style.cloudStrength > 0.001f &&
                         mParams.debugViewMode == 0;
   // Always transition + clear -- sky.frag samples this image unconditionally,
@@ -4968,8 +5712,15 @@ void VulkanRenderer::drawFrame() {
   cloudColor.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   cloudColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   cloudColor.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+  imageBarrier(cmd,mCloudHistory.depthImage(mCurrentFrame),
+      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_MEMORY_READ_BIT|VK_ACCESS_2_MEMORY_WRITE_BIT,
+      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+      VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+  VkRenderingAttachmentInfo cloudDepth=cloudColor;cloudDepth.imageView=mCloudHistory.depthView(mCurrentFrame);
+  cloudDepth.clearValue.color={{0,0,0,0}};
+  const VkRenderingAttachmentInfo cloudAttachments[]={cloudColor,cloudDepth};
 
-  const VkExtent2D cloudExtent = extent;
+  const VkExtent2D cloudExtent = mCloudExtent;
   VkViewport cloudVp{};
   cloudVp.width = static_cast<float>(cloudExtent.width);
   cloudVp.height = static_cast<float>(cloudExtent.height);
@@ -4982,8 +5733,8 @@ void VulkanRenderer::drawFrame() {
   cloudRender.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
   cloudRender.renderArea.extent = cloudExtent;
   cloudRender.layerCount = 1;
-  cloudRender.colorAttachmentCount = 1;
-  cloudRender.pColorAttachments = &cloudColor;
+  cloudRender.colorAttachmentCount = 2;
+  cloudRender.pColorAttachments = cloudAttachments;
   vkCmdBeginRendering(cmd, &cloudRender);
   if (cloudsOn) {
     const glm::mat4 cloudInvViewProj = glm::inverse(proj * viewMat);
@@ -4999,7 +5750,11 @@ void VulkanRenderer::drawFrame() {
     // lattice into noise that the eye integrates away over a few frames,
     // rather than a static grain locked to the screen.
     cloudPush.jitter = glm::vec4(
-        static_cast<float>(mFrameCounter % 8u) * 13.7f, 0.0f, 0.0f, 0.0f);
+        // Spatial asset reviews have no temporal resolve to average
+        // frame-dependent noise; pin their phase so repeat reviews match.
+        mParams.deterministicCapture
+            ? 0.0f : static_cast<float>(mFrameCounter % 8u) * 13.7f,
+        float(cloudExtent.width),float(cloudExtent.height),0.0f);
     vkCmdPushConstants(cmd, mCloudPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(CloudPush), &cloudPush);
     vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -5009,10 +5764,30 @@ void VulkanRenderer::drawFrame() {
   imageBarrier(cmd, mCloudImages[mCurrentFrame],
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+  imageBarrier(cmd,mCloudHistory.depthImage(mCurrentFrame),VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  uint64_t reconstructionSignature=fnv1a64(&cloudsOn,sizeof(cloudsOn));
+  for(const auto& cloud:{frameData.styleCloud0,frameData.styleCloud1,frameData.styleCloud2,frameData.styleCloud3,frameData.styleCloud4,frameData.styleCloud5,frameData.styleCloud6})
+    reconstructionSignature=fnv1a64(&cloud,sizeof(cloud),reconstructionSignature);
+  // Slow light motion is filtered; abrupt lighting changes and the sun/moon
+  // handoff reject old cloud radiance. The depth remains independent of TAA.
+  const glm::vec4 quantizedLight=glm::floor(frameData.sunRadiance*4.f);
+  reconstructionSignature=fnv1a64(&quantizedLight,sizeof(quantizedLight),reconstructionSignature);
+  VulkanCloudHistory::Data cloudHistoryData;
+  cloudHistoryData.invViewProj=glm::inverse(proj*viewMat);cloudHistoryData.camera=glm::vec4(eye,timeSeconds);
+  cloudHistoryData.wind=glm::vec4(frameData.styleCloud0.z*40*timeSeconds,0,frameData.styleCloud0.w*40*timeSeconds,sunActive?1.f:0.f);
+  cloudHistoryData.controls=glm::vec4(0,.9f,mParams.fovDeg,mParams.farPlane);
+  mCloudHistory.resolve(cmd,mCurrentFrame,mCloudImages[mCurrentFrame],mCloudViews[mCurrentFrame],cloudHistoryData,reconstructionSignature,
+      cloudsOn&&mParams.atmosphere.cloudHistory&&mParams.atmosphere.enabled&&!mParams.deterministicCapture);
+  VkDescriptorImageInfo reconstructedCloud{mSampler,mCloudHistory.outputView(mCurrentFrame),VK_IMAGE_LAYOUT_GENERAL};
+  VkWriteDescriptorSet cloudHistoryWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};cloudHistoryWrite.dstSet=mCloudSampleSets[mCurrentFrame];cloudHistoryWrite.descriptorCount=1;
+  cloudHistoryWrite.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;cloudHistoryWrite.pImageInfo=&reconstructedCloud;
+  vkUpdateDescriptorSets(mCtx->device(),1,&cloudHistoryWrite,0,nullptr);
 
   // Shared sky push-constant packing for the visible sky and the env faces.
   // The env pass zeroes disc/stars: the scene treats sun/moon as analytic
@@ -5024,13 +5799,35 @@ void VulkanRenderer::drawFrame() {
     push.sunDir = glm::vec4(toSun, sunOuterScale);
     push.moonDir = glm::vec4(toMoon, moonOuterScale);
     push.camPos = glm::vec4(eye, timeSeconds);
-    push.passFlags = glm::vec4(
-        forEnv ? 1.0f : 0.0f, 0.0105f,
-        cloudsOn ? std::clamp(mParams.style.cloudStrength, 0.0f, 1.0f) : 0.0f,
-        0.0f);
+    const float cloudStr = std::clamp(mParams.style.cloudStrength, 0.0f, 1.0f);
+    const float f0 = forEnv ? 1.0f : 0.0f;
+    const float f1 = 0.0105f;
+    const float f2 = cloudsOn ? cloudStr : 0.0f;
+    const float f3 = (mParams.style.paintedClouds && mParams.debugViewMode == 0)
+                         ? cloudStr
+                         : 0.0f;
+    push.passFlags = glm::vec4(f0, f1, f2, f3);
     return push;
   };
 
+  VulkanAtmosphereRenderer::SkyData skyData;
+  gpuStamp(13);
+  skyData.invViewProj=glm::inverse(unjitteredProjection*viewMat);
+  skyData.camera=glm::vec4(eye,haze);skyData.sun=glm::vec4(toSun,sunOuterScale);skyData.moon=glm::vec4(toMoon,moonOuterScale);
+  mAtmosphere.recordSky(cmd,mCurrentFrame,skyData,physicalSky);
+  uint64_t cloudSignature=fnv1a64(&frameData.cloudShadowField,sizeof(frameData.cloudShadowField));
+  uint64_t cloudStyleSignature=fnv1a64(&frameData.cloudShadowField.w,sizeof(float));
+  for(const auto& cloud: {frameData.styleCloud0,frameData.styleCloud1,frameData.styleCloud2,frameData.styleCloud3,frameData.styleCloud4,frameData.styleCloud5,frameData.styleCloud6,frameData.lightDir})
+    cloudSignature=fnv1a64(&cloud,sizeof(cloud),cloudSignature);
+  for(const auto& cloud: {frameData.styleCloud0,frameData.styleCloud1,frameData.styleCloud2,frameData.styleCloud3,frameData.styleCloud4,frameData.styleCloud5,frameData.styleCloud6})
+    cloudStyleSignature=fnv1a64(&cloud,sizeof(cloud),cloudStyleSignature);
+  // Authoring a new deck rejects old fog illumination immediately. Continuous
+  // drift instead uses current-neighbour clipping, preserving noise reduction.
+  if(cloudStyleSignature!=mCloudStyleSignature)mAtmosphere.invalidate();
+  mCloudStyleSignature=cloudStyleSignature;
+  cloudSignature=fnv1a64(&timeSeconds,sizeof(timeSeconds),cloudSignature);
+  mAtmosphere.recordCloudShadow(cmd,mCurrentFrame,mCloudNoiseSet,mFrameSets[mCurrentFrame],frameData.cloudShadowField,cloudSignature,cloudShadowEnabled);
+  gpuStamp(8);
   // ---- Pass E: sky environment cubemap (IBL) ----
   // Six 128^2 faces of pure atmosphere, then a blit mip chain. Every lit
   // shader samples this for ambient/reflections/fog color, so the whole
@@ -5083,10 +5880,10 @@ void VulkanRenderer::drawFrame() {
       // analytic deck instead -- the half-res march is the MAIN camera's
       // view, which says nothing about what a cube face sees), but the layout
       // is shared, so set 1 still has to be bound.
-      VkDescriptorSet envSkySets[2] = {mFrameSets[mCurrentFrame],
-                                       mCloudSampleSets[mCurrentFrame]};
+      VkDescriptorSet envSkySets[3] = {mFrameSets[mCurrentFrame],
+                                       mCloudSampleSets[mCurrentFrame],mAtmosphere.set(mCurrentFrame)};
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              mSkyPipelineLayout, 0, 2, envSkySets, 0, nullptr);
+                              mSkyPipelineLayout, 0, 3, envSkySets, 0, nullptr);
 
       // Affine unprojector: (ndc.x, ndc.y, 1, 1) -> camPos + F + x*Rt + y*Dn,
       // so the shader's `normalize(farPoint - camPos)` spans this face.
@@ -5143,20 +5940,21 @@ void VulkanRenderer::drawFrame() {
     // to shader-read for the scene passes.
     imageBarrier(cmd, mEnvImages[mCurrentFrame], VK_PIPELINE_STAGE_2_BLIT_BIT,
                  VK_ACCESS_2_TRANSFER_READ_BIT,
-                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                  VK_IMAGE_ASPECT_COLOR_BIT, 6, 0, kEnvMipCount - 1);
     imageBarrier(cmd, mEnvImages[mCurrentFrame], VK_PIPELINE_STAGE_2_BLIT_BIT,
                  VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                  VK_IMAGE_ASPECT_COLOR_BIT, 6, kEnvMipCount - 1, 1);
   }
 
+  mAtmosphere.recordSkyIrradiance(cmd,mCurrentFrame,mFrameSets[mCurrentFrame],mTlasSets[mCurrentFrame],mSceneEnvSets[mCurrentFrame],physicalSky);
   VkDeviceSize vbOffset = 0;
 
   // Optional one-shot framebuffer capture (debug / headless verification).
@@ -5187,6 +5985,7 @@ void VulkanRenderer::drawFrame() {
   // Every raster pass previously drew the ENTIRE streamed disc around the
   // camera -- at large view distances most of it behind the viewer. The
   // TLAS keeps the full set (off-screen geometry still casts shadows).
+  gpuStamp(9);
   const Frustum frustum = frustumFromViewProj(frameData.viewProj);
   mInstanceVisible.assign(mInstances.size(), 0);
   for (size_t i = 0; i < mInstances.size(); ++i) {
@@ -5224,35 +6023,33 @@ void VulkanRenderer::drawFrame() {
     // to actually discard most of a chunk.
     const float vegDrawDist =
         vb.drawDistance > 0.0f ? vb.drawDistance : globalVegDrawDist;
-    uint32_t spanStart = UINT32_MAX, spanEnd = 0;
     for (const VegRange &r : vb.ranges) {
-      bool visible = true;
-      if (r.boundsMin != r.boundsMax) {
-        visible = aabbInFrustum(frustum, r.boundsMin, r.boundsMax);
-        if (visible && vegDrawDist > 0.0f) {
-          const glm::vec3 cp = glm::clamp(eye, r.boundsMin, r.boundsMax);
-          visible = glm::distance(cp, eye) <= vegDrawDist;
-        }
-      }
-      if (visible) {
-        ++mFrameStats.vegRangesDrawn;
-        mFrameStats.vegInstancesDrawn += r.count;
-        if (spanStart == UINT32_MAX) {
-          spanStart = r.first;
-          spanEnd = r.first + r.count;
-        } else if (r.first == spanEnd) {
-          spanEnd = r.first + r.count;
-        } else {
-          vb.visibleSpans.emplace_back(spanStart, spanEnd - spanStart);
-          spanStart = r.first;
-          spanEnd = r.first + r.count;
-        }
-      } else {
+      const glm::vec3 cp = glm::clamp(eye, r.boundsMin, r.boundsMax);
+      const float distance = glm::distance(cp, eye);
+      const bool bounded = r.boundsMin != r.boundsMax;
+      if (bounded && (!aabbInFrustum(frustum, r.boundsMin, r.boundsMax) ||
+                      (vegDrawDist > 0.0f && distance > vegDrawDist))) {
         ++mFrameStats.vegRangesCulled;
+        continue;
       }
+      MeshHandle selected = vb.mesh;
+      for (const auto &lod : vb.meshLods)
+        if (distance >= lod.distance && lod.mesh < mMeshes.size() &&
+            mMeshes[lod.mesh].vertexBuffer)
+          selected = lod.mesh;
+      ++mFrameStats.vegRangesDrawn;
+      mFrameStats.vegInstancesDrawn += r.count;
+      for (const auto &item : mMeshes[selected].drawItems) {
+        const uint64_t triangles = uint64_t(item.indexCount / 3) * r.count;
+        mFrameStats.vegTrianglesDrawn += triangles;
+        (vb.grass ? mFrameStats.grassTrianglesDrawn : mFrameStats.treeTrianglesDrawn) += triangles;
+      }
+      if (!vb.visibleSpans.empty() && vb.visibleSpans.back().mesh == selected &&
+          vb.visibleSpans.back().first + vb.visibleSpans.back().count == r.first)
+        vb.visibleSpans.back().count += r.count;
+      else
+        vb.visibleSpans.push_back({r.first, r.count, selected});
     }
-    if (spanStart != UINT32_MAX)
-      vb.visibleSpans.emplace_back(spanStart, spanEnd - spanStart);
   }
   mFrameStats.meshSlotsFree = static_cast<uint32_t>(mFreeMeshSlots.size());
   mFrameStats.meshSlotsLive =
@@ -5266,9 +6063,8 @@ void VulkanRenderer::drawFrame() {
   VkRect2D scissor{};
   scissor.extent = extent;
 
-  // Half-res viewport for the SSAO raw pass (mSSAOImages) -- matches the
-  // extent createSceneTargets() allocated it at. The blur/upsample pass
-  // after it renders at the full-res `vp`/`scissor` above.
+  // Half-res viewport for volumetrics; SSAO now uses the full-res viewport.
+  // Keep this separate from AO's extent when recreating render targets.
   const VkExtent2D ssaoExtent = {std::max(1u, extent.width / 2),
                                  std::max(1u, extent.height / 2)};
   VkViewport ssaoVp{};
@@ -5290,6 +6086,7 @@ void VulkanRenderer::drawFrame() {
                              mSceneAOSets[mCurrentFrame],
                              mSceneEnvSets[mCurrentFrame]};
 
+  gpuStamp(1);
   // ---- Pass 0: depth prepass ----
   // Writes real depth first so SSAO (Pass 0b) can sample it, and the main
   // scene pass (Pass 1) can test-only with early-z rejecting occluded
@@ -5324,13 +6121,16 @@ void VulkanRenderer::drawFrame() {
                           mScenePipelineLayout, 0, 5, sets, 0, nullptr);
   bool alphaDepthPipeline = false;
   for (size_t i = 0; i < mInstances.size(); ++i) {
-    if (!mInstanceVisible[i])
+    if (!mInstanceVisible[i] || mInstances[i].isViewModel)
       continue;
     const Instance &inst = mInstances[i];
     const Mesh &mesh = mMeshes[inst.meshIndex];
     vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertexBuffer, &vbOffset);
     vkCmdBindIndexBuffer(cmd, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-    for (const DrawItem &item : mesh.drawItems) {
+    for (const DrawItem &source : mesh.drawItems) {
+      DrawItem item=inst.hasMaterialOverride?inst.materialOverride:source;
+      item.indexCount=source.indexCount;
+      item.indexOffset=source.indexOffset;
       const bool needsAlpha = item.alphaCutoff > 0.0f;
       if (needsAlpha != alphaDepthPipeline) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -5360,35 +6160,36 @@ void VulkanRenderer::drawFrame() {
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     mVegetationDepthPrepassPipeline);
   alphaDepthPipeline = false;
-  for (const VegSpeciesBuffer &vb : mVegBuffers) {
+      for (const VegSpeciesBuffer &vb : mVegBuffers) {
     if (vb.visibleSpans.empty())
       continue;
-    const Mesh &mesh = mMeshes[vb.mesh];
-    VkBuffer vertexBuffers[2] = {mesh.vertexBuffer, vb.buffer};
-    VkDeviceSize offsets[2] = {0, 0};
-    vkCmdBindVertexBuffers(cmd, 0, 2, vertexBuffers, offsets);
-    vkCmdBindIndexBuffer(cmd, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-    for (const DrawItem &item : mesh.drawItems) {
-      const bool needsAlpha = item.alphaCutoff > 0.0f;
-      if (needsAlpha != alphaDepthPipeline) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          needsAlpha ? mVegetationDepthAlphaPrepassPipeline
-                                     : mVegetationDepthPrepassPipeline);
-        alphaDepthPipeline = needsAlpha;
+    for (const auto &span : vb.visibleSpans) {
+      const Mesh &mesh = mMeshes[span.mesh];
+      VkBuffer vertexBuffers[2] = {mesh.vertexBuffer, vb.buffer};
+      VkDeviceSize offsets[2] = {0, 0};
+      vkCmdBindVertexBuffers(cmd, 0, 2, vertexBuffers, offsets);
+      vkCmdBindIndexBuffer(cmd, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+      for (const DrawItem &item : mesh.drawItems) {
+        const bool needsAlpha = item.alphaCutoff > 0.0f;
+        if (needsAlpha != alphaDepthPipeline) {
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            needsAlpha ? mVegetationDepthAlphaPrepassPipeline
+                                       : mVegetationDepthPrepassPipeline);
+          alphaDepthPipeline = needsAlpha;
+        }
+        ScenePush windPush{};
+        windPush.textureIndex = item.textureIndex;
+        windPush.opacityIndex = item.opacityIndex;
+        windPush.alphaCutoff = item.alphaCutoff;
+        windPush.materialFlags = item.materialFlags;
+        windPush.windStrength = vb.windStrength;
+        windPush.windSpeed = vb.windSpeed;
+        windPush.windMeshHeight = vb.windMeshHeight;
+        vkCmdPushConstants(cmd, mScenePipelineLayout, pushStages, 0,
+                           sizeof(ScenePush), &windPush);
+        vkCmdDrawIndexed(cmd, item.indexCount, span.count, item.indexOffset, 0,
+                         span.first);
       }
-      ScenePush windPush{};
-      windPush.textureIndex = item.textureIndex;
-      windPush.opacityIndex = item.opacityIndex;
-      windPush.alphaCutoff = item.alphaCutoff;
-      windPush.materialFlags = item.materialFlags;
-      windPush.windStrength = vb.windStrength;
-      windPush.windSpeed = vb.windSpeed;
-      windPush.windMeshHeight = vb.windMeshHeight;
-      vkCmdPushConstants(cmd, mScenePipelineLayout, pushStages, 0,
-                         sizeof(ScenePush), &windPush);
-      for (const auto &[first, count] : vb.visibleSpans)
-        vkCmdDrawIndexed(cmd, item.indexCount, count, item.indexOffset, 0,
-                         first);
     }
   }
   vkCmdEndRendering(cmd);
@@ -5396,13 +6197,15 @@ void VulkanRenderer::drawFrame() {
   imageBarrier(cmd, mDepthImages[mCurrentFrame],
                VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
                VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                VK_IMAGE_ASPECT_DEPTH_BIT);
 
-  // ---- Pass 0b: SSAO (half-res, samples the full-res prepass depth) ----
+  gpuStamp(2);
+  // ---- Pass 0b: SSAO (full-res, samples the full-res prepass depth) ----
   imageBarrier(cmd, mSSAOImages[mCurrentFrame],
                VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -5418,13 +6221,13 @@ void VulkanRenderer::drawFrame() {
 
   VkRenderingInfo ssaoRender{};
   ssaoRender.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-  ssaoRender.renderArea.extent = ssaoExtent;
+  ssaoRender.renderArea.extent = extent;
   ssaoRender.layerCount = 1;
   ssaoRender.colorAttachmentCount = 1;
   ssaoRender.pColorAttachments = &ssaoColor;
   vkCmdBeginRendering(cmd, &ssaoRender);
-  vkCmdSetViewport(cmd, 0, 1, &ssaoVp);
-  vkCmdSetScissor(cmd, 0, 1, &ssaoScissor);
+  vkCmdSetViewport(cmd, 0, 1, &vp);
+  vkCmdSetScissor(cmd, 0, 1, &scissor);
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mSSAOPipeline);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -5474,7 +6277,7 @@ void VulkanRenderer::drawFrame() {
   vkCmdSetScissor(cmd, 0, 1, &scissor);
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mBlurPipeline);
-  // Set 0: half-res raw AO. Set 1: full-res depth (reuses mSSAODepthSets,
+  // Set 0: full-res raw AO. Set 1: full-res depth (reuses mSSAODepthSets,
   // same image the SSAO pass above just read) for the bilateral upsample
   // weight in blur.frag.
   VkDescriptorSet blurSets[2] = {mBlurInputSets[mCurrentFrame],
@@ -5497,63 +6300,40 @@ void VulkanRenderer::drawFrame() {
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
   const glm::mat4 invViewProj = glm::inverse(proj * viewMat);
-  // Volumetrics need a TLAS to shadow-test against, and would pollute the
-  // raw-data debug views if left on.
-  const bool volumetricsOn =
-      mParams.volumetricEnabled && mParams.volumetricIntensity > 0.0f &&
-      mSceneReady && mParams.debugViewMode == 0;
+  gpuStamp(10);
+  VulkanAtmosphereRenderer::GpuData atmosphereData;
+  const auto& physical = physicalAtmosphere;
+  atmosphereData.invViewProj = glm::inverse(unjitteredProjection * viewMat);
+  atmosphereData.viewProj = unjitteredProjection * viewMat;
+  atmosphereData.invSurfaceViewProj = invViewProj;
+  atmosphereData.view = viewMat;
+  atmosphereData.camera = glm::vec4(eye, 1);
+  atmosphereData.grid.w = physical.range;
+  atmosphereData.ground = glm::vec4(physical.groundExtinction, physical.groundFalloff, physical.groundReference, physical.start);
+  atmosphereData.groundAlbedo = glm::vec4(physical.groundAlbedo, physical.groundAnisotropy);
+  atmosphereData.dust = glm::vec4(physical.dustExtinction, mParams.volumetricHeightFalloffScale, physical.dustAnisotropy, 0);
+  atmosphereData.dustAlbedo = glm::vec4(physical.dustAlbedo, physical.referenceSceneRadiance);
+  atmosphereData.history = glm::vec4(physical.history ? 1.f : 0.f, physical.historyWeight,
+      mParams.fixedTimeSeconds >= 0 ? 0.f : float(mFrameCounter % 8),
+      physical.enabled && mParams.debugViewMode == 0 ? (mSceneReady ? 1.f : -1.f) : 0.f);
+  atmosphereData.artistic = glm::vec4(physical.groundTintStrength, mParams.fogSkyStrength, mParams.volumetricTurbulence, mParams.volumetricWindSpeed);
+  atmosphereData.reference = glm::vec4(physical.referenceRadiance, physical.referenceExtinction);
+  atmosphereData.terrain = glm::vec4(physical.terrainExtinction, physical.terrainFalloff, physical.waterBoost, physical.terrainMist ? 1.f : 0.f);
+  atmosphereData.valley=glm::vec4(physical.valleyExtinction,physical.valleyDepth,physical.valleyPooling?1.f:0.f,0);
+  if(mFrameStats.tlasRebuiltThisFrame) mAtmosphere.invalidate();
+  uint64_t fogLightSignature=fnv1a64(frameData.pointLightPositionRadius.data(),sizeof(frameData.pointLightPositionRadius));
+  fogLightSignature=fnv1a64(frameData.pointLightColorIntensity.data(),sizeof(frameData.pointLightColorIntensity),fogLightSignature);
+  if(fogLightSignature!=mFogLightSignature) mAtmosphere.invalidate();
+  mFogLightSignature=fogLightSignature;
+  atmosphereData.controls = glm::vec4(physical.directionalShadows ? 1.f : 0.f,
+      physical.skyVisibility ? 1.f : 0.f, sunActive ? 1.f : 0.f, mParams.fovDeg);
+  for(uint32_t i = 0; i < pointLightCount; ++i)
+    atmosphereData.pointControls[i] = glm::vec4(mParams.pointLights[i].volumetricParticipation,
+        mParams.pointLights[i].volumetricShadows ? 1.f : 0.f, 0, 0);
+  mAtmosphere.record(cmd, mCurrentFrame, atmosphereData, mFrameSets[mCurrentFrame],
+      mTlasSets[mCurrentFrame], mSceneEnvSets[mCurrentFrame]);
 
-  // ---- Pass 0d: volumetric god-ray march (half-res, ray-query shadows) ----
-  // Reads the prepass depth (same read-only layout SSAO used) + the TLAS;
-  // composited onto the HDR target right after the scene pass below.
-  if (volumetricsOn) {
-    imageBarrier(cmd, mVolumetricImages[mCurrentFrame],
-                 VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                 VK_IMAGE_LAYOUT_UNDEFINED,
-                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-    VkRenderingAttachmentInfo volColor{};
-    volColor.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    volColor.imageView = mVolumetricViews[mCurrentFrame];
-    volColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    volColor.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    volColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-    VkRenderingInfo volRender{};
-    volRender.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    volRender.renderArea.extent = ssaoExtent; // same half-res extent
-    volRender.layerCount = 1;
-    volRender.colorAttachmentCount = 1;
-    volRender.pColorAttachments = &volColor;
-    vkCmdBeginRendering(cmd, &volRender);
-    vkCmdSetViewport(cmd, 0, 1, &ssaoVp);
-    vkCmdSetScissor(cmd, 0, 1, &ssaoScissor);
-
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mVolumetricPipeline);
-    VkDescriptorSet volSets[3] = {mSSAODepthSets[mCurrentFrame],
-                                  mFrameSets[mCurrentFrame],
-                                  mTlasSets[mCurrentFrame]};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            mVolumetricPipelineLayout, 0, 3, volSets, 0,
-                            nullptr);
-    VolumetricPush volPush{invViewProj};
-    vkCmdPushConstants(cmd, mVolumetricPipelineLayout,
-                       VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(VolumetricPush),
-                       &volPush);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-    vkCmdEndRendering(cmd);
-
-    imageBarrier(cmd, mVolumetricImages[mCurrentFrame],
-                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-  }
-
+  gpuStamp(3);
   // ---- Pass 1: scene -> HDR ----
   imageBarrier(cmd, mHdrImages[mCurrentFrame],
                VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
@@ -5578,7 +6358,7 @@ void VulkanRenderer::drawFrame() {
   sceneDepth.imageView = mDepthViews[mCurrentFrame];
   sceneDepth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
   sceneDepth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-  sceneDepth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  sceneDepth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 
   VkRenderingInfo sceneRender{};
   sceneRender.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -5596,10 +6376,10 @@ void VulkanRenderer::drawFrame() {
   {
     SkyPush skyPush = fillSkyPush(invViewProj, false);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mSkyPipeline);
-    VkDescriptorSet skySets[2] = {mFrameSets[mCurrentFrame],
-                                  mCloudSampleSets[mCurrentFrame]};
+    VkDescriptorSet skySets[3] = {mFrameSets[mCurrentFrame],
+                                  mCloudSampleSets[mCurrentFrame],mAtmosphere.set(mCurrentFrame)};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            mSkyPipelineLayout, 0, 2, skySets, 0, nullptr);
+                            mSkyPipelineLayout, 0, 3, skySets, 0, nullptr);
     vkCmdPushConstants(cmd, mSkyPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(SkyPush), &skyPush);
     vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -5614,13 +6394,16 @@ void VulkanRenderer::drawFrame() {
   // mTerrainChunkPipeline (same vertex layout/geometry path, different
   // fragment shader). Both loops draw only frustum-visible instances.
   for (size_t i = 0; i < mInstances.size(); ++i) {
-    if (!mInstanceVisible[i] || mInstances[i].isTerrain)
+    if (!mInstanceVisible[i] || mInstances[i].isTerrain || mInstances[i].isViewModel)
       continue;
     const Instance &inst = mInstances[i];
     const Mesh &mesh = mMeshes[inst.meshIndex];
     vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertexBuffer, &vbOffset);
     vkCmdBindIndexBuffer(cmd, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-    for (const DrawItem &item : mesh.drawItems) {
+    for (const DrawItem &source : mesh.drawItems) {
+      DrawItem item=inst.hasMaterialOverride?inst.materialOverride:source;
+      item.indexCount=source.indexCount;
+      item.indexOffset=source.indexOffset;
       ScenePush push{};
       push.model = inst.model;
       push.textureIndex = item.textureIndex;
@@ -5681,36 +6464,39 @@ void VulkanRenderer::drawFrame() {
   for (const VegSpeciesBuffer &vb : mVegBuffers) {
     if (vb.visibleSpans.empty())
       continue;
-    const Mesh &mesh = mMeshes[vb.mesh];
-    VkBuffer vertexBuffers[2] = {mesh.vertexBuffer, vb.buffer};
-    VkDeviceSize offsets[2] = {0, 0};
-    vkCmdBindVertexBuffers(cmd, 0, 2, vertexBuffers, offsets);
-    vkCmdBindIndexBuffer(cmd, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-    for (const DrawItem &item : mesh.drawItems) {
-      ScenePush push{};
-      push.textureIndex = item.textureIndex;
-      push.roughnessIndex = item.roughnessIndex;
-      push.metallicIndex = item.metallicIndex;
-      push.aoIndex = item.aoIndex;
-      push.normalIndex = item.normalIndex;
-      push.opacityIndex = item.opacityIndex;
-      push.roughnessScalar = item.roughnessScalar;
-      push.metallicScalar = item.metallicScalar;
-      push.aoScalar = item.aoScalar;
-      push.alphaCutoff = item.alphaCutoff;
-      push.materialFlags = item.materialFlags;
-      // Must match the depth prepass's wind push exactly -- see the comment
-      // there.
-      push.windStrength = vb.windStrength;
-      push.windSpeed = vb.windSpeed;
-      push.windMeshHeight = vb.windMeshHeight;
-      push.groundOcclusion = vb.groundOcclusion;
-      push.foliageSssStrength = vb.foliageSssStrength;
-      vkCmdPushConstants(cmd, mScenePipelineLayout, pushStages, 0,
-                         sizeof(ScenePush), &push);
-      for (const auto &[first, count] : vb.visibleSpans)
-        vkCmdDrawIndexed(cmd, item.indexCount, count, item.indexOffset, 0,
-                         first);
+    for (const auto &span : vb.visibleSpans) {
+      const Mesh &mesh = mMeshes[span.mesh];
+      VkBuffer vertexBuffers[2] = {mesh.vertexBuffer, vb.buffer};
+      VkDeviceSize offsets[2] = {0, 0};
+      vkCmdBindVertexBuffers(cmd, 0, 2, vertexBuffers, offsets);
+      vkCmdBindIndexBuffer(cmd, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+      for (const DrawItem &item : mesh.drawItems) {
+        ScenePush push{};
+        push.textureIndex = item.textureIndex;
+        push.roughnessIndex = item.roughnessIndex;
+        push.metallicIndex = item.metallicIndex;
+        push.aoIndex = item.aoIndex;
+        push.normalIndex = item.normalIndex;
+        push.opacityIndex = item.opacityIndex;
+        push.roughnessScalar = item.roughnessScalar;
+        push.metallicScalar = item.metallicScalar;
+        push.aoScalar = item.aoScalar;
+        push.alphaCutoff = item.alphaCutoff;
+        push.materialFlags = item.materialFlags;
+        // Must match the depth prepass's wind push exactly -- see the comment
+        // there.
+        push.windStrength = vb.windStrength;
+        push.windSpeed = vb.windSpeed;
+        push.windMeshHeight = vb.windMeshHeight;
+        push.groundOcclusion = vb.groundOcclusion;
+        push.foliageSssStrength = vb.foliageSssStrength;
+        if (vb.receivesSnow) push.materialFlags |= 1u << 14;
+        if (vb.grass) push.materialFlags |= 1u << 15;
+        vkCmdPushConstants(cmd, mScenePipelineLayout, pushStages, 0,
+                           sizeof(ScenePush), &push);
+        vkCmdDrawIndexed(cmd, item.indexCount, span.count, item.indexOffset, 0,
+                         span.first);
+      }
     }
   }
 
@@ -5774,16 +6560,9 @@ void VulkanRenderer::drawFrame() {
 
   vkCmdEndRendering(cmd);
 
-  // ---- Pass 1w: water surface ----
-  // Runs after the opaque scene and BEFORE the volumetric composite, so god
-  // rays scatter over the water rather than under it. The surface is an
-  // analytic plane at Params::waterLevel intersected per-pixel in
-  // water.frag -- no geometry, so no tessellation, LOD or streaming.
-  //
-  // The opaque HDR image is copied to mSceneCopyImages first: water refracts
-  // what is behind it and marches screen-space reflections through it, and a
-  // pass cannot sample the attachment it renders to.
-  if (mParams.waterEnabled) {
+  gpuStamp(4);
+  // Preserve raw opaque colour for water before camera-medium composition.
+  {
     imageBarrier(cmd, mHdrImages[mCurrentFrame],
                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                  VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -5817,10 +6596,15 @@ void VulkanRenderer::drawFrame() {
     imageBarrier(cmd, mHdrImages[mCurrentFrame],
                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                 VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
+  }
+  mAtmosphere.compose(cmd, mCurrentFrame, mHdrViews[mCurrentFrame], extent,
+      mFrameSets[mCurrentFrame], mTlasSets[mCurrentFrame], mSceneEnvSets[mCurrentFrame]);
+  gpuStamp(11);
+  if (mParams.waterEnabled && mSceneReady) {
     VkRenderingAttachmentInfo waterColor{};
     waterColor.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     waterColor.imageView = mHdrViews[mCurrentFrame];
@@ -5844,11 +6628,12 @@ void VulkanRenderer::drawFrame() {
     // so what it would sample there is never read.
     VkDescriptorSet waterFieldSet =
         mWaterFieldSet ? mWaterFieldSet : mSceneCopySets[mCurrentFrame];
-    VkDescriptorSet waterSets[5] = {
+    VkDescriptorSet waterSets[7] = {
         mSceneCopySets[mCurrentFrame], mSSAODepthSets[mCurrentFrame],
-        mFrameSets[mCurrentFrame], mSceneEnvSets[mCurrentFrame], waterFieldSet};
+        mFrameSets[mCurrentFrame], mSceneEnvSets[mCurrentFrame], waterFieldSet,
+        mTlasSets[mCurrentFrame], mAtmosphere.set(mCurrentFrame)};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            mWaterPipelineLayout, 0, 5, waterSets, 0, nullptr);
+                            mWaterPipelineLayout, 0, 7, waterSets, 0, nullptr);
     WaterPush waterPush{invViewProj};
     vkCmdPushConstants(cmd, mWaterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(WaterPush), &waterPush);
@@ -5856,44 +6641,7 @@ void VulkanRenderer::drawFrame() {
     vkCmdEndRendering(cmd);
   }
 
-  // ---- Pass 1a: volumetric composite (additive onto HDR) ----
-  // Depth-aware upsample of the half-res god-ray march, ADDING in-scattered
-  // light on top of the shaded scene -- before the HDR->sampled barrier so
-  // bloom sees (and halos) the light shafts too.
-  if (volumetricsOn) {
-    VkRenderingAttachmentInfo volCompColor{};
-    volCompColor.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    volCompColor.imageView = mHdrViews[mCurrentFrame];
-    volCompColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    volCompColor.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    volCompColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-    VkRenderingInfo volCompRender{};
-    volCompRender.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    volCompRender.renderArea.extent = extent;
-    volCompRender.layerCount = 1;
-    volCompRender.colorAttachmentCount = 1;
-    volCompRender.pColorAttachments = &volCompColor;
-    vkCmdBeginRendering(cmd, &volCompRender);
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      mVolCompositePipeline);
-    VkDescriptorSet compSets[2] = {mVolScatterSets[mCurrentFrame],
-                                   mSSAODepthSets[mCurrentFrame]};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            mVolCompositePipelineLayout, 0, 2, compSets, 0,
-                            nullptr);
-    VolCompositePush compPush{invViewProj,
-                              glm::vec4(eye, std::max(mParams.volumetricMaxDist,
-                                                      1.0f))};
-    vkCmdPushConstants(cmd, mVolCompositePipelineLayout,
-                       VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(VolCompositePush), &compPush);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-    vkCmdEndRendering(cmd);
-  }
-
+  gpuStamp(12);
   imageBarrier(cmd, mHdrImages[mCurrentFrame],
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -5902,121 +6650,153 @@ void VulkanRenderer::drawFrame() {
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-  // ---- Pass 1b: bloom (bright-pass extract -> separable blur, half-res;
-  // then a 2nd separable blur at quarter-res -- Task 4.3 -- for a wider,
-  // softer glow summed alongside the tight one in tonemap.frag) ----
-  const VkExtent2D bloomExtent = {std::max(1u, extent.width / 2),
-                                  std::max(1u, extent.height / 2)};
-  VkViewport bloomVp{};
-  bloomVp.width = static_cast<float>(bloomExtent.width);
-  bloomVp.height = static_cast<float>(bloomExtent.height);
-  bloomVp.minDepth = 0.0f;
-  bloomVp.maxDepth = 1.0f;
-  VkRect2D bloomScissor{};
-  bloomScissor.extent = bloomExtent;
-
-  const VkExtent2D bloomQuarterExtent = {std::max(1u, bloomExtent.width / 2),
-                                         std::max(1u, bloomExtent.height / 2)};
-  VkViewport bloomQuarterVp{};
-  bloomQuarterVp.width = static_cast<float>(bloomQuarterExtent.width);
-  bloomQuarterVp.height = static_cast<float>(bloomQuarterExtent.height);
-  bloomQuarterVp.minDepth = 0.0f;
-  bloomQuarterVp.maxDepth = 1.0f;
-  VkRect2D bloomQuarterScissor{};
-  bloomQuarterScissor.extent = bloomQuarterExtent;
-
-  auto drawBloomFullscreen = [&](VkImage dstImage, VkImageView dstView,
-                                 VkExtent2D dstExtent, const VkViewport &vpArg,
-                                 const VkRect2D &scissorArg, VkPipeline pipeline,
-                                 VkPipelineLayout layout, VkDescriptorSet inputSet,
-                                 const void *pushData, uint32_t pushSize) {
-    imageBarrier(cmd, dstImage, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
+  gpuStamp(5);
+  // Temporal history is its own attachment, never read and written in one
+  // draw. Cross-frame barriers include previous fragment reads before this
+  // slot is overwritten, so two frames in flight need no extra CPU wait.
+  {
+    imageBarrier(cmd, mTemporalImages[mCurrentFrame],
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     VkRenderingAttachmentInfo color{};
     color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    color.imageView = dstView;
+    color.imageView = mTemporalViews[mCurrentFrame];
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
     VkRenderingInfo render{};
     render.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    render.renderArea.extent = dstExtent;
+    render.renderArea.extent = extent;
     render.layerCount = 1;
     render.colorAttachmentCount = 1;
     render.pColorAttachments = &color;
     vkCmdBeginRendering(cmd, &render);
-    vkCmdSetViewport(cmd, 0, 1, &vpArg);
-    vkCmdSetScissor(cmd, 0, 1, &scissorArg);
-
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1,
-                            &inputSet, 0, nullptr);
-    if (pushData)
-      vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                         pushSize, pushData);
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mTemporalPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        mTemporalPipelineLayout, 0, 1, &mTemporalSets[mCurrentFrame], 0, nullptr);
+    // Reject cuts/teleports, resize, diagnostics and toggling AA. Wind and
+    // smaller camera moves are handled by per-pixel clipping and depth checks.
+    const bool reuse = temporalOn && mTemporalValid &&
+        glm::distance(eye,mTemporalPrevEye) < 4.0f &&
+        glm::dot(forward,mTemporalPrevForward) > .94f;
+    const glm::mat4 matrices[2] = {glm::inverse(frameData.viewProj),
+        reuse ? mTemporalPrevViewProj : glm::mat4(0.0f)};
+    vkCmdPushConstants(cmd, mTemporalPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                        0, sizeof(matrices), matrices);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRendering(cmd);
-
-    imageBarrier(cmd, dstImage, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-  };
-
-  BloomExtractPush extractPush{mParams.bloomThreshold, mParams.bloomKnee};
-  drawBloomFullscreen(mBloomExtractImages[mCurrentFrame],
-                      mBloomExtractViews[mCurrentFrame], bloomExtent, bloomVp,
-                      bloomScissor, mBloomExtractPipeline,
-                      mBloomExtractPipelineLayout,
-                      mBloomExtractInputSets[mCurrentFrame], &extractPush,
-                      sizeof(extractPush));
-
-  BloomBlurPush blurHPush{glm::vec2(1.0f, 0.0f)};
-  drawBloomFullscreen(mBloomBlurHImages[mCurrentFrame],
-                      mBloomBlurHViews[mCurrentFrame], bloomExtent, bloomVp,
-                      bloomScissor, mBloomBlurPipeline,
-                      mBloomBlurPipelineLayout,
-                      mBloomBlurHInputSets[mCurrentFrame], &blurHPush,
-                      sizeof(blurHPush));
-
-  BloomBlurPush blurVPush{glm::vec2(0.0f, 1.0f)};
-  drawBloomFullscreen(mBloomBlurVImages[mCurrentFrame],
-                      mBloomBlurVViews[mCurrentFrame], bloomExtent, bloomVp,
-                      bloomScissor, mBloomBlurPipeline,
-                      mBloomBlurPipelineLayout,
-                      mBloomBlurVInputSets[mCurrentFrame], &blurVPush,
-                      sizeof(blurVPush));
-
-  // Second blur pass, quarter-res: input is mBloomBlurVImages (half-res) --
-  // sampling it at a quarter-res target does the linear-sampler box
-  // downsample "for free" (same trick bloomExtract.frag's header comment
-  // describes), then the H/V blur widens it further.
-  BloomBlurPush blurQ2HPush{glm::vec2(1.0f, 0.0f)};
-  drawBloomFullscreen(mBloomBlurQ2HImages[mCurrentFrame],
-                      mBloomBlurQ2HViews[mCurrentFrame], bloomQuarterExtent,
-                      bloomQuarterVp, bloomQuarterScissor, mBloomBlurPipeline,
-                      mBloomBlurPipelineLayout,
-                      mBloomBlurQ2HInputSets[mCurrentFrame], &blurQ2HPush,
-                      sizeof(blurQ2HPush));
-
-  BloomBlurPush blurQ2VPush{glm::vec2(0.0f, 1.0f)};
-  drawBloomFullscreen(mBloomBlurQ2VImages[mCurrentFrame],
-                      mBloomBlurQ2VViews[mCurrentFrame], bloomQuarterExtent,
-                      bloomQuarterVp, bloomQuarterScissor, mBloomBlurPipeline,
-                      mBloomBlurPipelineLayout,
-                      mBloomBlurQ2VInputSets[mCurrentFrame], &blurQ2VPush,
-                      sizeof(blurQ2VPush));
+    imageBarrier(cmd, mTemporalImages[mCurrentFrame],
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    mTemporalPrevViewProj = frameData.viewProj;
+    mTemporalPrevEye = eye; mTemporalPrevForward = forward;
+    mTemporalValid = temporalOn;
+  }
+  // Meter world radiance before weapon, bloom, grading and UI. The readback
+  // is only 256 bins, consumed after an existing frame fence on a later frame.
+  if(histogramExposure&&mParams.autoExposure)mExposureMeter.record(cmd,mCurrentFrame,mTemporalViews[mCurrentFrame],extent);
+  // Copy resolved WORLD color to the presentation target. Never composite the
+  // gun into history: reprojecting yesterday's rifle would leave recoil trails.
+  imageBarrier(cmd,mTemporalImages[mCurrentFrame],
+      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT|VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+      VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_READ_BIT,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  imageBarrier(cmd,mHdrImages[mCurrentFrame],
+      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+      VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  VkImageCopy resolvedCopy{};
+  resolvedCopy.srcSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+  resolvedCopy.dstSubresource=resolvedCopy.srcSubresource;
+  resolvedCopy.extent={extent.width,extent.height,1};
+  vkCmdCopyImage(cmd,mTemporalImages[mCurrentFrame],VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      mHdrImages[mCurrentFrame],VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&resolvedCopy);
+  imageBarrier(cmd,mTemporalImages[mCurrentFrame],
+      VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_READ_BIT,
+      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  imageBarrier(cmd,mHdrImages[mCurrentFrame],
+      VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,
+      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  // Foreground after temporal resolve, before bloom/tonemapping. Animated
+  // viewmodels must not become world history (which produced recoil ghosts).
+  if (std::any_of(mInstances.begin(),mInstances.end(),[](const Instance &i){return i.isViewModel;})) {
+    imageBarrier(cmd,mHdrImages[mCurrentFrame],
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    imageBarrier(cmd,mViewmodelDepthImages[mCurrentFrame],
+        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_ASPECT_DEPTH_BIT);
+    VkRenderingAttachmentInfo color{},depth{};
+    color.sType=depth.sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    color.imageView=mHdrViews[mCurrentFrame];color.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD;color.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+    depth.imageView=mViewmodelDepthViews[mCurrentFrame];depth.imageLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depth.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;depth.storeOp=VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.clearValue.depthStencil={1.f,0};
+    VkRenderingInfo render{};render.sType=VK_STRUCTURE_TYPE_RENDERING_INFO;
+    render.renderArea.extent=extent;render.layerCount=1;
+    render.colorAttachmentCount=1;render.pColorAttachments=&color;render.pDepthAttachment=&depth;
+    vkCmdBeginRendering(cmd,&render);
+    vkCmdSetViewport(cmd,0,1,&vp);vkCmdSetScissor(cmd,0,1,&scissor);
+    vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,mViewmodelPipeline);
+    vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,mScenePipelineLayout,0,5,sets,0,nullptr);
+    for (const Instance &inst:mInstances) {
+      if (!inst.isViewModel) continue;
+      const Mesh &mesh=mMeshes[inst.meshIndex];
+      vkCmdBindVertexBuffers(cmd,0,1,&mesh.vertexBuffer,&vbOffset);
+      vkCmdBindIndexBuffer(cmd,mesh.indexBuffer,0,VK_INDEX_TYPE_UINT32);
+      for (const DrawItem &source:mesh.drawItems) {
+        const DrawItem &item=inst.hasMaterialOverride?inst.materialOverride:source;
+        ScenePush push{};push.model=inst.model;
+        push.textureIndex=item.textureIndex;push.normalIndex=item.normalIndex;
+        push.roughnessIndex=item.roughnessIndex;push.metallicIndex=item.metallicIndex;push.aoIndex=item.aoIndex;
+        push.opacityIndex=item.opacityIndex;push.alphaCutoff=item.alphaCutoff;
+        push.roughnessScalar=item.roughnessScalar;push.metallicScalar=item.metallicScalar;push.aoScalar=item.aoScalar;
+        push.materialFlags=item.materialFlags | (1u<<14) | inst.viewModelFlags;
+        push.foliageSssStrength=65.0f;
+        push.windStrength=item.emissiveColor.r;push.windSpeed=item.emissiveColor.g;
+        push.windMeshHeight=item.emissiveColor.b;push.groundOcclusion=item.emissiveStrength;
+        vkCmdPushConstants(cmd,mScenePipelineLayout,pushStages,0,sizeof(push),&push);
+        vkCmdDrawIndexed(cmd,source.indexCount,1,source.indexOffset,0,0);
+      }
+    }
+    vkCmdEndRendering(cmd);
+    imageBarrier(cmd,mHdrImages[mCurrentFrame],
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  }
+  // Normalized six-level bloom redistributes energy in the tonemapper.
+  imageBarrier(cmd, mHdrImages[mCurrentFrame], VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+      VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  mAtmosphere.bloom(cmd, mCurrentFrame, mHdrImages[mCurrentFrame], mHdrViews[mCurrentFrame],
+      mParams.atmosphere.bloomFireflySuppression);
+  VkDescriptorImageInfo bloomImage{mSampler, mAtmosphere.bloomView(mCurrentFrame), VK_IMAGE_LAYOUT_GENERAL};
+  VkWriteDescriptorSet bloomWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  bloomWrite.dstSet=mTonemapSets[mCurrentFrame];bloomWrite.dstBinding=1;
+  bloomWrite.descriptorCount=1;bloomWrite.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  bloomWrite.pImageInfo=&bloomImage;vkUpdateDescriptorSets(device,1,&bloomWrite,0,nullptr);
 
   // ---- Pass 2: tonemap -> swapchain ----
   imageBarrier(cmd, mSwapchain.image(imageIndex),
-               VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                VK_IMAGE_LAYOUT_UNDEFINED,
@@ -6053,7 +6833,7 @@ void VulkanRenderer::drawFrame() {
   tp.contrast = mParams.contrast;
   tp.vignette = mParams.vignette;
   tp.tonemapMode = mParams.tonemapMode;
-  tp.bloomIntensity = mParams.bloomIntensity;
+  tp.bloomIntensity = mParams.atmosphere.bloomStrength;
   tp.gradeExposureBias = 0.0f;
   tp.gradeTint = glm::vec4(1.0f, 1.0f, 1.0f, mParams.bloomWideIntensity);
   tp.invProj = glm::inverse(proj);
@@ -6150,6 +6930,7 @@ void VulkanRenderer::drawFrame() {
                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
   }
+  gpuStamp(6);
   VK_CHECK(vkEndCommandBuffer(cmd));
 
   VkSemaphoreSubmitInfo waitSem{};
@@ -6159,7 +6940,9 @@ void VulkanRenderer::drawFrame() {
   VkSemaphoreSubmitInfo signalSem{};
   signalSem.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
   signalSem.semaphore = mRenderFinished[imageIndex];
-  signalSem.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  // Presentation must wait for the layout transition and capture transfer,
+  // not just the earlier color write. Acquire remains scoped to color output.
+  signalSem.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   VkCommandBufferSubmitInfo cmdInfo{};
   cmdInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
   cmdInfo.commandBuffer = cmd;
@@ -6258,6 +7041,7 @@ void VulkanRenderer::drawFrame() {
     mCapture = false;
   }
 
+  mGpuTimestampsWritten[mCurrentFrame] = gpuQueries != VK_NULL_HANDLE;
   mCurrentFrame = (mCurrentFrame + 1) % kFramesInFlight;
   ++mFrameCounter;
 }
@@ -6289,6 +7073,16 @@ void VulkanRenderer::shutdown() {
   for (VkFence f : mInFlight)
     vkDestroyFence(device, f, nullptr);
   mInFlight.clear();
+  for (auto &pool : mGpuTimestampPools) {
+    if (pool) vkDestroyQueryPool(device, pool, nullptr);
+    pool = VK_NULL_HANDLE;
+  }
+  mAtmosphere.destroy();
+  mCloudHistory.destroy();
+  mExposureMeter.destroy();
+  mGpuTimestampsWritten.fill(false);
+  mGpuTimestampsInitialized = false;
+
 
   // Deferred-destruction backlog: the device is idle, so everything queued
   // (staging buffers, retired mesh buffers, released BLAS) can go now.
@@ -6303,6 +7097,8 @@ void VulkanRenderer::shutdown() {
       vmaDestroyBuffer(mCtx->allocator(), mesh.indexBuffer, mesh.indexAlloc);
     if (mesh.vertexBuffer)
       vmaDestroyBuffer(mCtx->allocator(), mesh.vertexBuffer, mesh.vertexAlloc);
+    if (mesh.alphaMaskBuffer)
+      vmaDestroyBuffer(mCtx->allocator(), mesh.alphaMaskBuffer, mesh.alphaMaskAlloc);
   }
   mMeshes.clear();
   mInstances.clear();
@@ -6322,6 +7118,9 @@ void VulkanRenderer::shutdown() {
   if (mSampler)
     vkDestroySampler(device, mSampler, nullptr);
   mSampler = VK_NULL_HANDLE;
+  if (mMaterialSampler)
+    vkDestroySampler(device, mMaterialSampler, nullptr);
+  mMaterialSampler = VK_NULL_HANDLE;
 
   mAccel.destroy(*mCtx);
   if (mTlasPool)
@@ -6341,6 +7140,12 @@ void VulkanRenderer::shutdown() {
   mTonemapPool = VK_NULL_HANDLE;
   mTonemapSetLayout = VK_NULL_HANDLE;
 
+  if (mTemporalPool) vkDestroyDescriptorPool(device, mTemporalPool, nullptr);
+  if (mTemporalPipelineLayout) vkDestroyPipelineLayout(device, mTemporalPipelineLayout, nullptr);
+  mTemporalPool = VK_NULL_HANDLE;
+  mTemporalPipelineLayout = VK_NULL_HANDLE;
+  mTemporalPipeline = VK_NULL_HANDLE; // pipeline cache owns pipeline lifetime
+
   if (mAOSamplerPool)
     vkDestroyDescriptorPool(device, mAOSamplerPool, nullptr);
   if (mAOSamplerSetLayout)
@@ -6352,6 +7157,10 @@ void VulkanRenderer::shutdown() {
     vkDestroyDescriptorPool(device, mBloomSamplerPool, nullptr);
   mBloomSamplerPool = VK_NULL_HANDLE;
 
+  for (RtAlphaFrameBuffer &fb : mRtAlphaBuffers)
+    if (fb.buffer)
+      vmaDestroyBuffer(mCtx->allocator(), fb.buffer, fb.alloc);
+  mRtAlphaBuffers.clear();
   for (uint32_t i = 0; i < mFrameUBOs.size(); ++i)
     vmaDestroyBuffer(mCtx->allocator(), mFrameUBOs[i], mFrameUBOAllocs[i]);
   mFrameUBOs.clear();

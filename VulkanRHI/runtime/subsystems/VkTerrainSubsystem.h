@@ -11,6 +11,7 @@
 #include <memory>
 #include <unordered_map>
 #include <vector>
+#include <future>
 
 struct VkAppState;
 
@@ -105,6 +106,9 @@ public:
   // before any terrain exists. Once terrain is live, settings() is the
   // authority.
   const TerrainSettings &pendingSettings() const { return mPendingSettings; }
+  void stageSettings(const TerrainSettings &settings) {
+    if (!mReady) mPendingSettings = settings;
+  }
 
   // Called once per frame from main.cpp, AFTER VulkanRenderSystem::update()
   // (which clears+rebuilds mInstances from the ECS) so streamed terrain
@@ -129,12 +133,24 @@ public:
   ScatterManifest &manifest() { return mManifest; }
   void regenerate(const TerrainSettings &newSettings);
 
+  const std::string &sceneryId() const { return mSceneryId; }
+  bool applyScenery(const std::string &id);
+  void saveScenerySettings();
+private:
+  void initializeScenery();
+  nlohmann::json captureScenery() const;
+  nlohmann::json mSceneryProfiles;
+  std::string mSceneryId;
+public:
+
+
   // Procedural terrain height at a world XZ position (0 if the terrain
   // hasn't been initialized yet) -- used by main.cpp to place the spawn
   // camera above the actual generated surface instead of a hardcoded Y.
   float heightAt(glm::vec2 worldXZ) const {
     return mQuery ? mQuery->heightAt(worldXZ) : 0.0f;
   }
+  float waterAt(glm::vec2 worldXZ) const;
 
 private:
   struct ChunkRenderData {
@@ -155,6 +171,17 @@ private:
   // leaves the area the current grid covers -- the terrain stays the single
   // authority for where water is, exactly as it is for where the ground is.
   void syncWaterToRenderer();
+  void syncAtmosphereField();
+  void invalidateAtmosphereField(bool retainPublished=false);
+  struct AtmosphereFieldResult {
+    uint64_t generation=0;
+    glm::vec2 origin{0};
+    std::vector<glm::vec4> values;
+  };
+  std::future<AtmosphereFieldResult> mAtmosphereFieldJob;
+  uint64_t mAtmosphereFieldGeneration=1;
+  bool mAtmosphereFieldValid=false;
+  glm::vec2 mAtmosphereFieldCentre{0};
 
 public:
   // Rasterises a top-down RGBA map of the whole world: ocean shaded by depth,
@@ -214,6 +241,12 @@ private:
   // One mesh per manifest layer, in the same order as mManifest.layers,
   // built/refreshed by loadLayerMeshes(). UINT32_MAX = failed to load.
   std::vector<uint32_t> mLayerMesh;
+  std::vector<uint32_t> mLayerShadowMesh;
+  struct LayerLod { uint32_t mesh; float distance; };
+  std::vector<std::vector<LayerLod>> mLayerLods;
+  struct CachedSceneryMesh { uint32_t mesh; float radius, height; };
+  std::unordered_map<std::string, CachedSceneryMesh> mSceneryMeshes;
+
   // Bounding-sphere-ish radius of each layer's UNSCALED mesh (half the
   // diagonal of its AABB), for sizing rock colliders to the actual asset
   // instead of a generic guess -- multiply by an instance's own placement

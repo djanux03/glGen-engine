@@ -1,0 +1,15 @@
+{
+  "id": "grass/field_dry",
+  "generator": "import.gltf",
+  "seed": 0,
+  "params": {
+    "path": "assets/grass/meadow_dry.gltf",
+    "recenter": "baseY"
+  },
+  "provenance": {
+    "class": "meadow_grass",
+    "author": "glGen",
+    "tool": "Tools/glgen-trees/make_meadow_variants.py",
+    "note": "Original deterministic curved grass; shared LODs and patch contact shade, no blade casting."
+  }
+}

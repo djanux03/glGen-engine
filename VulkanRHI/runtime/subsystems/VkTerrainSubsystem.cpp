@@ -1,16 +1,28 @@
 #include "VkTerrainSubsystem.h"
 
 #include "../VkAppState.h"
+#include "../VkEditor.h"
+#include "../ScenerySettings.h"
+#include <fstream>
 #include "VulkanRenderer.h"
 
 #include "Assets/AssetManager.h"
+#include "Generators/AssetRecipe.h"
+#include "Generators/GeneratorRegistry.h"
 #include "ECS/Components.h"
 #include "TerrainScatter.h"
 #include "TerrainWater.h"
 #include "TerrainIslands.h"
 #include "TerrainNoise.h"
+#include "Terrain/FogPooling.h"
 
 #include <vector>
+
+float VkTerrainSubsystem::waterAt(glm::vec2 p) const {
+  if (!mReady) return kNoWater;
+  WaterCellCache cache;
+  return waterSurfaceAt(mState.terrain.noiseSet(), settings(), p, &mState.terrain.editsGrid(), &cache);
+}
 
 #include <algorithm>
 #include <cctype>
@@ -25,6 +37,12 @@
 #include <utility>
 
 namespace {
+// A separate file is useful for repeatable smoke/persistence tests and projects
+// sharing the same asset library. The default remains the editor settings path.
+std::filesystem::path scenerySettingsPath(const std::string &assetDir) {
+  if(const char *path=std::getenv("GLGEN_SCENERY_SETTINGS"))return path;
+  return std::filesystem::path(assetDir)/"settings/scenery_settings.json";
+}
 // The camera far plane must reach past the actual streamed disc (radius =
 // viewDistanceChunks * chunkWorldSize) or chunks stream in and cull
 // correctly but are geometrically clipped before the fragment shader ever
@@ -48,11 +66,18 @@ void setDefaultTerrainMaterials(vkrhi::VulkanRenderer::Params &p,
   const std::string r = assetDir + "/materials/m3/textures/rocky-rugged-terrain_1_";
   const std::string s = assetDir + "/materials/m6/textures/GrassyRocks01_";
 
-  p.terrainMaterialSlots[0] = Slot{m + "basecolor.jpg", "", "", 6.0f};
-  p.terrainMaterialSlots[1] = Slot{f + "BaseColor.jpg", "", "", 7.0f};
-  p.terrainMaterialSlots[2] = Slot{d + "basecolor.jpg", "", "", 5.0f};
-  p.terrainMaterialSlots[3] = Slot{r + "albedo.jpg", "", "", 9.0f};
-  p.terrainMaterialSlots[4] = Slot{s + "BaseColor.jpg", "", "", 8.0f};
+  // The shipped sets already contain full PBR data. Loading only base colour
+  // made every profile except woodland discard its relief and surface response.
+  p.terrainMaterialSlots[0] = Slot{m + "basecolor.jpg", m + "normal.jpg",
+      m + "roughness.jpg", 3.0f, m + "height.jpg", .04f};
+  p.terrainMaterialSlots[1] = Slot{f + "BaseColor.jpg", f + "Normal.jpg",
+      f + "Roughness.jpg", 3.5f, f + "Displacement.jpg", .055f};
+  p.terrainMaterialSlots[2] = Slot{d + "basecolor.jpg", d + "normalOGL.jpg",
+      d + "roughness.jpg", 2.5f, d + "height.jpg", .04f};
+  p.terrainMaterialSlots[3] = Slot{r + "albedo.jpg", r + "normal-ogl.jpg",
+      r + "roughness.jpg", 5.0f, r + "height.jpg", .08f};
+  p.terrainMaterialSlots[4] = Slot{s + "BaseColor.jpg", s + "Normal.jpg",
+      s + "Roughness.jpg", 4.0f, s + "Displacement.jpg", .06f};
   p.terrainMaterialsDirty = true;
 }
 
@@ -96,7 +121,28 @@ std::string lowerExt(const std::string &path) {
 const MeshData *loadScatterMeshData(AssetManager &assets, const std::string &resolvedPath,
                                     glm::vec3 upAxisFixDeg,
                                     std::unordered_set<std::string> &alreadyFixed) {
+  if (resolvedPath.rfind("gen://", 0) == 0) {
+    OBJHandle h = assets.findMeshData(resolvedPath);
+    return h.valid() ? assets.getOBJData(h) : nullptr;
+  }
   const std::string ext = lowerExt(resolvedPath);
+  if (ext == ".json") {
+    gen::AssetRecipe recipe;
+    std::string err;
+    if (gen::loadRecipeFile(resolvedPath, recipe, err)) {
+      const std::string assetId = gen::assetIdFor(recipe);
+      OBJHandle h = assets.findMeshData(assetId);
+      if (h.valid())
+        return assets.getOBJData(h);
+      gen::GenResult res = gen::GeneratorRegistry::instance().run(
+          recipe.generator, recipe.params, recipe.seed);
+      if (res.ok()) {
+        h = assets.registerMeshData(assetId, std::move(res.mesh));
+        return assets.getOBJData(h);
+      }
+    }
+    return nullptr;
+  }
   if (ext == ".obj") {
     OBJHandle h = assets.loadOBJ(resolvedPath);
     if (!h.valid())
@@ -176,6 +222,8 @@ bool VkTerrainSubsystem::initialize() {
       mPendingSettings.heightScale = v;
   }
 
+  initializeScenery();
+
   // Headless runs and the existing smoke/showcase harnesses expect ground to
   // exist without a UI to click, so one env var restores the old behaviour.
   if (std::getenv("GLGEN_TERRAIN_ON_START"))
@@ -217,11 +265,12 @@ bool VkTerrainSubsystem::create(const TerrainSettings &settings) {
                                           mState.terrain.noiseSet(),
                                           &mState.terrain.editsGrid());
   mState.renderer->params().farPlane = farPlaneForSettings(settings);
-  syncWaterToRenderer();
-
   loadLayerMeshes();
 
   mReady = true;
+  mWaterFieldValid = false;
+  syncWaterToRenderer();
+  syncAtmosphereField();
   return true;
 }
 
@@ -281,6 +330,74 @@ void VkTerrainSubsystem::buildWorldMapRGBA(std::vector<unsigned char> &out,
   }
 }
 
+void VkTerrainSubsystem::invalidateAtmosphereField(bool retainPublished) {
+  ++mAtmosphereFieldGeneration;
+  mAtmosphereFieldValid=false;
+  if(mState.renderer&&!retainPublished) mState.renderer->setAtmosphereTerrainField({},glm::vec2(0),0);
+}
+void VkTerrainSubsystem::syncAtmosphereField() {
+  if(!mReady||!mState.renderer) return;
+  constexpr float span=1024;
+  const glm::vec3 camera=mState.renderer->params().camPos;
+  const glm::vec2 centre(camera.x,camera.z);
+  if(mAtmosphereFieldValid&&glm::distance(centre,mAtmosphereFieldCentre)>span*.125f) invalidateAtmosphereField(true);
+  if(mAtmosphereFieldJob.valid()) {
+    if(mAtmosphereFieldJob.wait_for(std::chrono::seconds(0))!=std::future_status::ready) return;
+    auto field=mAtmosphereFieldJob.get();
+    if(field.generation==mAtmosphereFieldGeneration &&
+       glm::distance(field.origin+glm::vec2(span*.5f),centre)<=span*.125f) {
+      mState.renderer->setAtmosphereTerrainField(std::move(field.values),field.origin,span);
+      mAtmosphereFieldValid=true;
+      mAtmosphereFieldCentre=field.origin+glm::vec2(span*.5f);
+    } else if(field.generation==mAtmosphereFieldGeneration) {
+      invalidateAtmosphereField(true);
+    }
+  }
+  if(mAtmosphereFieldValid) return;
+  // No engine or renderer references cross the worker boundary. Editing and
+  // regeneration invalidate the generation before a completed result is used.
+  const auto settings=mState.terrain.settings();
+  const auto noise=mState.terrain.noiseSet();
+  const auto edits=mState.terrain.editsGrid().snapshot();
+  const uint64_t generation=mAtmosphereFieldGeneration;
+  const glm::vec2 origin=centre-glm::vec2(span*.5f);
+  mAtmosphereFieldJob=std::async(std::launch::async,[settings,noise,edits,generation,origin]() {
+    AtmosphereFieldResult result;result.generation=generation;result.origin=origin;
+    result.values.resize(256*256);WaterCellCache cache;
+    std::vector<float> waterDistance(256*256,1.e6f);
+    for(int z=0;z<256;++z) for(int x=0;x<256;++x) {
+      const glm::vec2 position=origin+glm::vec2((x+.5f)*4,(z+.5f)*4);
+      const auto macro=sampleMacro(noise,position,settings);
+      const float height=computeHeight(macro,noise,position,settings,edits.get(),&cache);
+      const float water=waterSurfaceAt(noise,settings,position,edits.get(),&cache);
+      if(std::isfinite(water)&&height<=water+.25f) waterDistance[z*256+x]=0;
+      const auto biome=sampleBiomeWeights(macro,settings,height);
+      result.values[z*256+x]=glm::vec4(height,0,biome.forest,1);
+    }
+    // Two chamfer sweeps measure horizontal shoreline proximity. Vertical
+    // height alone would boost dry valleys far away from any water body.
+    for(int pass=0;pass<2;++pass) for(int iz=0;iz<256;++iz) for(int ix=0;ix<256;++ix) {
+      int z=pass?255-iz:iz,x=pass?255-ix:ix;
+      float& distance=waterDistance[z*256+x];
+      const int step=pass?1:-1;
+      if(x+step>=0&&x+step<256) distance=std::min(distance,waterDistance[z*256+x+step]+4.f);
+      if(z+step>=0&&z+step<256) {
+        distance=std::min(distance,waterDistance[(z+step)*256+x]+4.f);
+        for(int dx : {-1,1}) if(x+dx>=0&&x+dx<256)
+          distance=std::min(distance,waterDistance[(z+step)*256+x+dx]+5.656854f);
+      }
+    }
+    for(size_t i=0;i<result.values.size();++i) result.values[i].y=std::exp(-waterDistance[i]/25.f);
+    std::vector<float> height(result.values.size());
+    for(size_t i=0;i<height.size();++i)height[i]=result.values[i].x;
+    const auto basins=atmosphere::basinDepths(height,256,256);
+    // W encodes validity plus bounded potential depth. Missing terrain stays
+    // zero; 1 is valid open terrain. No engine references enter this worker.
+    for(size_t i=0;i<height.size();++i)result.values[i].w=1.f+std::min(basins[i],64.f);
+    return result;
+  });
+}
+
 void VkTerrainSubsystem::syncWaterToRenderer() {
   if (!mReady || !mState.renderer)
     return;
@@ -335,6 +452,7 @@ void VkTerrainSubsystem::syncWaterToRenderer() {
 }
 
 void VkTerrainSubsystem::destroy() {
+  invalidateAtmosphereField();
   if (!mReady)
     return;
 
@@ -350,8 +468,10 @@ void VkTerrainSubsystem::destroy() {
   // Vegetation batches live in the renderer, not in mActive, so emptying the
   // scatter set is not enough on its own: without this the last frame's
   // grass and trees keep drawing over an empty world.
-  if (mState.renderer)
+  if (mState.renderer) {
+    mState.renderer->clearWaterHeightField();
     mState.renderer->setVegetationBatches({});
+  }
 }
 
 void VkTerrainSubsystem::releaseAllChunks() {
@@ -398,6 +518,11 @@ void VkTerrainSubsystem::loadLayerMeshes() {
   for (size_t i = 0; i < mManifest.layers.size(); ++i) {
     const ScatterLayer &layer = mManifest.layers[i];
     const std::string resolved = resolveScatterMeshPath(mState.assetDir, layer.meshPath);
+    if(auto it=mSceneryMeshes.find(resolved);it!=mSceneryMeshes.end()) {
+      mLayerMesh[i]=it->second.mesh;mLayerBoundsRadius[i]=it->second.radius;
+      mLayerMeshHeight[i]=it->second.height;continue;
+    }
+
 
     auto priorFix = fixByPath.find(resolved);
     if (priorFix != fixByPath.end() &&
@@ -430,8 +555,60 @@ void VkTerrainSubsystem::loadLayerMeshes() {
     char debugName[64];
     std::snprintf(debugName, sizeof(debugName), "ScatterLayer_%s", layer.name.c_str());
     mLayerMesh[i] = mState.renderer->createMeshFromData(*data, debugName);
-    if (mLayerMesh[i] != UINT32_MAX)
+    if (mLayerMesh[i] != UINT32_MAX) {
       addedMesh = true;
+      mSceneryMeshes.emplace(resolved,CachedSceneryMesh{mLayerMesh[i],mLayerBoundsRadius[i],mLayerMeshHeight[i]});
+    }
+  }
+  mLayerLods.assign(mManifest.layers.size(), {});
+  mLayerShadowMesh.assign(mManifest.layers.size(), UINT32_MAX);
+  for (size_t i = 0; i < mManifest.layers.size(); ++i) {
+    const auto &layer = mManifest.layers[i];
+    for (const auto &lod : layer.meshLods) {
+      const auto path = resolveScatterMeshPath(mState.assetDir, lod.meshPath);
+      auto found = mSceneryMeshes.find(path);
+      if (found == mSceneryMeshes.end()) {
+        const MeshData *data = loadScatterMeshData(mState.assets, path,
+                                                  layer.meshUpAxisFixDeg, fixedMeshPaths);
+        if (!data || data->submeshes.empty()) continue;
+        CachedSceneryMesh cached{UINT32_MAX, .5f, 1.0f};
+        cached.mesh = mState.renderer->createMeshFromData(*data, "ScatterLOD");
+        if (cached.mesh == UINT32_MAX) continue;
+        glm::vec3 mn, mx;
+        if (data->getGlobalBounds(mn, mx)) {
+          cached.radius = glm::length(mx - mn) * .5f;
+          cached.height = std::max(mx.y - std::min(mn.y, 0.0f), 1e-3f);
+        }
+        found = mSceneryMeshes.emplace(path, cached).first;
+        addedMesh = true;
+      }
+      mLayerLods[i].push_back({found->second.mesh, lod.distance});
+      // Cull against the union of all detail levels so wider far blades/crowns
+      // never disappear at a frustum edge during a geometry switch.
+      mLayerBoundsRadius[i] = std::max(mLayerBoundsRadius[i], found->second.radius);
+    }
+  }
+  // Load casting proxies separately: a cached raster mesh must not skip its
+  // proxy, and all layers using one proxy still share a single mesh/BLAS.
+  for (size_t i = 0; i < mManifest.layers.size(); ++i) {
+    const auto &layer = mManifest.layers[i];
+    if (layer.shadowMeshPath.empty()) continue;
+    const auto path = resolveScatterMeshPath(mState.assetDir, layer.shadowMeshPath);
+    auto found = mSceneryMeshes.find(path);
+    if (found == mSceneryMeshes.end()) {
+      const MeshData *data = loadScatterMeshData(mState.assets, path,
+                                                layer.meshUpAxisFixDeg, fixedMeshPaths);
+      if (!data || data->submeshes.empty()) {
+        std::fprintf(stderr,"[VkTerrainSubsystem] failed to load shadow mesh '%s'\n",path.c_str());
+        continue;
+      }
+      CachedSceneryMesh cached{UINT32_MAX, .5f, 1.0f};
+      cached.mesh = mState.renderer->createMeshFromData(*data, "ScatterShadow");
+      if (cached.mesh == UINT32_MAX) continue;
+      found = mSceneryMeshes.emplace(path,cached).first;
+      addedMesh = true;
+    }
+    mLayerShadowMesh[i] = found->second.mesh;
   }
   if (addedMesh)
     mState.renderer->growScene();
@@ -461,35 +638,22 @@ void VkTerrainSubsystem::regenerate(const TerrainSettings &newSettings) {
   if (!mReady)
     return;
 
-  // Full teardown of every active chunk's render-side state -- more
-  // thorough than shutdown() does (that skips ECS entity destruction since
-  // the whole scene is going away with it; regenerate() keeps the app
-  // running, so stale entities would otherwise linger in the Hierarchy
-  // forever). Shared with destroy().
-  releaseAllChunks();
-  mPendingSettings = newSettings;
-
-  mState.terrain.shutdown();
-  mState.terrain.init(newSettings, mManifest);
-  // mQuery held references into the old noise set/edits grid, both just
-  // replaced -- must be rebuilt, not just left pointing at freed state.
-  mQuery = std::make_unique<TerrainQuery>(mState.terrain.settings(),
-                                          mState.terrain.noiseSet(),
-                                          &mState.terrain.editsGrid());
-  mState.renderer->params().farPlane = farPlaneForSettings(newSettings);
-
-  // R4: layer meshes are real files now, not seed-derived procedural
-  // geometry -- no refresh needed here (unlike the old per-species
-  // buildSpeciesMesh(newSettings.seed, ...) reload this replaced).
+  // create() resolves sea level and refreshes the water field as well as
+  // scatter meshes. The former partial restart left stale lakes and layers.
+  const TerrainSettings copy=newSettings;
+  destroy();
+  create(copy);
 }
 
 void VkTerrainSubsystem::addFrameInstances() {
-  if (!mReady || !mState.renderer)
-    return;
+  if (!mState.renderer) return;
+  mState.renderer->setAuthoredTerrainSurface(mReady && mState.terrain.settings().authoredWoodland);
+  if (!mReady) return;
 
   // Keep the renderer's water field centred on the camera. Cheap most frames:
   // it early-outs unless the camera has left the middle of the current grid.
   syncWaterToRenderer();
+  syncAtmosphereField();
 
   Registry &reg = mState.scene.registry();
   const float chunkWorldSize = mState.terrain.settings().chunkWorldSize;
@@ -547,6 +711,8 @@ void VkTerrainSubsystem::addFrameInstances() {
       std::snprintf(name, sizeof(name), "TerrainChunk_%d_%d", upload.coord.x,
                     upload.coord.z);
       const auto entity = mState.scene.createEmptyEntity(name);
+      // Streamed proxies belong to terrain, not authored scene persistence.
+      reg.emplace<TransientComponent>(entity);
       const glm::vec2 center = chunkCenterWorld(upload.coord, chunkWorldSize);
       reg.get<TransformComponent>(entity).position =
           glm::vec3(center.x, 0.0f, center.y);
@@ -643,8 +809,21 @@ void VkTerrainSubsystem::rebuildVegetationBatches() {
   const float chunkWorldSize = settings.chunkWorldSize;
 
   std::vector<vkrhi::VulkanRenderer::VegBatch> batches(layerCount);
+  mState.renderer->params().grassGroundDrawDistance = 0;
   for (size_t li = 0; li < layerCount; ++li) {
     batches[li].mesh = li < mLayerMesh.size() ? mLayerMesh[li] : UINT32_MAX;
+    batches[li].shadowMesh = li < mLayerShadowMesh.size() ? mLayerShadowMesh[li] : UINT32_MAX;
+    batches[li].layerKey = static_cast<uint32_t>(li);
+    batches[li].grass = mManifest.layers[li].type == ScatterLayerType::Grass;
+    if (batches[li].grass && settings.spawnGrass && settings.spawnVegetation)
+      mState.renderer->params().grassGroundDrawDistance = std::max(
+          mState.renderer->params().grassGroundDrawDistance,
+          std::min(effectiveLayer(mManifest.layers[li], settings).maxDrawDistance,
+                   settings.chunkWorldSize * (settings.grassChunkRadius + .5f)));
+    if (li < mLayerLods.size())
+      for (const auto &lod : mLayerLods[li])
+        batches[li].meshLods.push_back({lod.mesh, lod.distance});
+
 
     // Per-batch render behavior comes from the SAME effectiveLayer() the
     // worker threads used for placement, so the draw distance the renderer
@@ -653,19 +832,19 @@ void VkTerrainSubsystem::rebuildVegetationBatches() {
     const EffectiveScatterLayer eff = effectiveLayer(layer, settings);
     batches[li].drawDistance =
         eff.maxDrawDistance < 1.0e6f ? eff.maxDrawDistance : 0.0f;
-    // Grass layers additionally honor the grassCastShadows switch: the
-    // manifest's castRayShadow=false is the safe default, and the setting
-    // can opt them back IN (the reverse is not offered -- a layer that
-    // authored itself out of the TLAS has a reason).
+    // Grass uses both the master switch and the layer's authored opt-out.
+    // An OR here made the editor checkbox unable to disable stock casters
+    // after grass casting became the default.
     batches[li].rayTracedShadows =
-        layer.castRayShadow ||
-        (layer.type == ScatterLayerType::Grass && settings.grassCastShadows);
+        layer.castRayShadow &&
+        (layer.type != ScatterLayerType::Grass || settings.grassCastShadows);
     batches[li].windStrength = eff.windStrength;
     batches[li].windSpeed = eff.windSpeed;
     batches[li].windMeshHeight =
         li < mLayerMeshHeight.size() ? mLayerMeshHeight[li] : 1.0f;
     batches[li].groundOcclusion = eff.groundOcclusion;
     batches[li].foliageSssStrength = layer.foliageSssStrength;
+    batches[li].receivesSnow = layer.receivesSnow;
   }
 
   // Culling ranges. Trees/rocks get one range per (chunk, layer) -- a few
@@ -885,6 +1064,8 @@ void VkTerrainSubsystem::promoteInteractiveTrees(glm::vec3 cameraWorldPos) {
         continue;
       const glm::vec3 pos = glm::vec3(s.transform[3]);
       const auto entity = mState.scene.createEmptyEntity("InteractiveTree");
+      // Streamed proxies belong to terrain, not authored scene persistence.
+      reg.emplace<TransientComponent>(entity);
       reg.get<TransformComponent>(entity).position = pos;
       auto &tree = reg.emplace<TreeComponent>(entity);
       tree.chunkX = coord.x;
@@ -953,6 +1134,8 @@ void VkTerrainSubsystem::promoteCollidableRocks(glm::vec3 cameraWorldPos) {
       // any basis column to size the collider to this specific instance.
       const float scale = glm::length(glm::vec3(s.transform[0]));
       const auto entity = mState.scene.createEmptyEntity("CollidableRock");
+      // Streamed proxies belong to terrain, not authored scene persistence.
+      reg.emplace<TransientComponent>(entity);
       reg.get<TransformComponent>(entity).position = pos;
       auto &rb = reg.emplace<RigidbodyComponent>(entity);
       rb.type = RigidbodyComponent::Type::Static;
@@ -981,4 +1164,136 @@ void VkTerrainSubsystem::applyHeightBrush(glm::vec2 worldXZ, float radius,
   if (!mReady)
     return;
   mState.terrain.applyHeightBrush(worldXZ, radius, strength, lower);
+  mWaterFieldValid=false;
+  invalidateAtmosphereField();
+}
+
+// Capture only scenery-owned renderer state: applying a preset must never move
+// the camera or reset render/debug budgets. Terrain and scatter are kept together.
+nlohmann::json VkTerrainSubsystem::captureScenery() const {
+  scenery::Json j;
+  auto terrain = mReady ? settings() : mPendingSettings;
+  auto params = mState.renderer->params();
+  scenery::terrain(j["terrain"], terrain, false);
+  scenery::renderer(j["renderer"], params, false);
+  j["scatter"] = scatterManifestToJson(mManifest);
+  return j;
+}
+
+void VkTerrainSubsystem::initializeScenery() {
+  if(mState.vkEditor)
+    mState.vkEditor->loadGraphicsSettingsOnce(mState.assetDir,*mState.renderer);
+  // Import legacy staged terrain before the first per-scenery snapshot.
+  try {
+    std::ifstream file(mState.assetDir+"/settings/editor_session.json");
+    if(file) {
+      scenery::Json legacy;file >> legacy;
+      if(legacy.value("restoreOnStartup",true) && legacy.contains("terrain"))
+        scenery::terrain(legacy["terrain"],mPendingSettings,true);
+    }
+  } catch(const std::exception &) {}
+  const auto base=captureScenery();
+  for(const char *id : {"meadows","bleak_winter","the_long_dark","the_long_dark_night","the_long_dark_blizzard","alpine_flyby","woodland_swamp"}) {
+    auto profile=base;
+    // A saved authored world must not leak its layout into noise presets.
+    profile["terrain"]["authoredWoodland"]=false;
+    try {
+      std::ifstream file(mState.assetDir+"/scenery/"+std::string(id)+".json");
+      scenery::Json definition; file >> definition;
+      if(definition.value("version",0)!=1) throw std::runtime_error("unsupported scenery version");
+      // Definitions are partial overlays; absent fields retain the typed defaults.
+      profile.merge_patch(definition);
+    } catch(const std::exception &e) {
+      std::fprintf(stderr,"[Scenery] %s: %s; using defaults\n",id,e.what());
+    }
+    mSceneryProfiles[id]=profile;
+  }
+  std::string selected="alpine_flyby";
+  try {
+    std::ifstream file(scenerySettingsPath(mState.assetDir));
+    if(file) {
+      scenery::Json saved;file >> saved;
+      if(saved.value("version",0)==1) {
+        for(const char *id : {"meadows","bleak_winter","the_long_dark","the_long_dark_night","the_long_dark_blizzard","alpine_flyby","woodland_swamp"})
+          if(saved.contains("profiles") && saved["profiles"].contains(id))
+            scenery::mergeSavedProfile(mSceneryProfiles[id], saved["profiles"][id]);
+        selected=saved.value("selected",selected);
+      }
+    }
+  } catch(const std::exception &e) {
+    std::fprintf(stderr,"[Scenery] saved settings ignored: %s\n",e.what());
+  }
+  // Headless budget overrides take precedence over saved/legacy profiles.
+  for(const char *id : {"meadows","bleak_winter","the_long_dark","the_long_dark_night","the_long_dark_blizzard","alpine_flyby","woodland_swamp"}) {
+    if(const char *v=std::getenv("GLGEN_VK_VIEWDIST")) {
+      int distance=std::atoi(v);
+      if(distance>=1 && distance<=64)mSceneryProfiles[id]["terrain"]["viewDistanceChunks"]=distance;
+    }
+    if(const char *v=std::getenv("GLGEN_VK_HEIGHTSCALE")) {
+      float height=static_cast<float>(std::atof(v));
+      if(height>0)mSceneryProfiles[id]["terrain"]["heightScale"]=height;
+    }
+  }
+  if(const char *env=std::getenv("GLGEN_SCENERY"))selected=env;
+  if(!applyScenery(selected))applyScenery("meadows");
+}
+
+bool VkTerrainSubsystem::applyScenery(const std::string &id) {
+  if((id!="meadows" && id!="bleak_winter" && id!="the_long_dark" && id!="the_long_dark_night" && id!="the_long_dark_blizzard" && id!="alpine_flyby" && id!="woodland_swamp") || !mSceneryProfiles.contains(id)) {
+    std::fprintf(stderr,"[Scenery] unknown scenery '%s'\n",id.c_str());return false;
+  }
+  const bool currentOwnsWorldShape = !mSceneryId.empty() &&
+      mSceneryProfiles[mSceneryId].value("ownsWorldShape", false);
+  if(!mSceneryId.empty()) {
+    auto snapshot=captureScenery();
+    if(currentOwnsWorldShape)snapshot["ownsWorldShape"]=true;
+    mSceneryProfiles[mSceneryId]=std::move(snapshot);
+  }
+  auto profile=mSceneryProfiles[id];
+  auto next=mReady?settings():mPendingSettings;
+  auto old=next;
+  auto params=mState.renderer->params();
+  auto manifest=mManifest;
+  try {
+    scenery::terrain(profile["terrain"],next,true);
+    scenery::renderer(profile["renderer"],params,true);
+    if(profile.contains("scatter") && !scatterManifestFromJson(profile["scatter"],manifest))
+      throw std::runtime_error("invalid scatter manifest");
+    for(auto *slot : {&params.terrainMaterialSlots[0],&params.terrainMaterialSlots[1],
+        &params.terrainMaterialSlots[2],&params.terrainMaterialSlots[3],
+        &params.terrainMaterialSlots[4],&params.snowMaterial}) {
+      for(auto *path : {&slot->albedoPath,&slot->normalPath,&slot->roughnessPath,&slot->heightPath})
+        if(!path->empty() && std::filesystem::path(*path).is_relative())
+          *path=(std::filesystem::path(mState.assetDir)/ *path).lexically_normal().string();
+    }
+  } catch(const std::exception &e) {
+    std::fprintf(stderr,"[Scenery] could not apply %s: %s\n",id.c_str(),e.what());return false;
+  }
+  // Switching the atmosphere is not authoring a different world boundary.
+  // Initial restoration, however, must use the saved world's seed and shape.
+  const bool targetOwnsWorldShape=profile.value("ownsWorldShape",false);
+  if(!mSceneryId.empty() && !currentOwnsWorldShape && !targetOwnsWorldShape) {
+    next.seed=old.seed;next.worldBounded=old.worldBounded;next.worldRadius=old.worldRadius;
+    next.worldEdgeFalloff=old.worldEdgeFalloff;next.continentScale=old.continentScale;
+    next.landCoverage=old.landCoverage;next.oceanFloorDepth=old.oceanFloorDepth;
+    next.landBaseHeight=old.landBaseHeight;next.spawnIslandRadius=old.spawnIslandRadius;
+  }
+  mSceneryId=id;mManifest=std::move(manifest);mState.renderer->params()=std::move(params);
+  mPendingSettings=next;
+  if(mReady)regenerate(next);
+  std::fprintf(stderr,"[Scenery] applied %s\n",id.c_str());
+  return true;
+}
+
+void VkTerrainSubsystem::saveScenerySettings() {
+  if(mSceneryId.empty())return;
+  const bool ownsWorldShape=mSceneryProfiles[mSceneryId].value("ownsWorldShape",false);
+  auto snapshot=captureScenery();
+  if(ownsWorldShape)snapshot["ownsWorldShape"]=true;
+  mSceneryProfiles[mSceneryId]=std::move(snapshot);
+  scenery::Json saved={{"version",1},{"selected",mSceneryId},{"profiles",mSceneryProfiles}};
+  const auto path=scenerySettingsPath(mState.assetDir);
+  std::error_code ec;std::filesystem::create_directories(path.parent_path(),ec);
+  std::ofstream out(path);out << saved.dump(2);
+  if(!out)std::fprintf(stderr,"[Scenery] could not save %s\n",path.string().c_str());
 }

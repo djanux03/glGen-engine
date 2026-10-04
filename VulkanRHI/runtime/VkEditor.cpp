@@ -18,6 +18,8 @@
 #include "EditorCamera.h"
 #include "GameHud.h"
 #include "gameplay/PlayerArchetype.h"
+#include "Gameplay/PlayerSpawn.h"
+#include "Terrain/TerrainWater.h"
 #include "ImGuizmo.h"
 #include "imgui.h"
 #include "json.hpp"
@@ -33,6 +35,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -293,8 +296,20 @@ static void saveGraphicsSettingsImpl(const std::string &path,
     j["saturation"] = p.saturation;
     j["contrast"] = p.contrast;
     j["vignette"] = p.vignette;
+    j["temporalAA"] = p.temporalAA;
+    j["temporalSharpness"] = p.temporalSharpness;
+    j["edgeSoftness"] = p.edgeSoftness;
     j["tonemapMode"] = p.tonemapMode;
     j["bloomIntensity"] = p.bloomIntensity;
+    j["bloomThreshold"] = p.bloomThreshold;
+    j["bloomKnee"] = p.bloomKnee;
+    j["bloomWideIntensity"] = p.bloomWideIntensity;
+    j["terrainPhotoAlbedo"] = p.terrainPhotoAlbedo;
+    j["foliageNormalSoften"] = p.foliageNormalSoften;
+    j["specularOcclusion"] = p.specularOcclusion;
+    j["terrainTriplanar"] = p.terrainTriplanar;
+    j["stylizedLightingRamp"] = p.stylizedLightingRamp;
+    j["shadowCoolBias"] = p.shadowCoolBias;
     j["autoExposure"] = p.autoExposure;
     j["autoExposureSpeed"] = p.autoExposureSpeed;
     j["autoExposureMin"] = p.autoExposureMin;
@@ -310,6 +325,8 @@ static void saveGraphicsSettingsImpl(const std::string &path,
     // Fog was never in this file, so every fog tweak in the editor was lost
     // on the next launch while every neighbouring panel persisted -- which is
     // its own reason the fog was hard to like.
+    j["atmosphere"] = atmosphere::encode(atmosphere::fromLegacy(p));
+    j["pointLights"] = atmosphere::encodeLights(p);
     j["fogDensity"] = p.fogDensity;
     j["fogStart"] = p.fogStart;
     j["fogMaxOpacity"] = p.fogMaxOpacity;
@@ -383,6 +400,7 @@ static void saveGraphicsSettingsImpl(const std::string &path,
     sj["cloudOpticalDensity"] = s.cloudOpticalDensity;
     sj["cloudSunOcclusion"] = s.cloudSunOcclusion;
     sj["cloudVolumetricEnabled"] = s.cloudVolumetricEnabled;
+    sj["paintedClouds"] = s.paintedClouds;
     sj["cloudStrength"] = s.cloudStrength;
     sj["cloudLayerThickness"] = s.cloudLayerThickness;
     sj["cloudShapeScale"] = s.cloudShapeScale;
@@ -465,6 +483,8 @@ static void loadGraphicsSettingsImpl(const std::string &path,
       readF("cloudSunOcclusion", s.cloudSunOcclusion);
       if (sj.contains("cloudVolumetricEnabled"))
         s.cloudVolumetricEnabled = sj["cloudVolumetricEnabled"].get<bool>();
+      if (sj.contains("paintedClouds"))
+        s.paintedClouds = sj["paintedClouds"].get<bool>();
       readF("cloudStrength", s.cloudStrength);
       readF("cloudLayerThickness", s.cloudLayerThickness);
       readF("cloudShapeScale", s.cloudShapeScale);
@@ -553,10 +573,30 @@ static void loadGraphicsSettingsImpl(const std::string &path,
       p.contrast = j["contrast"].get<float>();
     if (j.contains("vignette"))
       p.vignette = j["vignette"].get<float>();
+    if (j.contains("temporalAA") && j["temporalAA"].is_boolean())
+      p.temporalAA = j["temporalAA"].get<bool>();
     if (j.contains("tonemapMode"))
       p.tonemapMode = j["tonemapMode"].get<int>();
     if (j.contains("bloomIntensity"))
       p.bloomIntensity = j["bloomIntensity"].get<float>();
+    // Bloom shape and the photoreal dials were never persisted, so every
+    // editor tweak to them silently reverted on the next launch.
+    for (auto [key, dst] :
+         {std::pair<const char *, float *>{"bloomThreshold", &p.bloomThreshold},
+          {"bloomKnee", &p.bloomKnee},
+          {"bloomWideIntensity", &p.bloomWideIntensity},
+          {"terrainPhotoAlbedo", &p.terrainPhotoAlbedo},
+          {"temporalSharpness", &p.temporalSharpness},
+          {"edgeSoftness", &p.edgeSoftness},
+          {"foliageNormalSoften", &p.foliageNormalSoften},
+          {"specularOcclusion", &p.specularOcclusion},
+          {"terrainTriplanar", &p.terrainTriplanar},
+          {"stylizedLightingRamp", &p.stylizedLightingRamp},
+          {"shadowCoolBias", &p.shadowCoolBias}})
+      if (j.contains(key) && j[key].is_number())
+        *dst = j[key].get<float>();
+    p.temporalSharpness = std::clamp(p.temporalSharpness, 0.0f, .5f);
+    p.edgeSoftness = std::clamp(p.edgeSoftness, 0.0f, 1.0f);
     if (j.contains("autoExposure"))
       p.autoExposure = j["autoExposure"].get<bool>();
     if (j.contains("autoExposureSpeed"))
@@ -618,6 +658,8 @@ static void loadGraphicsSettingsImpl(const std::string &path,
     }
 
     LOG_INFO("Editor", "Loaded graphics settings from " + path);
+    atmosphere::read(j, p);
+    atmosphere::readLights(j, p);
   } catch (const std::exception &e) {
     LOG_ERROR("Editor",
               std::string("Failed to load graphics settings: ") + e.what());
@@ -629,9 +671,11 @@ void VkEditor::saveAllSettings(Context &ctx) {
   saveGraphicsSettingsImpl(gfxSettingsPath, ctx.renderer.params());
 
   if (ctx.terrainSubsystem) {
-    std::filesystem::path manifestPath =
-        std::filesystem::path(ctx.assetDir).parent_path() / "terrain_scatter.json";
-    writeScatterManifest(manifestPath.string(), ctx.terrainSubsystem->manifest());
+    // The legacy manifest belongs to Meadows; winter edits live in its profile.
+    if(ctx.terrainSubsystem->sceneryId()=="meadows") {
+      auto path=std::filesystem::path(ctx.assetDir).parent_path()/"terrain_scatter.json";
+      writeScatterManifest(path.string(),ctx.terrainSubsystem->manifest());
+    }
   }
 
   std::error_code ec;
@@ -656,6 +700,7 @@ static std::string sessionPathFor(const std::string &assetDir) {
 }
 
 void VkEditor::saveSession(Context &ctx) {
+  if(ctx.terrainSubsystem)ctx.terrainSubsystem->saveScenerySettings();
   nlohmann::json j;
   j["restoreOnStartup"] = mRestoreSessionOnStartup;
   j["scenePath"] = mScenePath;
@@ -689,6 +734,39 @@ void VkEditor::saveSession(Context &ctx) {
   std::ofstream out(sessionPathFor(ctx.assetDir));
   if (out.is_open())
     out << j.dump(2) << "\n";
+}
+
+bool VkEditor::switchScene(Context &ctx, const std::string &scenePath,
+                           bool setCamera,
+                           glm::vec3 camPos,
+                           float pitch,
+                           float yaw) {
+  if (mInPlayMode)
+    stopPlayMode(ctx);
+  releasePhysicsBodies(ctx);
+  selection = SelectionState{};
+
+  std::error_code ec;
+  if (!std::filesystem::exists(scenePath, ec)) {
+    LOG_ERROR("Editor", "Scene file does not exist: " + scenePath);
+    return false;
+  }
+
+  if (!ctx.scene.loadFromFile(scenePath)) {
+    LOG_ERROR("Editor", "Failed to load scene: " + scenePath);
+    return false;
+  }
+
+  mScenePath = scenePath;
+  if (setCamera) {
+    requestCameraSeed(camPos, yaw, pitch);
+    ctx.renderer.params().camPos = camPos;
+  }
+
+
+  saveSession(ctx);
+  LOG_INFO("Editor", "Switched scene to: " + scenePath);
+  return true;
 }
 
 void VkEditor::drawWorldMap(Context &ctx) {
@@ -822,7 +900,7 @@ void VkEditor::loadAllSettings(Context &ctx) {
 
   // Staged terrain settings restoration: load previous session settings if present,
   // but do NOT start terrain automatically on engine startup.
-  if (ctx.terrainSubsystem && j.contains("terrain")) {
+  if (ctx.terrainSubsystem && ctx.terrainSubsystem->sceneryId().empty() && j.contains("terrain")) {
     const auto &t = j["terrain"];
     TerrainSettings s = ctx.terrainSubsystem->pendingSettings();
     s.seed = t.value("seed", s.seed);
@@ -833,7 +911,10 @@ void VkEditor::loadAllSettings(Context &ctx) {
   }
 
   std::error_code ec;
-  if (!mScenePath.empty() && std::filesystem::exists(mScenePath, ec)) {
+  // If GLGEN_SCRIPT was executed at startup, the scene was already populated by that
+  // script. Restoring an old saved scene file here would call Scene::clear() and
+  // wipe out the scripted entities.
+  if (!std::getenv("GLGEN_SCRIPT") && !mScenePath.empty() && std::filesystem::exists(mScenePath, ec)) {
     if (ctx.scene.loadFromFile(mScenePath))
       LOG_INFO("Editor", "Restored scene: " + mScenePath);
     else
@@ -868,13 +949,26 @@ bool VkEditor::hasPlayerEntity(Context &ctx) const {
 uint32_t VkEditor::createPlayerEntity(Context &ctx) {
   auto &reg = ctx.scene.registry();
 
-  const glm::vec3 camPos = ctx.renderer.params().camPos;
+  glm::vec3 camPos = ctx.renderer.params().camPos;
+  if (ctx.terrainSubsystem && ctx.terrainSubsystem->hasTerrain())
+    camPos.y = ctx.terrainSubsystem->heightAt(glm::vec2(camPos.x, camPos.z)) +
+               1.62f;
   const float camYaw = ctx.renderer.params().camYawDeg;
   const float camPitch = ctx.renderer.params().camPitchDeg;
 
   const uint32_t id =
-      gameplay::spawnPlayer(reg, camPos, camYaw, camPitch,
+      gameplay::spawnPlayer(reg, camPos, camYaw - 180.f, camPitch,
                             ctx.assetDir + "/scripts/rock_thrower.lua");
+
+  // The player camera and collision capsule have no renderable geometry.
+  // Add a simple torso as a separate entity so mouse-look never tilts the body.
+  const uint32_t bodyId = ctx.scene.spawnPrimitive("cube");
+  if (bodyId != 0) {
+    reg.get<NameComponent>(bodyId).name = "Player Body";
+    auto &body = reg.get<TransformComponent>(bodyId);
+    body.position = camPos + glm::vec3(0.0f, -0.55f, 0.0f);
+    body.scale = glm::vec3(0.38f, 0.62f, 0.24f);
+  }
 
   selection.selectedEntityId = id;
   selection.selectedEntities = {id};
@@ -936,6 +1030,65 @@ uint32_t VkEditor::createSpaceshipEntity(Context &ctx) {
   return id;
 }
 
+void VkEditor::createWoodlandSwamp(Context &ctx) {
+  if (!ctx.terrainSubsystem || !ctx.terrainSubsystem->applyScenery("woodland_swamp"))
+    return;
+  if (!ctx.terrainSubsystem->hasTerrain() &&
+      !ctx.terrainSubsystem->create(ctx.terrainSubsystem->pendingSettings()))
+    return;
+  onTerrainCreated(ctx);
+  mScenerySelection = 6;
+  // Start in the authored clearing facing the pond, even if the previous
+  // terrain left the camera kilometres away from this map's focal point.
+  const float h = ctx.terrainSubsystem->heightAt({0.0f, 12.0f});
+  requestCameraSeed({0.0f, h + 4.0f, 12.0f}, 180.0f, -8.0f);
+}
+
+void VkEditor::onTerrainCreated(Context &ctx) {
+  if (!ctx.terrainSubsystem || !ctx.terrainSubsystem->hasTerrain())
+    return;
+
+  mTerrainGeneratorSettings = ctx.terrainSubsystem->settings();
+  mTerrainGeneratorSeeded = true;
+  mTerrainMaterialsSeeded = false;
+
+  const glm::vec3 curPos = ctx.renderer.params().camPos;
+  const float groundY = ctx.terrainSubsystem->heightAt(glm::vec2(curPos.x, curPos.z));
+
+  // If the editor camera is underground or too close to the surface, lift it to a comfortable
+  // vantage point above the newly generated terrain (sampling local radius to avoid slopes).
+  float localMaxGroundY = groundY;
+  for (float angle = 0.0f; angle < 6.28f; angle += 1.05f) {
+    for (float r : {8.0f, 16.0f, 24.0f}) {
+      float h = ctx.terrainSubsystem->heightAt(
+          glm::vec2(curPos.x + std::cos(angle) * r, curPos.z + std::sin(angle) * r));
+      localMaxGroundY = std::max(localMaxGroundY, h);
+    }
+  }
+
+  const float targetY = localMaxGroundY + 10.0f;
+  if (curPos.y < targetY) {
+    glm::vec3 seedPos = curPos;
+    seedPos.y = targetY;
+    float seedPitch = ctx.renderer.params().camPitchDeg;
+    if (seedPitch > -5.0f)
+      seedPitch = -18.0f; // pitch downward slightly so the landscape is framed in view
+    requestCameraSeed(seedPos, ctx.renderer.params().camYawDeg, seedPitch);
+  }
+
+  // Also ensure any player entity in the scene is placed safely on top of the ground
+  auto &reg = ctx.scene.registry();
+  for (EntityId e : reg.viewAll<CameraComponent, TransformComponent>()) {
+    auto &tr = reg.get<TransformComponent>(e);
+    const float pGroundY = ctx.terrainSubsystem->heightAt(glm::vec2(tr.position.x, tr.position.z));
+    if (tr.position.y < pGroundY + 1.0f) {
+      tr.position.y = pGroundY + 1.8f;
+    }
+  }
+
+  LOG_INFO("Editor", "Created terrain; editor camera positioned above surface");
+}
+
 void VkEditor::requestPlay(Context &ctx) {
   if (!hasPlayerEntity(ctx)) {
     LOG_ERROR("Editor", "Cannot enter Play Mode: No Player entity in scene! "
@@ -946,10 +1099,42 @@ void VkEditor::requestPlay(Context &ctx) {
   // Normally set by the first draw() of the session; a caller invoking this
   // before ever drawing a frame (e.g. a headless smoke run driving play mode
   // from frame 0) still needs a valid snapshot path.
-  if (mPlayModeSnapshotPath.empty())
-    mPlayModeSnapshotPath =
-        ctx.assetDir + "/scenes/.vk_editor_playmode_snapshot.json";
+  if (mPlayModeSnapshotPath.empty()) {
+    // Private hidden regressions must not share the live editor's play file.
+    const char* path=std::getenv("GLGEN_PLAY_SNAPSHOT");
+    mPlayModeSnapshotPath=path&&*path?path:ctx.assetDir+"/scenes/.vk_editor_playmode_snapshot.json";
+  }
   if (!mInPlayMode) {
+    auto &reg = ctx.scene.registry();
+    for (auto id : reg.viewAll<CameraComponent, TransformComponent, NameComponent>()) {
+      if (reg.get<NameComponent>(id).name != "Player") continue;
+      auto &tr = reg.get<TransformComponent>(id);
+      bool changed = false;
+      const bool badCapsule = reg.has<ColliderComponent>(id) &&
+        reg.get<ColliderComponent>(id).shape == ColliderComponent::Shape::Capsule &&
+        (reg.get<ColliderComponent>(id).offset.y >= 0 || glm::length(tr.scale-glm::vec3(1))>.001f);
+      if (reg.has<ColliderComponent>(id) && reg.has<RigidbodyComponent>(id))
+        changed = gameplay::repairPlayerCapsule(tr, reg.get<ColliderComponent>(id), reg.get<RigidbodyComponent>(id));
+      if (ctx.terrainSubsystem && ctx.terrainSubsystem->hasTerrain()) {
+        const auto &ts = ctx.terrainSubsystem->settings();
+        const auto old = tr.position;
+        auto requested = tr.position;
+        if (badCapsule) requested.y = -std::numeric_limits<float>::infinity();
+        const float eye = reg.has<ColliderComponent>(id) ? gameplay::playerEyeHeight(tr,reg.get<ColliderComponent>(id)) : 1.62f;
+        const auto viewport = ctx.renderer.params().camPos;
+        tr.position = gameplay::terrainPlayerSpawn(requested, {viewport.x,viewport.z}, ts, eye,
+          [&](glm::vec2 p) { return ctx.terrainSubsystem->heightAt(p); },
+          [&](glm::vec2 p) { return ctx.terrainSubsystem->waterAt(p); });
+        changed = changed || glm::distance(old,tr.position) > .001f;
+      }
+      if (changed && reg.has<RigidbodyComponent>(id)) {
+        auto &rb = reg.get<RigidbodyComponent>(id);
+        if (rb.bodyID != UINT32_MAX) ctx.physics.removeBody(rb.bodyID);
+        rb.bodyID = UINT32_MAX; rb.pendingImpulse = glm::vec3(0);
+        rb.pendingLinearVelocity = glm::vec3(0); rb.setLinearVelocity = true;
+        LOG_INFO("Editor", "Recovered Player spawn and upright capsule before Play");
+      }
+    }
     std::error_code ec;
     std::filesystem::create_directories(
         std::filesystem::path(mPlayModeSnapshotPath).parent_path(), ec);
@@ -1012,8 +1197,10 @@ bool VkEditor::draw(Context &ctx, const glm::mat4 &view,
     mScenePath = ctx.assetDir + "/scenes/vk_editor_scene.json";
   if (mBrowsePath.empty())
     mBrowsePath = ctx.assetDir;
-  if (mPlayModeSnapshotPath.empty())
-    mPlayModeSnapshotPath = ctx.assetDir + "/scenes/.vk_editor_playmode_snapshot.json";
+  if (mPlayModeSnapshotPath.empty()) {
+    const char* path=std::getenv("GLGEN_PLAY_SNAPSHOT");
+    mPlayModeSnapshotPath=path&&*path?path:ctx.assetDir+"/scenes/.vk_editor_playmode_snapshot.json";
+  }
 
   if (!mCommandsRegistered) {
     registerCommands(ctx);
@@ -1320,6 +1507,31 @@ void VkEditor::drawPlayModeOverlay(Context &ctx) {
   dl->AddText(ImVec2(rectMin.x + pad.x, rectMin.y + pad.y), col, label);
 }
 
+struct ScenePresetDef {
+  const char *label;
+  const char *relPath;
+  const char *desc;
+  bool hasCam;
+  glm::vec3 camPos;
+  float pitch;
+  float yaw;
+};
+
+static const ScenePresetDef kScenePresets[] = {
+    {"Wilderness Camp & Forest", "/scenes/vk_editor_scene.json",
+     "Outdoor terrain, pine forest, campsite, and wildlife", false, {}, 0.0f, 0.0f},
+    {"Cozy Village", "/scenes/cozy_village.json",
+     "Village cottages, streets, and perimeter landscape", true, {25.0f, 18.0f, 30.0f}, -25.0f, -135.0f},
+    {"Valley Village", "/scenes/valley_village.json",
+     "Rolling mountain valley nestled with village center", true, {50.0f, 35.0f, 60.0f}, -25.0f, -135.0f},
+    {"Sci-Fi Spaceship Corridor", "/scenes/spaceship_hallway.json",
+     "Futuristic spaceship hallway with volumetric neon lights", true, {0.0f, 1.8f, 8.5f}, -2.0f, 180.0f},
+    {"Virtual City Block", "/scenes/virtual_city.json",
+     "Modern metropolis block with avenues and skyscrapers", true, {0.0f, 3.0f, 10.0f}, 5.0f, 180.0f},
+    {"Sunken Pillars Temple", "/scenes/sunken_pillars.json",
+     "Ancient subterranean hall with stone columns and shadows", true, {15.0f, 10.0f, 20.0f}, -20.0f, -135.0f},
+};
+
 void VkEditor::drawMenuBar(Context &ctx) {
   if (!ImGui::BeginMainMenuBar())
     return;
@@ -1354,11 +1566,102 @@ void VkEditor::drawMenuBar(Context &ctx) {
         LOG_ERROR("Editor", "Failed to load scene: " + mScenePath);
       }
     }
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Quick Switch Scene")) {
+      for (const auto &ps : kScenePresets) {
+        const std::string fullPath = ctx.assetDir + ps.relPath;
+        std::error_code ec;
+        if (!std::filesystem::exists(fullPath, ec))
+          continue;
+        std::string curNorm = mScenePath;
+        std::replace(curNorm.begin(), curNorm.end(), '\\', '/');
+        const bool active = (curNorm.find(ps.relPath) != std::string::npos);
+        if (ImGui::MenuItem(ps.label, nullptr, active)) {
+          switchScene(ctx, fullPath, ps.hasCam, ps.camPos, ps.pitch, ps.yaw);
+        }
+      }
+      ImGui::EndMenu();
+    }
     ImGui::SetNextItemWidth(320);
     char pathBuf[512];
     std::snprintf(pathBuf, sizeof(pathBuf), "%s", mScenePath.c_str());
     if (ImGui::InputText("##ScenePath", pathBuf, sizeof(pathBuf)))
       mScenePath = pathBuf;
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("Scenes")) {
+    auto normPath = [](std::string p) {
+      std::replace(p.begin(), p.end(), '\\', '/');
+      return p;
+    };
+    const std::string curSceneNorm = normPath(mScenePath);
+
+    for (const auto &ps : kScenePresets) {
+      const std::string fullPath = ctx.assetDir + ps.relPath;
+      std::error_code ec;
+      if (!std::filesystem::exists(fullPath, ec))
+        continue;
+      const bool active = (curSceneNorm.find(ps.relPath) != std::string::npos);
+      if (ImGui::MenuItem(ps.label, nullptr, active)) {
+        switchScene(ctx, fullPath, ps.hasCam, ps.camPos, ps.pitch, ps.yaw);
+      }
+      if (ImGui::IsItemHovered() && ps.desc) {
+        ImGui::SetTooltip("%s", ps.desc);
+      }
+    }
+
+    ImGui::Separator();
+
+    // Dynamic scan: display any other saved scene files in assets/scenes/
+    const std::string scenesDir = ctx.assetDir + "/scenes";
+    std::error_code ec;
+    if (std::filesystem::exists(scenesDir, ec)) {
+      bool headerDrawn = false;
+      for (const auto &entry : std::filesystem::directory_iterator(scenesDir, ec)) {
+        if (!entry.is_regular_file())
+          continue;
+        const auto path = entry.path();
+        if (path.extension() != ".json")
+          continue;
+        const std::string filename = path.filename().string();
+        if (filename.empty() || filename[0] == '.')
+          continue; // skip hidden / snapshot files
+        bool isPreset = false;
+        for (const auto &ps : kScenePresets) {
+          if (std::string(ps.relPath).find(filename) != std::string::npos) {
+            isPreset = true;
+            break;
+          }
+        }
+        if (!isPreset) {
+          if (!headerDrawn) {
+            ImGui::TextDisabled("Other Saved Scenes:");
+            headerDrawn = true;
+          }
+          const std::string filePath = normPath(path.string());
+          const bool active = (curSceneNorm == filePath);
+          if (ImGui::MenuItem(filename.c_str(), nullptr, active)) {
+            switchScene(ctx, path.string());
+          }
+        }
+      }
+    }
+
+    ImGui::Separator();
+    if (ImGui::MenuItem("Reload Active Scene", "Ctrl+R")) {
+      switchScene(ctx, mScenePath);
+    }
+    if (ImGui::MenuItem("Save Active Scene", "Ctrl+S")) {
+      std::error_code sec;
+      std::filesystem::create_directories(
+          std::filesystem::path(mScenePath).parent_path(), sec);
+      if (ctx.scene.saveToFile(mScenePath))
+        LOG_INFO("Editor", "Saved scene: " + mScenePath);
+      else
+        LOG_ERROR("Editor", "Failed to save scene: " + mScenePath);
+    }
+
     ImGui::EndMenu();
   }
 
@@ -1369,18 +1672,57 @@ void VkEditor::drawMenuBar(Context &ctx) {
         ctx.terrainSubsystem && ctx.terrainSubsystem->hasTerrain();
     if (ImGui::MenuItem("Terrain", nullptr, false,
                         ctx.terrainSubsystem && !hasTerrain)) {
-      ctx.terrainSubsystem->create(mTerrainGeneratorSeeded
-                                       ? mTerrainGeneratorSettings
-                                       : ctx.terrainSubsystem->pendingSettings());
-      LOG_INFO("Editor", "Created terrain");
+      if (ctx.terrainSubsystem->create(mTerrainGeneratorSeeded
+                                           ? mTerrainGeneratorSettings
+                                           : ctx.terrainSubsystem->pendingSettings())) {
+        onTerrainCreated(ctx);
+      }
     }
     if (ImGui::MenuItem("Remove Terrain", nullptr, false, hasTerrain)) {
       ctx.terrainSubsystem->destroy();
       LOG_INFO("Editor", "Removed terrain");
     }
+    if (ImGui::MenuItem("Woodland & Swamp", nullptr, false,
+                        ctx.terrainSubsystem != nullptr)) {
+      createWoodlandSwamp(ctx);
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Create a fixed pond, marsh and dense woodland layout. Replaces the current terrain.");
     ImGui::Separator();
     if (ImGui::MenuItem("Player")) {
       createPlayerEntity(ctx);
+    }
+    if (ImGui::MenuItem("Player with AK-47")) {
+      auto &reg=ctx.scene.registry();
+      uint32_t id=0;
+      for(auto e:reg.view<CameraComponent>()) {
+        if(reg.has<NameComponent>(e)&&reg.get<NameComponent>(e).name=="Player"){id=e;break;}
+      }
+      if(!id)id=createPlayerEntity(ctx);
+      if(!reg.has<RifleComponent>(id))reg.emplace<RifleComponent>(id);
+      reg.get<RifleComponent>(id).state.enabled=true;
+      selection.selectedEntityId=id;selection.selectedEntities={id};
+      // The legacy rock-throwing demo also consumes LMB; an armed player
+      // must have one input owner, not throw a rock on every rifle shot.
+      if(reg.has<ScriptComponent>(id)&&reg.get<ScriptComponent>(id).scriptPath.find("rock_thrower")!=std::string::npos)
+        reg.get<ScriptComponent>(id).scriptPath.clear();
+    }
+    if (ImGui::MenuItem("AK-47 (world prop)")) {
+      const auto id=ctx.scene.spawnFromFile(ctx.assetDir+"/weapons/ak47/ak47.gltf");
+      if(id){selection.selectedEntityId=id;selection.selectedEntities={id};}
+    }
+    if (ImGui::MenuItem("Shooting target")) {
+      auto id=ctx.scene.spawnPrimitive("cube");
+      auto &reg=ctx.scene.registry();
+      reg.get<NameComponent>(id).name="Shooting target";
+      const auto &p=ctx.renderer.params();
+      const auto yaw=glm::radians(p.camYawDeg),pitch=glm::radians(p.camPitchDeg);
+      reg.get<TransformComponent>(id).position=p.camPos+glm::vec3(std::cos(pitch)*std::sin(yaw),std::sin(pitch),std::cos(pitch)*std::cos(yaw))*12.f;
+      reg.get<TransformComponent>(id).scale={.7f,1.4f,.2f};
+      reg.emplace<DestructibleComponent>(id).health=100;
+      reg.emplace<ColliderComponent>(id).shape=ColliderComponent::Shape::Box;
+      reg.emplace<RigidbodyComponent>(id).type=RigidbodyComponent::Type::Static;
+      selection.selectedEntityId=id;selection.selectedEntities={id};
     }
     if (ImGui::MenuItem("Spaceship")) {
       createSpaceshipEntity(ctx);
@@ -1431,6 +1773,106 @@ void VkEditor::drawMenuBar(Context &ctx) {
           } else {
             LOG_ERROR("Editor", std::string("Failed to spawn ") + prop.label);
           }
+        }
+      }
+      ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Wildlife")) {
+      if (ImGui::MenuItem("Populate Living World")) {
+        std::string err;
+        if (ctx.scriptSystem)
+          ctx.scriptSystem->execString("dofile('assets/scripts/wildlife_manager.lua')", err);
+        LOG_INFO("Editor", "Spawned living wildlife and wilderness camp");
+      }
+      ImGui::Separator();
+      if (ImGui::MenuItem("Woodland Deer")) {
+        glm::vec3 pos = ctx.renderer.params().camPos;
+        pos += glm::vec3(0, 0, -5.0f);
+        if (ctx.terrainSubsystem && ctx.terrainSubsystem->hasTerrain())
+          pos.y = ctx.terrainSubsystem->heightAt(glm::vec2(pos.x, pos.z));
+        uint32_t e = ctx.scene.registry().create();
+        ctx.scene.registry().emplace<TransformComponent>(e).position = pos;
+        ctx.scene.registry().emplace<MeshComponent>(e).assetId = "gen://kitbash.v1/wildlife/deer";
+        ctx.scene.registry().emplace<NameComponent>(e, NameComponent("Deer"));
+        auto &sc = ctx.scene.registry().emplace<ScriptComponent>(e);
+        sc.scriptPath = "assets/scripts/wildlife_ai.lua";
+        selection.selectedEntityId = e;
+        selection.selectedEntities = {e};
+      }
+      if (ImGui::MenuItem("Wild Rabbit")) {
+        glm::vec3 pos = ctx.renderer.params().camPos;
+        pos += glm::vec3(0, 0, -3.0f);
+        if (ctx.terrainSubsystem && ctx.terrainSubsystem->hasTerrain())
+          pos.y = ctx.terrainSubsystem->heightAt(glm::vec2(pos.x, pos.z));
+        uint32_t e = ctx.scene.registry().create();
+        ctx.scene.registry().emplace<TransformComponent>(e).position = pos;
+        ctx.scene.registry().emplace<MeshComponent>(e).assetId = "gen://kitbash.v1/wildlife/rabbit";
+        ctx.scene.registry().emplace<NameComponent>(e, NameComponent("Rabbit"));
+        auto &sc = ctx.scene.registry().emplace<ScriptComponent>(e);
+        sc.scriptPath = "assets/scripts/wildlife_ai.lua";
+        selection.selectedEntityId = e;
+        selection.selectedEntities = {e};
+      }
+      if (ImGui::MenuItem("Red Fox")) {
+        glm::vec3 pos = ctx.renderer.params().camPos;
+        pos += glm::vec3(0, 0, -4.0f);
+        if (ctx.terrainSubsystem && ctx.terrainSubsystem->hasTerrain())
+          pos.y = ctx.terrainSubsystem->heightAt(glm::vec2(pos.x, pos.z));
+        uint32_t e = ctx.scene.registry().create();
+        ctx.scene.registry().emplace<TransformComponent>(e).position = pos;
+        ctx.scene.registry().emplace<MeshComponent>(e).assetId = "gen://kitbash.v1/wildlife/fox";
+        ctx.scene.registry().emplace<NameComponent>(e, NameComponent("Fox"));
+        auto &sc = ctx.scene.registry().emplace<ScriptComponent>(e);
+        sc.scriptPath = "assets/scripts/wildlife_ai.lua";
+        selection.selectedEntityId = e;
+        selection.selectedEntities = {e};
+      }
+      if (ImGui::MenuItem("Soaring Hawk")) {
+        glm::vec3 pos = ctx.renderer.params().camPos;
+        pos.y += 28.0f;
+        uint32_t e = ctx.scene.registry().create();
+        ctx.scene.registry().emplace<TransformComponent>(e).position = pos;
+        ctx.scene.registry().emplace<MeshComponent>(e).assetId = "gen://kitbash.v1/wildlife/bird";
+        ctx.scene.registry().emplace<NameComponent>(e, NameComponent("Hawk"));
+        auto &sc = ctx.scene.registry().emplace<ScriptComponent>(e);
+        sc.scriptPath = "assets/scripts/wildlife_ai.lua";
+        selection.selectedEntityId = e;
+        selection.selectedEntities = {e};
+      }
+      ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Props & Camp")) {
+      if (ImGui::MenuItem("Wilderness Basecamp (Full)")) {
+        std::string err;
+        if (ctx.scriptSystem)
+          ctx.scriptSystem->execString("dofile('assets/scripts/wildlife_manager.lua')", err);
+        LOG_INFO("Editor", "Spawned wilderness basecamp");
+      }
+      ImGui::Separator();
+      struct PropDef { const char *label; const char *id; };
+      static const PropDef kPropDefs[] = {
+          {"Campfire", "gen://kitbash.v1/prop/campfire"},
+          {"Canvas Tent", "gen://kitbash.v1/prop/tent"},
+          {"Storm Lantern", "gen://kitbash.v1/prop/lantern"},
+          {"Log Bench", "gen://kitbash.v1/prop/log_bench"},
+          {"Wooden Barrel", "gen://kitbash.v1/prop/barrel"},
+          {"Trail Guidepost", "gen://kitbash.v1/prop/signpost"},
+          {"Trail Cairn", "gen://kitbash.v1/prop/cairn"},
+          {"Forest Mushrooms", "gen://kitbash.v1/prop/mushrooms"},
+      };
+      for (const auto &p : kPropDefs) {
+        if (ImGui::MenuItem(p.label)) {
+          glm::vec3 pos = ctx.renderer.params().camPos;
+          pos += glm::vec3(0, 0, -3.5f);
+          if (ctx.terrainSubsystem && ctx.terrainSubsystem->hasTerrain())
+            pos.y = ctx.terrainSubsystem->heightAt(glm::vec2(pos.x, pos.z));
+          uint32_t e = ctx.scene.registry().create();
+          ctx.scene.registry().emplace<TransformComponent>(e).position = pos;
+          ctx.scene.registry().emplace<MeshComponent>(e).assetId = p.id;
+          ctx.scene.registry().emplace<NameComponent>(e, NameComponent(p.label));
+          selection.selectedEntityId = e;
+          selection.selectedEntities = {e};
+          LOG_INFO("Editor", std::string("Spawned ") + p.label);
         }
       }
       ImGui::EndMenu();
@@ -1506,6 +1948,9 @@ void VkEditor::drawMenuBar(Context &ctx) {
         // work and a restart would still come back empty.
         saveSession(ctx);
       }
+    }
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+      switchScene(ctx, mScenePath);
     }
     // Viewport & Selection shortcuts: skipped only while actively typing in a text field
     if (!io.WantTextInput) {
@@ -2533,6 +2978,23 @@ void VkEditor::drawEnvSky(Context &ctx) {
 void VkEditor::drawEnvLight(Context &ctx) {
   vkrhi::VulkanRenderer::Params &p = ctx.renderer.params();
 
+  envSection("Point Lights");
+  int lightCount=int(p.pointLightCount);
+  if(envRow("Count") && ImGui::SliderInt("##Point Light Count",&lightCount,0,4))
+    p.pointLightCount=uint32_t(lightCount);
+  for(uint32_t i=0;i<p.pointLightCount;++i) {
+    ImGui::PushID(int(i));
+    auto& light=p.pointLights[i];
+    if(envRow("Position")) ImGui::DragFloat3("##Position",&light.position.x,.1f);
+    if(envRow("Colour")) ImGui::ColorEdit3("##Colour",&light.color.x);
+    if(envRow("Radiance")) ImGui::DragFloat("##Radiance",&light.intensity,.1f,0,0,"%.2f");
+    if(envRow("Radius")) ImGui::DragFloat("##Radius",&light.radius,.1f,.1f,1000,"%.1f m");
+    if(envRow("Fog Participation")) ImGui::SliderFloat("##Fog Participation",&light.volumetricParticipation,0,1);
+    if(envRow("Fog Shadows")) ImGui::Checkbox("##Fog Shadows",&light.volumetricShadows);
+    light.intensity=std::max(0.f,light.intensity);
+    ImGui::PopID();
+  }
+
   envSection("Ambient Light");
   if (envRow("Ambient Intensity"))
     ImGui::SliderFloat("##Ambient Intensity", &p.ambientIntensity, 0.0f, 2.0f);
@@ -2572,26 +3034,20 @@ void VkEditor::drawEnvLight(Context &ctx) {
         "themselves.");
   }
   if (envRow("AO Strength"))
-    ImGui::SliderFloat("##AO Strength", &p.aoStrength, 0.0f, 1.0f);
+    ImGui::SliderFloat("##AO Strength", &p.aoStrength, 0.0f, 3.0f);
 }
 
 void VkEditor::drawEnvFog(Context &ctx) {
   vkrhi::VulkanRenderer::Params &p = ctx.renderer.params();
 
-  envSection("God Rays");
-  if (envRow("God Rays"))
+  envSection("Dust Scattering");
+  if (envRow("Dust Medium"))
     ImGui::Checkbox("##God Rays (ray-traced)", &p.volumetricEnabled);
   if (p.volumetricEnabled) {
-    if (envRow("God Ray Intensity")) {
-      // Ceiling raised well past the old 3.0 cap (and the new, already
-      // dramatic 4.5 default) -- the shader applies this as a
-      // straight-through multiplier with no clamp, so there's real headroom
-      // above the default for an even more intense look.
+    if (envRow("Scattering Albedo")) {
       ImGui::SliderFloat("##God Ray Intensity", &p.volumetricIntensity, 0.0f,
-                         20.0f);
-      Tip("Brightness of the visible sun/light-shaft rays. The default is "
-          "already strong -- push higher for a dramatic, hazy-atmosphere "
-          "look.");
+                         1.0f);
+      Tip("Fraction of dust extinction that scatters light, bounded between zero and one.");
     }
     if (envRow("Anisotropy")) {
       ImGui::SliderFloat("##Anisotropy", &p.volumetricAnisotropy, 0.0f, 0.95f);
@@ -2599,13 +3055,9 @@ void VkEditor::drawEnvFog(Context &ctx) {
           "toward the sun (more realistic).");
     }
     if (envRow("March Distance")) {
-      ImGui::SliderFloat("##March Distance", &p.volumetricMaxDist, 10.0f,
+      ImGui::SliderFloat("##March Distance", &p.atmosphere.range, 10.0f,
                          300.0f, "%.0f m");
-      Tip("How far the volumetric ray march reaches. Longer = costlier.");
-    }
-    if (envRow("March Steps")) {
-      ImGui::SliderInt("##March Steps", &p.volumetricSteps, 4, 32);
-      Tip("Samples along each march ray. More = smoother shafts, slower.");
+      Tip("Range of the fog grid. Global height fog continues analytically beyond it.");
     }
     if (envRow("God Ray Density")) {
       ImGui::SliderFloat("##God Ray Density", &p.volumetricDensityScale, 0.1f,
@@ -2650,6 +3102,34 @@ void VkEditor::drawEnvFog(Context &ctx) {
   // separate sections because they are separate looks -- valley fog is a
   // weather choice, aerial perspective is a scale choice.
   envSection("Ground Fog");
+  if (envRow("Unified Fog")) ImGui::Checkbox("##Unified Fog", &p.atmosphere.enabled);
+  if (envRow("Quality")) {
+    int quality=int(p.atmosphere.quality);
+    if(ImGui::Combo("##Fog Quality",&quality,"Balanced\0High\0")) p.atmosphere.quality=atmosphere::Quality(quality);
+  }
+  if (envRow("Range")) ImGui::SliderFloat("##Fog Range",&p.atmosphere.range,30,500,"%.0f m");
+  if (envRow("Temporal History")) ImGui::Checkbox("##Fog History",&p.atmosphere.history);
+  if (envRow("History Weight")) ImGui::SliderFloat("##Fog History Weight",&p.atmosphere.historyWeight,0,.9f);
+  if (envRow("Canopy Visibility")) ImGui::Checkbox("##Canopy Visibility",&p.atmosphere.skyVisibility);
+  if (envRow("Physical Sky LUTs")) ImGui::Checkbox("##Physical Sky LUTs",&p.atmosphere.physicalSky);
+  if (envRow("Cloud Shadows")) ImGui::Checkbox("##Cloud Shadows",&p.atmosphere.cloudShadows);
+  if (envRow("Cloud History")) ImGui::Checkbox("##Cloud History",&p.atmosphere.cloudHistory);
+  if (envRow("Histogram Exposure")) ImGui::Checkbox("##Histogram Exposure",&p.atmosphere.histogramExposure);
+  if (envRow("Exposure Key")) ImGui::SliderFloat("##Exposure Key",&p.atmosphere.exposureKey,.001f,1,"%.3f");
+  if (envRow("Exposure Minimum")) ImGui::DragFloat("##Exposure Minimum",&p.atmosphere.exposureMin,.001f,1e-6f,10000,"%.4f");
+  if (envRow("Exposure Maximum")) ImGui::DragFloat("##Exposure Maximum",&p.atmosphere.exposureMax,.1f,p.atmosphere.exposureMin,10000,"%.2f");
+  if (envRow("Valley Pooling")) ImGui::Checkbox("##Valley Pooling",&p.atmosphere.valleyPooling);
+  if (envRow("Valley Extinction")) ImGui::SliderFloat("##Valley Extinction",&p.atmosphere.valleyExtinction,0,.05f,"%.4f m^-1");
+  if (envRow("Valley Depth")) ImGui::SliderFloat("##Valley Depth",&p.atmosphere.valleyDepth,0,64,"%.1f m");
+  if (envRow("Directional Shadows")) ImGui::Checkbox("##Fog Directional Shadows",&p.atmosphere.directionalShadows);
+
+  if (envRow("Scattering Albedo")) ImGui::ColorEdit3("##Fog Albedo", &p.atmosphere.groundAlbedo.x);
+  if (envRow("Artistic Tint")) ImGui::SliderFloat("##Fog Tint Strength", &p.atmosphere.groundTintStrength, 0, 1);
+  if (envRow("Terrain Mist")) ImGui::Checkbox("##Terrain Mist", &p.atmosphere.terrainMist);
+  if (envRow("Terrain Density")) ImGui::SliderFloat("##Terrain Mist Density", &p.atmosphere.terrainExtinction, 0, .03f, "%.4f /m");
+  if (envRow("Terrain Falloff")) ImGui::SliderFloat("##Terrain Mist Falloff", &p.atmosphere.terrainFalloff, .01f, 2);
+  if (envRow("Water Mist Boost")) ImGui::SliderFloat("##Water Mist Boost", &p.atmosphere.waterBoost, 0, 5);
+
   // Density range sized for the ~400 m world: 0.05 is already a whiteout
   // by 50 m, so the useful band is well below the old 0.2 cap.
   if (envRow("Density")) {
@@ -2947,6 +3427,11 @@ void VkEditor::drawEnvStyle(Context &ctx) {
 
   // --- volumetric layer ---------------------------------------------------
   envSection("Volumetric Clouds");
+  if (envRow("Painted Clouds")) {
+    ImGui::Checkbox("##Painted Clouds", &s.paintedClouds);
+    Tip("Smooth painted clouds replace the volumetric layer. Coverage, "
+        "softness, deck height and the cloud palette shape this sky.");
+  }
   if (envRow("Volumetric Clouds")) {
     ImGui::Checkbox("##Volumetric Clouds", &s.cloudVolumetricEnabled);
     Tip("Nubis-style raymarched cloudscape: a Perlin-Worley profile shaped by "
@@ -3097,10 +3582,23 @@ void VkEditor::drawEnvPost(Context &ctx) {
   }
 
   envSection("Tonemap & Grade");
+  if (envRow("Temporal anti-aliasing"))
+    ImGui::Checkbox("##TemporalAA", &p.temporalAA);
+  if (envRow("Temporal detail"))
+    ImGui::SliderFloat("##Temporal detail", &p.temporalSharpness, 0.0f, .5f);
+  if (envRow("Edge softness")) {
+    ImGui::SliderFloat("##Edge softness", &p.edgeSoftness, 0.0f, 1.0f);
+    Tip("Softens high-contrast silhouettes gradually from 5 to 100 metres. "
+        "Nearby objects stay sharper; grass keeps full softening at every distance. "
+        "Zero disables extra softening; anti-aliasing remains available.");
+  }
   if (envRow("Tonemap Mode")) {
-    const char *tonemapModes[] = {"Painterly", "ACES", "Reinhard", "Linear"};
+    const char *tonemapModes[] = {"Painterly", "ACES", "Reinhard", "Linear",
+                                  "AgX (filmic)"};
     ImGui::Combo("##Tonemap Mode", &p.tonemapMode, tonemapModes,
                  IM_ARRAYSIZE(tonemapModes));
+    Tip("AgX is the photoreal choice: bright saturated light desaturates "
+        "toward white like film instead of shifting hue or clipping.");
   }
   if (envRow("Gamma"))
     ImGui::SliderFloat("##Gamma", &p.gamma, 1.0f, 3.0f);
@@ -3111,25 +3609,29 @@ void VkEditor::drawEnvPost(Context &ctx) {
   if (envRow("Vignette"))
     ImGui::SliderFloat("##Vignette", &p.vignette, 0.0f, 1.0f);
 
+  envSection("Realism");
+  if (envRow("Photo Terrain Albedo")) {
+    ImGui::SliderFloat("##Photo Terrain Albedo", &p.terrainPhotoAlbedo, 0.0f,
+                       1.0f);
+    Tip("0 = painted palette colours, 1 = the photographic ground textures.");
+  }
+  if (envRow("Rock Triplanar"))
+    ImGui::SliderFloat("##Rock Triplanar", &p.terrainTriplanar, 0.0f, 1.0f);
+  if (envRow("Canopy Normal Soften")) {
+    ImGui::SliderFloat("##Canopy Normal Soften", &p.foliageNormalSoften, 0.0f,
+                       1.0f);
+    Tip("Rounds foliage normals toward the crown's volume so low-poly "
+        "canopies shade like leaf masses rather than flat facets.");
+  }
+  if (envRow("Specular Occlusion"))
+    ImGui::SliderFloat("##Specular Occlusion", &p.specularOcclusion, 0.0f, 1.0f);
+
   envSection("Bloom");
-  if (envRow("Bloom Threshold")) {
-    ImGui::SliderFloat("##Bloom Threshold", &p.bloomThreshold, 0.0f, 5.0f);
-    Tip("Brightness where bloom starts collecting light.");
-  }
-  if (envRow("Bloom Knee")) {
-    ImGui::SliderFloat("##Bloom Knee", &p.bloomKnee, 0.0f, 2.0f);
-    Tip("Softness of the threshold: higher = gentler roll-in below the "
-        "threshold.");
-  }
-  if (envRow("Bloom Intensity"))
-    ImGui::SliderFloat("##Bloom Intensity", &p.bloomIntensity, 0.0f, 1.0f);
-  if (envRow("Bloom Spread")) {
-    ImGui::SliderFloat("##Bloom Spread", &p.bloomWideIntensity, 0.0f, 1.5f);
-    Tip("How far the glow reaches beyond the tight core, relative to Bloom "
-        "Intensity. Lower this (toward 0) to keep bloom localized around "
-        "bright spots instead of hazing the whole screen; the core glow "
-        "around bright pixels is unaffected.");
-  }
+  if (envRow("Bloom Strength"))
+    ImGui::SliderFloat("##Bloom Strength", &p.atmosphere.bloomStrength, 0.0f, 1.0f);
+  if (envRow("Suppress Fireflies"))
+    ImGui::Checkbox("##Bloom Fireflies", &p.atmosphere.bloomFireflySuppression);
+
 }
 
 void VkEditor::drawEnvTerrainTab(Context &ctx) {
@@ -3185,6 +3687,8 @@ void VkEditor::drawTerrainMaterials(Context &ctx) {
       std::snprintf(panel.roughnessPath, sizeof(panel.roughnessPath), "%s",
                    slot.roughnessPath.c_str());
       panel.tiling = slot.tiling;
+      std::snprintf(panel.heightPath, sizeof(panel.heightPath), "%s", slot.heightPath.c_str());
+      panel.reliefDepth = slot.reliefDepth;
     }
     mTerrainMaterialsSeeded = true;
   }
@@ -3201,9 +3705,19 @@ void VkEditor::drawTerrainMaterials(Context &ctx) {
     // Path edits intentionally don't auto-apply (that would mean a disk
     // load per keystroke) -- only the "Reload Textures" button below
     // commits the staged buffers back to Params.
-    if (envRow("Paint Overlay"))
-      ImGui::InputText("##Paint Overlay", panel.albedoPath,
+    if (envRow("Base Color"))
+      ImGui::InputText("##Base Color", panel.albedoPath,
                        sizeof(panel.albedoPath));
+    if (envRow("Normal Map"))
+      ImGui::InputText("##Normal Map", panel.normalPath, sizeof(panel.normalPath));
+    if (envRow("Roughness Map"))
+      ImGui::InputText("##Roughness Map", panel.roughnessPath, sizeof(panel.roughnessPath));
+    if (envRow("Height Map"))
+      ImGui::InputText("##Height Map", panel.heightPath, sizeof(panel.heightPath));
+    if (envRow("Relief Depth")) {
+      ImGui::SliderFloat("##Relief Depth", &panel.reliefDepth, 0.0f, .2f, "%.3f m");
+      Tip("Height-map relief in metres. Zero disables parallax; fades out at distance.");
+    }
     if (envRow("Tiling")) {
       ImGui::SliderFloat("##Tiling", &panel.tiling, 0.5f, 32.0f,
                          "%.1f m/repeat");
@@ -3221,6 +3735,8 @@ void VkEditor::drawTerrainMaterials(Context &ctx) {
         slot.normalPath = panel.normalPath;
         slot.roughnessPath = panel.roughnessPath;
         slot.tiling = panel.tiling;
+        slot.heightPath = panel.heightPath;
+        slot.reliefDepth = panel.reliefDepth;
       }
       p.terrainMaterialsDirty = true;
     }
@@ -3401,6 +3917,70 @@ void VkEditor::updateTerrainBrush(Context &ctx, const glm::mat4 &view,
 }
 
 void VkEditor::drawTerrainGenerator(Context &ctx) {
+  if(ctx.terrainSubsystem) {
+    if(mScenerySelection<0) {
+      const auto id = ctx.terrainSubsystem->sceneryId();
+      mScenerySelection = (id == "woodland_swamp") ? 6 :
+                          (id == "alpine_flyby") ? 5 :
+                          (id == "the_long_dark_blizzard") ? 4 :
+                          (id == "the_long_dark_night") ? 3 :
+                          (id == "the_long_dark") ? 2 :
+                          (id == "bleak_winter" ? 1 : 0);
+    }
+    ImGui::Combo("Scenery",&mScenerySelection,"Meadows\0Bleak Winter\0The Long Dark\0The Long Dark (Aurora Night)\0The Long Dark (Blizzard)\0Alpine Fly-by\0Woodland & Swamp\0");
+    if(ImGui::Button("Apply Scenery",ImVec2(-1,0))) {
+      if(mTerrainGeneratorSeeded)
+        ctx.terrainSubsystem->stageSettings(mTerrainGeneratorSettings);
+      const char *sceneryTarget = mScenerySelection == 6 ? "woodland_swamp" :
+                                 (mScenerySelection == 5 ? "alpine_flyby" :
+                                  (mScenerySelection == 4 ? "the_long_dark_blizzard" :
+                                  (mScenerySelection == 3 ? "the_long_dark_night" :
+                                  (mScenerySelection == 2 ? "the_long_dark" :
+                                  (mScenerySelection == 1 ? "bleak_winter" : "meadows")))));
+      if(ctx.terrainSubsystem->applyScenery(sceneryTarget)) {
+        mTerrainGeneratorSettings=ctx.terrainSubsystem->hasTerrain()?
+          ctx.terrainSubsystem->settings():ctx.terrainSubsystem->pendingSettings();
+        mTerrainGeneratorSeeded=true;mTerrainMaterialsSeeded=false;
+        if (ctx.terrainSubsystem->hasTerrain()) {
+          onTerrainCreated(ctx);
+        }
+      }
+    }
+    auto &p=ctx.renderer.params();
+    if(ImGui::TreeNode("Settled Snow")) {
+      ImGui::SliderFloat("Coverage",&p.snowCoverage,0,1);
+      ImGui::SliderFloat("Patch scale (m)",&p.snowPatchScale,1,60);
+      ImGui::SliderFloat("Slope rejection",&p.snowSlopeLimit,.05f,.9f);
+      ImGui::ColorEdit3("Snow tint",&p.snowTint.x);
+      ImGui::SliderFloat("Snow roughness",&p.snowRoughness,.35f,1);
+      ImGui::SliderFloat("Snow sparkle",&p.snowSparkle,0,2);
+      ImGui::SliderFloat("Sastrugi wind drift",&p.snowWindDrift,0,1);
+      ImGui::SliderFloat("Subsurface cyan",&p.snowSubsurface,0,1);
+      ImGui::TreePop();
+    }
+    if(ImGui::TreeNode("Frozen Ice")) {
+      ImGui::Checkbox("Ice enabled",&p.iceEnabled);
+      ImGui::SliderFloat("Ice roughness",&p.iceRoughness,.01f,1);
+      ImGui::SliderFloat("Ice clarity",&p.iceClarity,.5f,20);
+      ImGui::SliderFloat("Ice cracks",&p.iceCracksStrength,0,2);
+      ImGui::SliderFloat("Ice frost coverage",&p.iceFrostCoverage,0,1);
+      ImGui::ColorEdit3("Ice tint",&p.iceTint.x);
+      ImGui::TreePop();
+    }
+    if(ImGui::TreeNode("The Long Dark Atmosphere")) {
+      ImGui::Checkbox("Aurora enabled",&p.auroraEnabled);
+      ImGui::SliderFloat("Aurora intensity",&p.auroraIntensity,0,3);
+      ImGui::SliderFloat("Aurora speed",&p.auroraSpeed,0,2);
+      ImGui::SliderFloat("Aurora ground glow",&p.auroraGroundGlow,0,3);
+      ImGui::SliderFloat("Blizzard strength",&p.blizzardStrength,0,1);
+      ImGui::SliderFloat("Frost vignette",&p.frostVignetteStrength,0,1);
+      ImGui::SliderFloat("Stylized lighting ramp",&p.stylizedLightingRamp,0,1);
+      ImGui::SliderFloat("Shadow cool bias",&p.shadowCoolBias,0,1);
+      ImGui::TreePop();
+    }
+    ImGui::Separator();
+  }
+
   // No terrain yet: offer to create it rather than showing sliders that
   // silently do nothing, which is what the panel used to do before terrain
   // became opt-in.
@@ -3418,9 +3998,11 @@ void VkEditor::drawTerrainGenerator(Context &ctx) {
     ImGui::DragInt("View Distance (chunks)##newterrain",
                    &mTerrainGeneratorSettings.viewDistanceChunks, 1, 1, 32);
     ImGui::Spacing();
+    ctx.terrainSubsystem->stageSettings(mTerrainGeneratorSettings);
     if (ImGui::Button("Create Terrain", ImVec2(-1, 0))) {
-      ctx.terrainSubsystem->create(mTerrainGeneratorSettings);
-      LOG_INFO("Editor", "Created terrain");
+      if (ctx.terrainSubsystem->create(mTerrainGeneratorSettings)) {
+        onTerrainCreated(ctx);
+      }
     }
     return;
   }
@@ -3460,7 +4042,7 @@ void VkEditor::drawTerrainGenerator(Context &ctx) {
     apply |= ImGui::IsItemDeactivatedAfterEdit();
   }
   if (envRow("View Distance")) {
-    ImGui::SliderInt("##View Distance", &s.viewDistanceChunks, 1, 16);
+    ImGui::SliderInt("##View Distance", &s.viewDistanceChunks, 1, 40);
     apply |= ImGui::IsItemDeactivatedAfterEdit();
     Tip("Streaming radius in chunks around the camera.");
   }
@@ -3530,6 +4112,11 @@ void VkEditor::drawTerrainGenerator(Context &ctx) {
     ImGui::Checkbox("##Use Ridge Noise", &s.useRidgeNoise);
     apply |= ImGui::IsItemDeactivatedAfterEdit();
     Tip("Sharp mountain ridgelines instead of rounded hills.");
+  }
+  if (s.useRidgeNoise && envRow("Ridge Blend")) {
+    ImGui::SliderFloat("##Ridge Blend", &s.ridgeBlend, 0.0f, 1.0f, "%.2f");
+    apply |= ImGui::IsItemDeactivatedAfterEdit();
+    Tip("Blend sharp ridgelines toward rounded mountain peaks.");
   }
 
   envSection("Biome Layout");
@@ -3682,18 +4269,15 @@ void VkEditor::drawTerrainGenerator(Context &ctx) {
     ImGui::SliderFloat("##Grass Root Shading", &s.grassOcclusionStrength, 0.0f,
                        2.0f, "%.2fx");
     apply |= ImGui::IsItemDeactivatedAfterEdit();
-    Tip("Ambient occlusion baked into each blade: darker at the root, fading "
-        "to none at the tip. This is what makes grass look like it is "
-        "growing OUT of the ground instead of resting on it. Costs nothing.");
+    Tip("Darkens grass roots and the ground beneath grass patches. Higher "
+        "values give denser patches more contact shade.");
   }
   if (envRow("Grass Casts Shadows")) {
     ImGui::Checkbox("##Grass Casts Shadows", &s.grassCastShadows);
     apply |= ImGui::IsItemDeactivatedAfterEdit();
-    Tip("Puts grass in the ray-traced shadow pass so it casts real shadows "
-        "on the ground and on itself. EXPENSIVE -- one shadow-tracing entry "
-        "per clump, and there are tens of thousands. Grass already RECEIVES "
-        "shadows from trees and terrain with this off; Grass Root Shading is "
-        "the cheap approximation of the rest.");
+    Tip("Allows shadow casting for grass layers that explicitly request it. "
+        "Stock meadow grass uses soft ground shading and keeps blade casting "
+        "disabled. Grass still receives shadows from trees and terrain.");
   }
   if (envRow("Grass Draw Distance")) {
     ImGui::SliderFloat("##Grass Draw Distance", &s.grassDrawDistanceMultiplier,
@@ -3938,7 +4522,20 @@ void VkEditor::drawQuadrantWireframeContent(Context &ctx) {
     ImGui::Text("Terrain: %s", hasTerrain ? "active" : "none");
     ImGui::Text("Instances Drawn: %u (culled %u)", fs.instancesDrawn,
                 fs.instancesCulled);
-    ImGui::Text("Vegetation Instances: %u", fs.vegInstancesDrawn);
+    ImGui::Text("Vegetation Instances: %u (%.2f M triangles)", fs.vegInstancesDrawn,
+                double(fs.vegTrianglesDrawn) / 1e6);
+    ImGui::Text("GPU: %.1f ms | depth %.1f | scene %.1f", fs.gpuTotalMs,
+                fs.gpuDepthMs, fs.gpuSceneMs);
+    ImGui::Text("Prepare %.1f | atmosphere %.1f | water %.1f | post %.1f ms",
+                fs.gpuPrepareMs, fs.gpuAtmosphereMs, fs.gpuWaterMs, fs.gpuPostMs);
+    ImGui::Text("Fog visibility / injection / history / integration: %.2f / %.2f / %.2f / %.2f ms",
+        fs.gpuFogVisibilityMs, fs.gpuFogInjectionMs, fs.gpuFogHistoryMs, fs.gpuFogIntegrationMs);
+    ImGui::Text("Sky / clouds / SSAO / bloom: %.2f / %.2f / %.2f / %.2f ms; atmosphere %.1f MiB",
+        fs.gpuSkyEnvironmentMs, fs.gpuCloudsMs, fs.gpuSSAOMs, fs.gpuBloomMs, fs.atmosphereAllocatedBytes/1048576.0);
+    ImGui::Text("Sky LUTs / cloud shadows: %.2f / %.2f ms",fs.gpuSkyLutsMs,fs.gpuCloudShadowMs);
+    ImGui::Text("Cloud history: %.2f ms, %.2f MiB",fs.gpuCloudHistoryMs,fs.cloudHistoryAllocatedBytes/1048576.0);
+    ImGui::Text("Cloud detail asset: %.2f MiB",fs.cloudDetailAllocatedBytes/1048576.0);
+    ImGui::Text("Meter: %.2f ms, luminance %.4f",fs.gpuExposureMeterMs,fs.meteredLuminance);
     ImGui::Text("TLAS Instances: %u", fs.tlasInstances);
     ImGui::Text("Mesh Slots: %u live, %u free", fs.meshSlotsLive,
                 fs.meshSlotsFree);
@@ -4103,6 +4700,18 @@ void VkEditor::registerCommands(Context &ctx) {
     LOG_INFO("Editor", "New scene");
   });
 
+  // ── Scenes ──────────────────────────────────────────────────────────
+  for (const auto &ps : kScenePresets) {
+    const std::string fullPath = c->assetDir + ps.relPath;
+    const std::string label = std::string("Switch Scene: ") + ps.label;
+    mPalette.add(ICON_FOLDER_OPEN, "Scenes", label, [this, c, ps, fullPath] {
+      switchScene(*c, fullPath, ps.hasCam, ps.camPos, ps.pitch, ps.yaw);
+    });
+  }
+  mPalette.add(ICON_FOLDER_OPEN, "Scenes", "Reload Active Scene", [this, c] {
+    switchScene(*c, mScenePath);
+  }, "Ctrl+R");
+
   // ── Create ──────────────────────────────────────────────────────────
   mPalette.add(ICON_PERSON, "Create", "Player",
                [this, c] { createPlayerEntity(*c); });
@@ -4129,17 +4738,68 @@ void VkEditor::registerCommands(Context &ctx) {
   }
   mPalette.add(ICON_MOUNTAIN, "Create", "Terrain", [this, c] {
     if (c->terrainSubsystem && !c->terrainSubsystem->hasTerrain()) {
-      c->terrainSubsystem->create(mTerrainGeneratorSeeded
+      if (c->terrainSubsystem->create(mTerrainGeneratorSeeded
                                       ? mTerrainGeneratorSettings
-                                      : c->terrainSubsystem->pendingSettings());
+                                      : c->terrainSubsystem->pendingSettings())) {
+        onTerrainCreated(*c);
+      }
       LOG_INFO("Editor", "Created terrain");
     }
+  });
+  mPalette.add(ICON_MOUNTAIN, "Create", "Woodland & Swamp", [this, c] {
+    createWoodlandSwamp(*c);
   });
   mPalette.add(ICON_TRASH, "Create", "Remove Terrain", [c] {
     if (c->terrainSubsystem && c->terrainSubsystem->hasTerrain()) {
       c->terrainSubsystem->destroy();
       LOG_INFO("Editor", "Removed terrain");
     }
+  });
+  mPalette.add(ICON_PERSON, "Spawn", "Living World (Wildlife & Campsite)", [c] {
+    std::string err;
+    if (c->scriptSystem)
+      c->scriptSystem->execString("dofile('assets/scripts/wildlife_manager.lua')", err);
+    LOG_INFO("Editor", "Spawned living world: wildlife and camp");
+  });
+  mPalette.add(ICON_CUBE, "Spawn", "Wildlife: Woodland Deer", [this, c] {
+    glm::vec3 pos = c->renderer.params().camPos;
+    pos += glm::vec3(0, 0, -5.0f);
+    if (c->terrainSubsystem && c->terrainSubsystem->hasTerrain())
+      pos.y = c->terrainSubsystem->heightAt(glm::vec2(pos.x, pos.z));
+    uint32_t e = c->scene.registry().create();
+    c->scene.registry().emplace<TransformComponent>(e).position = pos;
+    c->scene.registry().emplace<MeshComponent>(e).assetId = "gen://kitbash.v1/wildlife/deer";
+    c->scene.registry().emplace<NameComponent>(e, NameComponent("Deer"));
+    auto &sc = c->scene.registry().emplace<ScriptComponent>(e);
+    sc.scriptPath = "assets/scripts/wildlife_ai.lua";
+    selection.selectedEntityId = e;
+    selection.selectedEntities = {e};
+  });
+  mPalette.add(ICON_CUBE, "Spawn", "Wildlife: Wild Rabbit", [this, c] {
+    glm::vec3 pos = c->renderer.params().camPos;
+    pos += glm::vec3(0, 0, -3.0f);
+    if (c->terrainSubsystem && c->terrainSubsystem->hasTerrain())
+      pos.y = c->terrainSubsystem->heightAt(glm::vec2(pos.x, pos.z));
+    uint32_t e = c->scene.registry().create();
+    c->scene.registry().emplace<TransformComponent>(e).position = pos;
+    c->scene.registry().emplace<MeshComponent>(e).assetId = "gen://kitbash.v1/wildlife/rabbit";
+    c->scene.registry().emplace<NameComponent>(e, NameComponent("Rabbit"));
+    auto &sc = c->scene.registry().emplace<ScriptComponent>(e);
+    sc.scriptPath = "assets/scripts/wildlife_ai.lua";
+    selection.selectedEntityId = e;
+    selection.selectedEntities = {e};
+  });
+  mPalette.add(ICON_CUBE, "Spawn", "Prop: Campfire", [this, c] {
+    glm::vec3 pos = c->renderer.params().camPos;
+    pos += glm::vec3(0, 0, -3.0f);
+    if (c->terrainSubsystem && c->terrainSubsystem->hasTerrain())
+      pos.y = c->terrainSubsystem->heightAt(glm::vec2(pos.x, pos.z));
+    uint32_t e = c->scene.registry().create();
+    c->scene.registry().emplace<TransformComponent>(e).position = pos;
+    c->scene.registry().emplace<MeshComponent>(e).assetId = "gen://kitbash.v1/prop/campfire";
+    c->scene.registry().emplace<NameComponent>(e, NameComponent("Campfire"));
+    selection.selectedEntityId = e;
+    selection.selectedEntities = {e};
   });
 
   // ── Selection ───────────────────────────────────────────────────────

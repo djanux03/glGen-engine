@@ -125,7 +125,8 @@ void recordOneBlas(VulkanContext &ctx, VkCommandBuffer cmd,
   VkAccelerationStructureGeometryKHR geom{};
   geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
   geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-  geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+  geom.flags = in.opaque ? VK_GEOMETRY_OPAQUE_BIT_KHR
+                         : VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
   geom.geometry.triangles.sType =
       VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
   geom.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
@@ -439,8 +440,12 @@ void VulkanAccel::recordTlasBuild(VkCommandBuffer cmd, uint32_t frame,
       continue;
     VkAccelerationStructureInstanceKHR inst{};
     inst.transform = toVkTransform(in.transform);
-    inst.instanceCustomIndex = written;
-    inst.mask = 0xFF;
+    // The MESH index, not the instance ordinal: the shadow shader's alpha
+    // test looks the hit mesh's buffers and materials up by it
+    // (VulkanRenderer::updateRtAlphaTable). Nothing read the ordinal.
+    inst.instanceCustomIndex = (in.blasIndex & 0x7FFFFFu) |
+                               (in.grass ? 0x800000u : 0u);
+    inst.mask = in.grass ? 0x02 : 0x01;
     inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
     inst.accelerationStructureReference = mBlasAddresses[in.blasIndex];
     vkInstances[written++] = inst;
@@ -478,7 +483,7 @@ void VulkanAccel::recordTlasBuild(VkCommandBuffer cmd, uint32_t frame,
   barrier.srcStageMask =
       VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
   barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-  barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
   barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
   VkDependencyInfo dep{};
   dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;

@@ -99,17 +99,37 @@ public:
     mFocusRequest = 0;
     return id;
   }
-  // Position the viewport camera should be re-seeded to (session restore
-  // placing it on freshly created ground). Returns false if nothing pending.
+  // Position the viewport camera should be re-seeded to (session restore or
+  // terrain creation placing it on freshly created ground). Returns false if nothing pending.
   // Must go through EditorCamera::seed: it owns the pose and overwrites
   // params().camPos every frame.
-  bool takeCameraSeedRequest(glm::vec3 &outPos) {
+  void requestCameraSeed(const glm::vec3 &pos, float yaw = -999.0f, float pitch = -999.0f) {
+    mCameraSeedPos = pos;
+    mCameraSeedYaw = yaw;
+    mCameraSeedPitch = pitch;
+    mCameraSeedHasAngles = (yaw != -999.0f || pitch != -999.0f);
+    mCameraSeedPending = true;
+  }
+  bool takeCameraSeedRequest(glm::vec3 &outPos, float &outYaw, float &outPitch) {
     if (!mCameraSeedPending)
       return false;
     outPos = mCameraSeedPos;
+    if (mCameraSeedHasAngles) {
+      if (mCameraSeedYaw != -999.0f)
+        outYaw = mCameraSeedYaw;
+      if (mCameraSeedPitch != -999.0f)
+        outPitch = mCameraSeedPitch;
+    }
     mCameraSeedPending = false;
+    mCameraSeedHasAngles = false;
     return true;
   }
+  bool takeCameraSeedRequest(glm::vec3 &outPos) {
+    float dummyYaw = -999.0f, dummyPitch = -999.0f;
+    return takeCameraSeedRequest(outPos, dummyYaw, dummyPitch);
+  }
+  void onTerrainCreated(Context &ctx);
+  void createWoodlandSwamp(Context &ctx);
   bool hasPlayerEntity(Context &ctx) const;
   void drawColliderOutlines(Context &ctx, const glm::mat4 &view, const glm::mat4 &proj);
   void drawWireframeOverlay(Context &ctx, const glm::mat4 &view, const glm::mat4 &proj);
@@ -156,6 +176,14 @@ public:
   // Records which scene was open and whether terrain existed, so a restart
   // resumes where you left off. Written by saveAllSettings and by Save Scene.
   void saveSession(Context &ctx);
+
+  // Switches active scene cleanly: stops play mode, clears selection & physics,
+  // loads the new scene, optionally adjusts camera to framed view, and saves session.
+  bool switchScene(Context &ctx, const std::string &scenePath,
+                   bool setCamera = false,
+                   glm::vec3 camPos = glm::vec3(0.0f),
+                   float pitch = 0.0f,
+                   float yaw = 0.0f);
 
   SelectionState selection;
   ToolbarState toolbar;
@@ -273,10 +301,13 @@ private:
     char albedoPath[256] = "";
     char normalPath[256] = "";
     char roughnessPath[256] = "";
+    char heightPath[256] = "";
+    float reliefDepth = .04f;
     float tiling = 8.0f;
   };
   std::array<TerrainMaterialPanelState, 5> mTerrainMaterialPanel;
   bool mTerrainMaterialsSeeded = false;
+  int mScenerySelection = -1;
 
   // Console state
   bool mConsoleAutoScroll = true;
@@ -312,7 +343,10 @@ private:
   bool mWorldMapOpen = false;
   uint32_t mFocusRequest = 0;
   bool mCameraSeedPending = false;
+  bool mCameraSeedHasAngles = false;
   glm::vec3 mCameraSeedPos{0.0f};
+  float mCameraSeedYaw = 0.0f;
+  float mCameraSeedPitch = 0.0f;
 
   // Refreshed from Context every draw() so drawLog(), which takes no Context,
   // can reach the Lua VM. Non-owning.

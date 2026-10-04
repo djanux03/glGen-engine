@@ -5,24 +5,14 @@
 // Volumetric cloudscape -- half-resolution raymarch.
 // ---------------------------------------------------------------------------
 // Replaces the analytic five-octave fbm deck that used to live in sky.frag.
-// The density model is Nubis: a low-frequency Perlin-Worley "dimensional
-// profile" carved by a height gradient and a weather map, then eroded by the
-// Nubis3 four-channel detail noise (R/G curl-alligator -> wispy, B/A
-// alligator -> billowy). That erosion is what produces cauliflower cumulus
-// silhouettes instead of the soft blobs an fbm threshold gives you, and it is
-// the single biggest reason this looks different from what it replaced.
+// A Perlin-Worley profile is carved by height/weather and periodic cellular
+// erosion. Light queries integrate that same density toward the emitter;
+// six diminishing scattering octaves approximate the dense-cloud bounce.
+// Atmosphere-off asset reviews retain their established Nubis noise/lighting
+// path. Both use the active sun/moon irradiance supplied by the renderer.
 //
-// Lighting is Nubis2/3's light-energy model -- transmittance toward the sun,
-// an in-scatter probability driven by depth-in-cloud and height, and a dual
-// Henyey-Greenstein lobe whose second term is the silver lining -- but it is
-// driven by uFrame.sunRadiance (already atmosphere-coloured on the CPU)
-// rather than the reference's own Preetham sky, so clouds go white at noon
-// and gold at dusk with no special case, and the moon takes over at night for
-// free (sunRadiance IS the active light after the twilight handoff).
-//
-// Output is premultiplied: rgb = light scattered toward the eye, a =
-// transmittance. cloudComposite.frag upsamples and blends it over the sky
-// with (ONE, SRC_ALPHA).
+// Output is premultiplied: rgb = scattered light, a = transmittance. sky.frag
+// reconstructs it and blends cloud.rgb + sky.rgb * cloud.a before grading.
 //
 // Coordinate note: the layer is a pair of spheres concentric with the
 // atmosphere planet (skyModel.glsl), so distant clouds compress into a band
@@ -32,195 +22,23 @@
 
 layout(location = 0) in vec2 vNdc;
 layout(location = 0) out vec4 outCloud;
+layout(location = 1) out float outScatteringDepth;
 
 #define FRAME_DATA_SET 1
 #include "frameData.glsl"
 #include "skyModel.glsl"
 
-layout(set = 0, binding = 0) uniform sampler3D uShapeNoise;  // Perlin-Worley base
-layout(set = 0, binding = 1) uniform sampler3D uDetailNoise; // Nubis 4-channel detail
-layout(set = 0, binding = 2) uniform sampler2D uWeather;     // r=coverage g=wetness b=type
-layout(set = 0, binding = 3) uniform sampler2D uCurl;        // curl noise, for wispy bases
-
 layout(push_constant) uniform Push {
     mat4 invViewProj;
-    vec4 jitter; // x = temporal dither phase, yzw unused
+    vec4 jitter; // x = temporal dither phase, yz = cloud viewport dimensions
 } pc;
 
-// --- dials ---------------------------------------------------------------
-// styleCloud0 x=coverage y=softness zw=wind
-// styleCloud1 x=layerBottom(m) y=featureScale(m, env deck only) z=opticalDensity w=sunOcclusion
-// styleCloud2 x=layerThickness(m) y=shapeScale(m) z=detailScale(m) w=weatherScale(m)
-// styleCloud3 x=densityMultiplier y=lightAbsorption z=ambientStrength w=curlStrength
-// styleCloud4 x=phaseG y=silverIntensity z=silverSpread w=powderStrength
-// styleCloud5 x=maxMarchDist(m) y=maxSteps z=lightTaps w=cloudTypeBias
-// styleCloud6 x=detailStrength
-
-// --- toolbox (Nubis naming kept so the reference reads across) ------------
-float clRemap(float v, float oldMin, float oldMax, float newMin, float newMax) {
-    return newMin + ((v - oldMin) / (oldMax - oldMin)) * (newMax - newMin);
-}
-
-float clRemapClamped(float v, float oldMin, float oldMax, float newMin, float newMax) {
-    float t = clamp((v - oldMin) / max(oldMax - oldMin, 1e-6), 0.0, 1.0);
-    return newMin + t * (newMax - newMin);
-}
-
-// Derived from Set-Range: uses oldMin to erode (positive) or inflate the
-// input. This IS the detail-erosion operator -- subtracting noise from a
-// smooth profile and renormalising is what carves billows out of a blob.
-float clErosion(float v, float oldMin) {
-    return clamp((v - oldMin) / max(1.0 - oldMin, 1e-6), 0.0, 1.0);
-}
-
-float clHash12(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
-
-float clHG(float mu, float g) {
-    float g2 = g * g;
-    float denom = 1.0 + g2 - 2.0 * g * mu;
-    return (1.0 - g2) / (12.566371 * max(denom * sqrt(denom), 1e-4));
-}
-
-// --- layer geometry ------------------------------------------------------
-float clLayerBottom() { return max(uFrame.styleCloud1.x, 50.0); }
-float clLayerThickness() { return max(uFrame.styleCloud2.x, 50.0); }
-float clLayerTop() { return clLayerBottom() + clLayerThickness(); }
-
-// Height gradients per cloud type. type 0 = stratus (flat sheet low in the
-// layer), 0.5 = stratocumulus, 1 = cumulus (tall, rounded, reaching most of
-// the way up). Mixing the three by type is what lets one weather map drive a
-// sky that has both flat overcast patches and towering heaps.
-float clHeightGradient(float h, float type) {
-    h = clamp(h, 0.0, 1.0);
-    float stratus = clamp(clRemap(h, 0.0, 0.07, 0.0, 1.0), 0.0, 1.0) *
-                    clamp(clRemap(h, 0.20, 0.32, 1.0, 0.0), 0.0, 1.0);
-    float stratocumulus = clamp(clRemap(h, 0.02, 0.20, 0.0, 1.0), 0.0, 1.0) *
-                          clamp(clRemap(h, 0.45, 0.68, 1.0, 0.0), 0.0, 1.0);
-    float cumulus = clamp(clRemap(h, 0.01, 0.12, 0.0, 1.0), 0.0, 1.0) *
-                    clamp(clRemap(h, 0.65, 0.98, 1.0, 0.0), 0.0, 1.0);
-    // At type 0.5 both branches already evaluate to stratocumulus, so this
-    // single mix is exact at all three anchors despite looking like it
-    // double-counts.
-    float d1 = mix(stratus, stratocumulus, clamp(type * 2.0, 0.0, 1.0));
-    float d2 = mix(stratocumulus, cumulus, clamp((type - 0.5) * 2.0, 0.0, 1.0));
-    return mix(d1, d2, clamp(type, 0.0, 1.0));
-}
-
-vec2 clWindOffset() {
-    return uFrame.styleCloud0.zw * uFrame.miscParams.z * 40.0;
-}
-
-// Weather: coverage / type. The 512x512 map is tiled at weatherScale metres,
-// which repeats visibly over a large view, so a second sample at an
-// incommensurate scale and a rotated frame breaks the grid up. The coverage
-// dial then biases the result, so the slider means roughly what it says
-// (0 = clear, 1 = overcast) rather than "add this to whatever the texture had".
-vec3 clSampleWeather(vec3 wpos) {
-    float scale = max(uFrame.styleCloud2.w, 100.0);
-    vec2 uv = (wpos.xz + clWindOffset()) / scale;
-    vec3 w0 = texture(uWeather, uv).rgb;
-    // 0.31 is deliberately not a round fraction of 1: a rational ratio would
-    // put both octaves' seams on the same lattice.
-    vec2 uv2 = (mat2(0.80, -0.60, 0.60, 0.80) * (wpos.xz + clWindOffset() * 0.6)) /
-               (scale * 0.31);
-    vec3 w1 = texture(uWeather, uv2).rgb;
-
-    float coverage = mix(w0.r, w0.r * w1.r * 1.6, 0.55);
-    float cov = clamp(uFrame.styleCloud0.x, 0.0, 1.0);
-    // Raw map coverage is bunched around its mean; stretch about 0.5 first so
-    // the dial has usable travel at both ends instead of saturating early.
-    coverage = clamp((coverage - 0.5) * 1.9 + 0.5, 0.0, 1.0);
-    coverage = clamp(clRemap(cov, 0.0, 1.0, coverage - 0.55, coverage + 0.55), 0.0, 1.0);
-
-    float type = clamp(w0.b + uFrame.styleCloud5.w, 0.0, 1.0);
-    return vec3(coverage, w0.g, type);
-}
-
-// --- density -------------------------------------------------------------
-// The smooth "dimensional profile": everything the detail pass erodes. In
-// Nubis3 this comes out of a VDB; here it is built from the Perlin-Worley
-// volume x height gradient x weather, which is what gives a whole SKY of
-// clouds rather than one modelled cloud in a box.
-float clProfileDensity(vec3 wpos, float h, vec3 weather, float mip) {
-    float shapeScale = max(uFrame.styleCloud2.y, 50.0);
-    vec3 p = wpos;
-    p.xz += clWindOffset();
-    // Skew with height: the top of a cloud lags downwind of its base, which
-    // is most of what stops a deck reading as an extruded 2D pattern.
-    p.xz += h * 400.0 * normalize(uFrame.styleCloud0.zw + vec2(1e-4));
-
-    vec4 lowFreq = textureLod(uShapeNoise, p / shapeScale, mip);
-    // R is Perlin-Worley; GBA are Worley octaves, combined into an fbm that
-    // erodes the base into connected billows.
-    float worleyFbm = lowFreq.g * 0.625 + lowFreq.b * 0.25 + lowFreq.a * 0.125;
-    float base = clRemapClamped(lowFreq.r, worleyFbm - 1.0, 1.0, 0.0, 1.0);
-
-    base *= clHeightGradient(h, weather.z);
-
-    // Anvil: high in the layer, coverage widens so tall clouds spread out at
-    // their tops instead of ending in a flat lid.
-    float coverage = pow(weather.x, clRemapClamped(h, 0.7, 0.9, 1.0, 0.72));
-    float soft = max(uFrame.styleCloud0.y, 0.01);
-    base = clRemapClamped(base, clamp(1.0 - coverage - soft, 0.0, 1.0), 1.0, 0.0, 1.0);
-    return base * coverage;
-}
-
-// Nubis3's GetUprezzedVoxelCloudDensity: the detail erosion that makes the
-// silhouette. wispy comes from the curl-alligator channels and dominates thin
-// edges; billowy comes from the alligator channels and dominates dense cores.
-float clDetailDensity(vec3 wpos, float h, float profile, float type, float dist,
-                      float mip) {
-    if (profile <= 0.0)
-        return 0.0;
-
-    float detailScale = max(uFrame.styleCloud2.z, 5.0);
-    vec3 p = wpos;
-    p.xz += clWindOffset() * 2.2; // detail drifts faster than the base shape
-    p.y -= uFrame.miscParams.z * 6.0; // slow upward boil
-
-    // Curl distorts the bases into wisps -- the reference applies it only
-    // where the cloud is thin, which is where real clouds shear.
-    float curlStrength = uFrame.styleCloud3.w;
-    if (curlStrength > 0.001) {
-        vec3 curl = texture(uCurl, wpos.xz / (detailScale * 4.0)).rgb * 2.0 - 1.0;
-        p += curl * curlStrength * detailScale * 0.5 * (1.0 - clamp(h * 3.0, 0.0, 1.0));
-    }
-
-    vec4 n = textureLod(uDetailNoise, p / detailScale, mip);
-
-    float wispy = mix(n.r, n.g, profile);
-    float billowyGradient = pow(max(profile, 1e-4), 0.25);
-    float billowy = mix(n.b * 0.3, n.a * 0.3, billowyGradient);
-    float composite = mix(wispy, billowy, type);
-
-    // Highest-frequency detail, near the camera only. The triangle-wave
-    // folds (abs(abs(x*2-1)*2-1)) turn a smooth channel into sharp ridges,
-    // which is what reads as fine cauliflower at close range; blended out
-    // with distance because at range it is pure aliasing.
-    float hfBlend = clRemapClamped(dist, 1500.0, 6000.0, 0.0, 1.0);
-    if (hfBlend < 0.999) {
-        float hhfWisps = 1.0 - pow(abs(abs(n.g * 2.0 - 1.0) * 2.0 - 1.0), 4.0);
-        float hhfBillows = pow(abs(abs(n.a * 2.0 - 1.0) * 2.0 - 1.0), 2.0);
-        float hhf = clamp(mix(hhfWisps, hhfBillows, type), 0.0, 1.0);
-        composite = mix(hhf, composite, mix(0.9, 1.0, hfBlend));
-    }
-
-    composite *= clamp(uFrame.styleCloud6.x, 0.0, 1.0);
-
-    float d = clErosion(profile, composite);
-    // Sharpening. Without this the eroded field is mushy: a low exponent on
-    // thin regions pushes them toward solid, which is what gives the crisp
-    // lit edge against the sky.
-    d = pow(clamp(d, 0.0, 1.0), mix(0.35, 0.62, clamp(profile, 0.0, 1.0)));
-    // Fade the finest structure out with distance so half-res sampling of a
-    // 128^3 tile does not turn into shimmer at the horizon.
-    d *= clRemapClamped(dist, 200.0, 3000.0, 0.55, 1.0);
-    return clamp(d, 0.0, 1.0);
-}
+float clSegmentFootprint=0;
+#define CLOUD_FOOTPRINT clSegmentFootprint
+// Adaptive marching diverges between pixels. Specify weather/curl footprints
+// explicitly so those samples do not depend on undefined implicit derivatives.
+#define CLOUD_SAMPLE_2D_LOD(image,uv,lod) (uFrame.atmosphereParams.x>.5?textureLod(image,uv,lod):texture(image,uv))
+#include "cloudDensity.glsl"
 
 // --- sun transmittance ---------------------------------------------------
 // Cone-tap march toward the light. Six taps spread in a widening cone (the
@@ -309,10 +127,48 @@ vec2 clLayerInterval(vec3 ro, vec3 rd, float camHeight) {
     return vec2(0.0, exitT);
 }
 
+// Optical depth uses the same eroded medium and metre-based extinction as
+// the view ray. The legacy weighted-density cone hid path length and could
+// barely distinguish a sunlit boundary from kilometres of cloud interior.
+float clOpticalDepthToLight(vec3 wpos,vec3 planetPos,vec3 toLight,int taps) {
+    float height=length(planetPos)-kAtmRg;
+    vec2 interval=clLayerInterval(planetPos,toLight,height);
+    float end=max(interval.y,0.0);
+    float tau=0.0,oldFootprint=clSegmentFootprint;
+    float normalization=exp2(float(taps))-1.0;
+    for(int i=0;i<taps;++i) {
+        // Exponential boundaries resolve the local silhouette first while
+        // still traversing the complete spherical layer toward the emitter.
+        float begin=end*(exp2(float(i))-1.0)/normalization;
+        float finish=end*(exp2(float(i+1))-1.0)/normalization;
+        float ds=finish-begin;
+        clSegmentFootprint=max(ds*.25,oldFootprint);
+        float shapeLod=log2(max(clSegmentFootprint*float(textureSize(uShapeNoise,0).x)/max(uFrame.styleCloud2.y,50.0),1.0));
+        float detailLod=log2(max(clSegmentFootprint*float(textureSize(uPeriodicDetailNoise,0).x)/max(uFrame.styleCloud2.z,5.0),1.0));
+        for(int j=0;j<2;++j) {
+            float distance=mix(begin,finish,(float(j)+.5)*.5);
+            vec3 p=wpos+toLight*distance;
+            float h=(length(planetPos+toLight*distance)-kAtmRg-clLayerBottom())/clLayerThickness();
+            vec3 weather=clSampleWeather(p);
+            float profile=clProfileDensity(p,h,weather,shapeLod);
+            tau+=clDetailDensity(p,h,profile,weather.z,10000.0,detailLod)*ds*.5;
+        }
+    }
+    clSegmentFootprint=oldFootprint;
+    // The absorption dial retains its authored contrast range; 4 is the
+    // reference setting, at which light and view extinction agree exactly.
+    return tau*max(uFrame.styleCloud3.x,0.0)*max(uFrame.styleCloud3.y,0.0)*.25*
+           max(uFrame.styleCloud1.w,0.0);
+}
+
 void main() {
     vec4 farW = pc.invViewProj * vec4(vNdc, 1.0, 1.0);
     vec3 camPos = uFrame.camPosWS.xyz;
     vec3 rd = normalize(farW.xyz / farW.w - camPos);
+    vec4 adjacentX=pc.invViewProj*vec4(vNdc+vec2(2.0/max(pc.jitter.y,1.0),0),1,1);
+    vec4 adjacentY=pc.invViewProj*vec4(vNdc+vec2(0,2.0/max(pc.jitter.z,1.0)),1,1);
+    float pixelAngle=max(length(normalize(adjacentX.xyz/adjacentX.w-camPos)-rd),
+                         length(normalize(adjacentY.xyz/adjacentY.w-camPos)-rd));
 
     // Planet-local origin drives the layer intersection (so the deck curves
     // to a horizon); world position drives the noise (so the field is stable
@@ -325,6 +181,7 @@ void main() {
     float tExit = interval.y;
 
     outCloud = vec4(0.0, 0.0, 0.0, 1.0);
+    outScatteringDepth=0.0;
     if (tExit <= tEnter)
         return;
 
@@ -346,7 +203,10 @@ void main() {
     // layer, grown linearly with distance so the far half of the ray is cheap.
     // That growth IS Nubis3's adaptive step size, and it is why the budget
     // reaches the horizon at all.
-    float fineStep = max(clLayerThickness() / 48.0, span / float(maxSteps * 4));
+    bool modernSampling=uFrame.atmosphereParams.x>.5;
+    // Atmosphere-off canonical reviews retain their established background;
+    // its sparse clouds are incidental to material/geometry comparisons.
+    float fineStep = max(clLayerThickness() / (modernSampling?float(maxSteps):48.0), span / float(maxSteps * 4));
     const float kCoarseMul = 3.0;
     // Doubles the step roughly every 10 km, so the near field stays crisp and
     // a 40 km ray still finishes inside the loop bound.
@@ -391,6 +251,8 @@ void main() {
 
     vec3 scattered = vec3(0.0);
     float transmittance = 1.0;
+    float scatteringMoment=0.0,scatteringWeight=0.0;
+    float opacityMoment=0.0,opacityWeight=0.0;
 
     float t = tEnter + fineStep * dither;
     bool refining = false;
@@ -404,6 +266,7 @@ void main() {
         float baseStep = fineStep * grow;
         float coarseStep = baseStep * kCoarseMul;
         float step = refining ? baseStep : coarseStep;
+        if(modernSampling)step=min(step,tExit-t);
 
         vec3 wpos = camPos + rd * t;
         // Height comes from the SPHERE, not from wpos.y: a cloud 40 km away
@@ -416,6 +279,7 @@ void main() {
             continue;
         }
 
+        clSegmentFootprint=max(pixelAngle*max(t,0),step*.25);
         vec3 weather = clSampleWeather(wpos);
         float mip = clRemapClamped(t, 2000.0, 40000.0, 0.0, 3.0);
         float profile = clProfileDensity(wpos, h, weather, mip);
@@ -438,7 +302,23 @@ void main() {
         }
         misses = 0;
 
-        float density = clDetailDensity(wpos, h, profile, weather.z, t, mip);
+        // The detail texture's voxels can be only a few metres wide while a
+        // march segment spans tens of metres. A single unfiltered fetch made
+        // that mismatch visible as salt-and-pepper opacity, even with history.
+        // Four stratified density samples and a footprint-derived detail mip
+        // integrate those unresolved features instead of choosing one voxel.
+        float pixelSpan=pixelAngle*max(t,0);
+        float detailTexels=max(step*.25,pixelSpan)*float(textureSize(uDetailNoise,0).x)/max(uFrame.styleCloud2.z,5.0);
+        float detailMip=max(mip,log2(max(detailTexels,1.0)));
+        float density=modernSampling?0.0:clDetailDensity(wpos,h,profile,weather.z,t,mip);
+        for(int sampleIndex=0;sampleIndex<(modernSampling?4:0);++sampleIndex) {
+            float sampleDistance=t+step*(float(sampleIndex)+.5)*.25;
+            vec3 sampleWorld=camPos+rd*sampleDistance;
+            float sampleHeight=(length(ro+rd*sampleDistance)-kAtmRg-clLayerBottom())/clLayerThickness();
+            vec3 sampleWeather=clSampleWeather(sampleWorld);
+            float sampleProfile=clProfileDensity(sampleWorld,sampleHeight,sampleWeather,mip);
+            density+=clDetailDensity(sampleWorld,sampleHeight,sampleProfile,sampleWeather.z,sampleDistance,detailMip)*.25;
+        }
         if (density <= 0.0005) {
             t += step;
             continue;
@@ -452,7 +332,9 @@ void main() {
         float sigmaT = density * densityMul;
         float segT = exp(-sigmaT * step);
 
-        // --- light energy (Nubis) ---------------------------------------
+        vec3 luminance;
+        if(!modernSampling) {
+        // Canonical asset-review lighting (Nubis compatibility path).
         float densityToLight = clDensityToLight(wpos, toLight, lightTaps) *
                                lightAbsorb * uFrame.styleCloud1.w;
 
@@ -498,7 +380,28 @@ void main() {
                         smoothstep(0.15, 0.75, profile));
         tint = mix(tint, uFrame.styleCloudLit.rgb, clamp(attenuation, 0.0, 1.0) * 0.6);
 
-        vec3 luminance = (sunLight + ambient) * tint;
+        luminance = (sunLight + ambient) * tint;
+        } else {
+            float lightTau=clOpticalDepthToLight(wpos,ro+rd*t,toLight,lightTaps);
+            // Wrenninge's octave approximation: each additional scattering
+            // order loses energy, sees reduced extinction and tends toward
+            // an isotropic normalized phase. It is a bounded approximation,
+            // not a path-traced solution or an arbitrary radiance floor.
+            float weight=1.0,extinctionScale=1.0,anisotropy=g;
+            float lightEnergy=0.0;
+            for(int order=0;order<6;++order) {
+                float normalizedPhase=mix(clHG(mu,anisotropy),clHG(mu,-.2*pow(.5,float(order))),.15);
+                lightEnergy+=weight*exp(-lightTau*extinctionScale)*normalizedPhase;
+                weight*=.5;extinctionScale*=.25;anisotropy*=.5;
+            }
+            // A weak powder adjustment is an explicit style control. It
+            // depends on actual light optical depth, not the march step.
+            lightEnergy*=mix(1.0,1.0-exp(-2.0*lightTau),powderStrength*.5);
+            vec3 ambient=mix(groundAmbient,skyAmbient,clamp(h*1.3,0.0,1.0));
+            vec3 tint=mix(uFrame.styleCloudBase.rgb,uFrame.styleCloudMid.rgb,smoothstep(.15,.75,profile));
+            tint=mix(tint,uFrame.styleCloudLit.rgb,exp(-lightTau)*.6);
+            luminance=(sunColor*lightEnergy+ambient)*tint;
+        }
 
         // Energy-conserving segment integration (Frostbite): the analytic
         // integral of in-scatter across the step, not a point sample of it.
@@ -516,9 +419,17 @@ void main() {
         // cheaper and more correct than paying for more steps out there.
         // Aerial perspective extinction along the ray path.
         float aerial = exp(-t * kAerialRate);
-        integrated = integrated * aerial;
+        // The final contrast fade already transports cloud light through air.
+        // Applying the same attenuation here squared it, turning distant lit
+        // clouds into dark silhouettes. Preserve the canonical legacy path.
+        if(!modernSampling) integrated *= aerial;
 
-        scattered += transmittance * integrated;
+        vec3 contribution=transmittance*integrated;
+        float lightWeight=max(dot(contribution,vec3(.2126,.7152,.0722)),0.0);
+        scatteringMoment+=lightWeight*t;scatteringWeight+=lightWeight;
+        float removed=transmittance*(1.0-segT);
+        opacityMoment+=removed*t;opacityWeight+=removed;
+        scattered += contribution;
         transmittance *= segT;
 
         if (transmittance < 0.005) {
@@ -535,6 +446,10 @@ void main() {
         float aerialFade = exp(-tFirstHit * kAerialRate);
         float cloudAlpha = (1.0 - clamp(transmittance, 0.0, 1.0)) * aerialFade;
         outCloud = vec4(scattered * aerialFade, clamp(1.0 - cloudAlpha, 0.0, 1.0));
+        // Darkness still needs a volume depth. Opacity weighting provides a
+        // stable fallback when direct and ambient illumination both vanish.
+        outScatteringDepth=scatteringWeight>1e-7?scatteringMoment/scatteringWeight:
+            opacityWeight>1e-7?opacityMoment/opacityWeight:0.0;
     } else {
         outCloud = vec4(0.0, 0.0, 0.0, 1.0);
     }

@@ -23,8 +23,9 @@ set(VK_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${VK_SHADER_OUT_DIR})
 
 set(VK_SHADERS mesh.vert mesh.frag meshInstanced.vert meshInstanced.frag
+               fogVisibility.comp fogInject.comp fogHistory.comp fogIntegrate.comp fogComposite.frag bloomPyramid.comp skyAtmosphere.comp cloudShadow.comp skyIrradiance.comp cloudHistory.comp exposureHistogram.comp
                depthAlpha.frag
-               tonemap.vert tonemap.frag
+                 tonemap.vert tonemap.frag temporal.frag
                terrainChunk.vert terrainChunk.frag sky.vert sky.frag
                ssao.frag blur.frag bloomExtract.frag bloomBlur.frag
                volumetric.frag volumetricComposite.frag water.frag
@@ -44,6 +45,17 @@ foreach(shader ${VK_SHADERS})
                ${VK_SHADER_SRC_DIR}/biomeLighting.glsl
                 ${VK_SHADER_SRC_DIR}/paintMaterial.glsl
                 ${VK_SHADER_SRC_DIR}/fog.glsl
+                ${VK_SHADER_SRC_DIR}/snowMaterial.glsl
+                ${VK_SHADER_SRC_DIR}/surfaceShadow.glsl
+                ${VK_SHADER_SRC_DIR}/atmosphereData.glsl
+                ${VK_SHADER_SRC_DIR}/fogSample.glsl
+                ${VK_SHADER_SRC_DIR}/fogMedium.glsl
+                ${VK_SHADER_SRC_DIR}/skyLutModel.glsl
+                ${VK_SHADER_SRC_DIR}/skyLutSample.glsl
+                ${VK_SHADER_SRC_DIR}/cloudDensity.glsl
+                ${VK_SHADER_SRC_DIR}/cloudShadow.glsl
+                ${VK_SHADER_SRC_DIR}/skyIrradiance.glsl
+                ${VK_SHADER_SRC_DIR}/skySHBasis.glsl
         COMMENT "glslc ${shader} -> SPIR-V"
         VERBATIM
     )
@@ -60,6 +72,9 @@ add_library(VulkanRHI STATIC
     VulkanMesh.cpp
     VulkanAccel.cpp
     VulkanRenderer.cpp
+    VulkanAtmosphereRenderer.cpp
+    VulkanCloudHistory.cpp
+    VulkanExposureMeter.cpp
     VulkanRenderSystem.cpp
     vk_mem_alloc_impl.cpp
 )
@@ -118,6 +133,7 @@ add_executable(glGenVk
     runtime/VkAgentBridge.cpp
     runtime/gameplay/VkPlayerControllerSystem.cpp
     runtime/gameplay/VkPlayerInteractionSystem.cpp
+    runtime/gameplay/VkRifleSystem.cpp
     runtime/gameplay/VkSpaceshipControlSystem.cpp
     runtime/subsystems/VkWindowSubsystem.cpp
     runtime/subsystems/VkPhysicsSubsystem.cpp

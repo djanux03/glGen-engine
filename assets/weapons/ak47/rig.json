@@ -1,0 +1,85 @@
+{
+  "ejection": [
+    0.0265,
+    0.1191,
+    -0.1893
+  ],
+  "muzzle": [
+    0,
+    0.0957,
+    -0.7006
+  ],
+  "parts": [
+    {
+      "file": "MAGAZINE.gltf",
+      "name": "MAGAZINE",
+      "pivot": [
+        8.762430251378586e-09,
+        -0.014156119377116408,
+        -0.18612228564582747
+      ],
+      "triangles": 1310
+    },
+    {
+      "file": "SELECTOR.gltf",
+      "name": "SELECTOR",
+      "pivot": [
+        7.190162887983688e-09,
+        0.08224588488695984,
+        -0.03689957187728715
+      ],
+      "triangles": 462
+    },
+    {
+      "file": "SLIDE.gltf",
+      "name": "SLIDE",
+      "pivot": [
+        1.8297708133864613e-08,
+        0.09491475603096423,
+        -0.17872494402910924
+      ],
+      "triangles": 165
+    },
+    {
+      "file": "TRIGGER.gltf",
+      "name": "TRIGGER",
+      "pivot": [
+        4.962495010995393e-09,
+        0.05676434283676801,
+        -0.0744032394792373
+      ],
+      "triangles": 141
+    },
+    {
+      "file": "body.gltf",
+      "name": "body",
+      "pivot": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "triangles": 14500
+    },
+    {
+      "name": "hand_left",
+      "file": "hand_left.gltf",
+      "pivot": [
+        -0.032,
+        0.025,
+        -0.3
+      ],
+      "triangles": 4076
+    },
+    {
+      "name": "hand_right",
+      "file": "hand_right.gltf",
+      "pivot": [
+        0.032,
+        -0.065,
+        0.035
+      ],
+      "triangles": 4076
+    }
+  ],
+  "source": "Stein Games Classic Weapons Pack v1.1"
+}

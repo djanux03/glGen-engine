@@ -75,7 +75,26 @@ void applyRenderParamsJson(VkAppState &state, const nlohmann::json &params) {
   readField(params, "contrast", p.contrast);
   readField(params, "vignette", p.vignette);
   readField(params, "autoExposure", p.autoExposure);
+  readField(params, "autoExposureSpeed", p.autoExposureSpeed);
+  readField(params, "autoExposureMin", p.autoExposureMin);
+  readField(params, "autoExposureMax", p.autoExposureMax);
   readField(params, "tonemapMode", p.tonemapMode);
+  readField(params, "temporalAA", p.temporalAA);
+  readField(params, "fxaaEnabled", p.style.fxaaEnabled);
+  readField(params, "fixedTime", p.fixedTimeSeconds);
+  readField(params, "temporalSharpness", p.temporalSharpness);
+  p.temporalSharpness = std::clamp(p.temporalSharpness, 0.0f, .5f);
+  readField(params, "edgeSoftness", p.edgeSoftness);
+  p.edgeSoftness = std::clamp(p.edgeSoftness, 0.0f, 1.0f);
+  readField(params, "grassGroundDrawDistance", p.grassGroundDrawDistance);
+  p.grassGroundDrawDistance = std::max(0.0f, p.grassGroundDrawDistance);
+  readField(params, "terrainPhotoAlbedo", p.terrainPhotoAlbedo);
+  readField(params, "foliageNormalSoften", p.foliageNormalSoften);
+  readField(params, "specularOcclusion", p.specularOcclusion);
+  readField(params, "terrainTriplanar", p.terrainTriplanar);
+  readField(params, "stylizedLightingRamp", p.stylizedLightingRamp);
+  readField(params, "shadowCoolBias", p.shadowCoolBias);
+  readField(params, "snowCoverage", p.snowCoverage);
 
   readField(params, "fov", p.fovDeg);
   readField(params, "farPlane", p.farPlane);
@@ -90,21 +109,7 @@ void applyRenderParamsJson(VkAppState &state, const nlohmann::json &params) {
   readField(params, "shadowStrength", p.shadowStrength);
   readField(params, "shadowSoftness", p.shadowSoftness);
 
-  const auto pointLights = params.find("pointLights");
-  if (pointLights != params.end() && pointLights->is_array()) {
-    p.pointLightCount = 0;
-    for (const auto &entry : *pointLights) {
-      if (!entry.is_object() || p.pointLightCount >= p.pointLights.size())
-        continue;
-      auto &light = p.pointLights[p.pointLightCount++];
-      readVec3Field(entry, "position", light.position);
-      readVec3Field(entry, "color", light.color);
-      readField(entry, "radius", light.radius);
-      readField(entry, "intensity", light.intensity);
-      light.radius = std::max(light.radius, 0.1f);
-      light.intensity = std::max(light.intensity, 0.0f);
-    }
-  }
+  atmosphere::readLights(params, p);
 
   readField(params, "fogDensity", p.fogDensity);
   readField(params, "fogStart", p.fogStart);
@@ -135,8 +140,16 @@ void applyRenderParamsJson(VkAppState &state, const nlohmann::json &params) {
 
   readField(params, "volumetric", p.volumetricEnabled);
   readField(params, "volumetricIntensity", p.volumetricIntensity);
+  readField(params, "volumetricEnabled", p.volumetricEnabled);
+  readField(params, "volumetricDensityScale", p.volumetricDensityScale);
+  readField(params, "volumetricHeightFalloffScale", p.volumetricHeightFalloffScale);
+  readField(params, "volumetricAnisotropy", p.volumetricAnisotropy);
+  readVec3Field(params, "volumetricTintColor", p.volumetricTintColor);
+  readField(params, "volumetricTintStrength", p.volumetricTintStrength);
   readField(params, "bloomIntensity", p.bloomIntensity);
   readField(params, "aoStrength", p.aoStrength);
+  readField(params, "aoRadius", p.aoRadius);
+  readField(params, "aoBias", p.aoBias);
   readField(params, "debugView", p.debugViewMode);
 
   // Style parameters used to be editor-only, which left authored cinematic
@@ -153,6 +166,26 @@ void applyRenderParamsJson(VkAppState &state, const nlohmann::json &params) {
   readField(params, "cloudFeatureScale", p.style.cloudFeatureScale);
   readField(params, "cloudOpticalDensity", p.style.cloudOpticalDensity);
   readField(params, "cloudSunOcclusion", p.style.cloudSunOcclusion);
+  readField(params, "paintedClouds", p.style.paintedClouds);
+  readField(params, "cloudStrength", p.style.cloudStrength);
+  readField(params, "cloudVolumetricEnabled", p.style.cloudVolumetricEnabled);
+  readField(params, "cloudLayerThickness", p.style.cloudLayerThickness);
+  readField(params, "cloudDensityMultiplier", p.style.cloudDensityMultiplier);
+  readField(params, "cloudShapeScale", p.style.cloudShapeScale);
+  readField(params, "cloudDetailScale", p.style.cloudDetailScale);
+  readField(params, "cloudWeatherScale", p.style.cloudWeatherScale);
+  readField(params, "cloudLightAbsorption", p.style.cloudLightAbsorption);
+  readField(params, "cloudAmbientStrength", p.style.cloudAmbientStrength);
+  readField(params, "cloudCurlStrength", p.style.cloudCurlStrength);
+  readField(params, "cloudPhaseG", p.style.cloudPhaseG);
+  readField(params, "cloudSilverIntensity", p.style.cloudSilverIntensity);
+  readField(params, "cloudSilverSpread", p.style.cloudSilverSpread);
+  readField(params, "cloudPowderStrength", p.style.cloudPowderStrength);
+  readField(params, "cloudMaxMarchDist", p.style.cloudMaxMarchDist);
+  readField(params, "cloudMaxSteps", p.style.cloudMaxSteps);
+  readField(params, "cloudLightTaps", p.style.cloudLightTaps);
+  readField(params, "cloudTypeBias", p.style.cloudTypeBias);
+  readField(params, "cloudDetailStrength", p.style.cloudDetailStrength);
   readField(params, "sunDiscIntensity", p.sunDiscIntensity);
   readField(params, "moonGlowIntensity", p.moonGlowIntensity);
   readField(params, "starIntensity", p.starIntensity);
@@ -170,6 +203,7 @@ void applyRenderParamsJson(VkAppState &state, const nlohmann::json &params) {
   readVec3Field(params, "camPos", p.camPos);
   readField(params, "camYaw", p.camYawDeg);
   readField(params, "camPitch", p.camPitchDeg);
+  atmosphere::read(params, p);
   if (writesCamera)
     ++p.externalCameraRevision;
 }
@@ -179,13 +213,30 @@ nlohmann::json renderParamsToJson(const VkAppState &state) {
   if (!state.renderer)
     return j;
   const vkrhi::VulkanRenderer::Params &p = state.renderer->params();
+  j["atmosphere"] = atmosphere::encode(atmosphere::fromLegacy(p));
   j["exposure"] = p.exposure;
   j["gamma"] = p.gamma;
   j["saturation"] = p.saturation;
   j["contrast"] = p.contrast;
   j["vignette"] = p.vignette;
   j["autoExposure"] = p.autoExposure;
+  j["autoExposureSpeed"] = p.autoExposureSpeed;
+  j["autoExposureMin"] = p.autoExposureMin;
+  j["autoExposureMax"] = p.autoExposureMax;
   j["tonemapMode"] = p.tonemapMode;
+  j["temporalAA"] = p.temporalAA;
+  j["fxaaEnabled"] = p.style.fxaaEnabled;
+  j["fixedTime"] = p.fixedTimeSeconds;
+  j["temporalSharpness"] = p.temporalSharpness;
+  j["edgeSoftness"] = p.edgeSoftness;
+  j["grassGroundDrawDistance"] = p.grassGroundDrawDistance;
+  j["terrainPhotoAlbedo"] = p.terrainPhotoAlbedo;
+  j["foliageNormalSoften"] = p.foliageNormalSoften;
+  j["specularOcclusion"] = p.specularOcclusion;
+  j["terrainTriplanar"] = p.terrainTriplanar;
+  j["stylizedLightingRamp"] = p.stylizedLightingRamp;
+  j["shadowCoolBias"] = p.shadowCoolBias;
+  j["snowCoverage"] = p.snowCoverage;
 
   j["fov"] = p.fovDeg;
   j["farPlane"] = p.farPlane;
@@ -200,15 +251,7 @@ nlohmann::json renderParamsToJson(const VkAppState &state) {
   j["shadowStrength"] = p.shadowStrength;
   j["shadowSoftness"] = p.shadowSoftness;
 
-  j["pointLights"] = nlohmann::json::array();
-  for (uint32_t i = 0; i < std::min<uint32_t>(p.pointLightCount,
-        static_cast<uint32_t>(p.pointLights.size())); ++i) {
-    const auto &light = p.pointLights[i];
-    j["pointLights"].push_back({
-        {"position", {light.position.x, light.position.y, light.position.z}},
-        {"color", {light.color.r, light.color.g, light.color.b}},
-        {"radius", light.radius}, {"intensity", light.intensity}});
-  }
+  j["pointLights"] = atmosphere::encodeLights(p);
 
   j["fogDensity"] = p.fogDensity;
   j["fogStart"] = p.fogStart;
@@ -242,8 +285,12 @@ nlohmann::json renderParamsToJson(const VkAppState &state) {
 
   j["volumetric"] = p.volumetricEnabled;
   j["volumetricIntensity"] = p.volumetricIntensity;
+  j["volumetricDensityScale"] = p.volumetricDensityScale;
+  j["volumetricAnisotropy"] = p.volumetricAnisotropy;
   j["bloomIntensity"] = p.bloomIntensity;
   j["aoStrength"] = p.aoStrength;
+  j["aoRadius"] = p.aoRadius;
+  j["aoBias"] = p.aoBias;
   j["debugView"] = p.debugViewMode;
 
   j["outlineStrength"] = p.style.outlineStrength;
@@ -257,6 +304,26 @@ nlohmann::json renderParamsToJson(const VkAppState &state) {
   j["cloudFeatureScale"] = p.style.cloudFeatureScale;
   j["cloudOpticalDensity"] = p.style.cloudOpticalDensity;
   j["cloudSunOcclusion"] = p.style.cloudSunOcclusion;
+  j["paintedClouds"] = p.style.paintedClouds;
+  j["cloudStrength"] = p.style.cloudStrength;
+  j["cloudVolumetricEnabled"] = p.style.cloudVolumetricEnabled;
+  j["cloudLayerThickness"] = p.style.cloudLayerThickness;
+  j["cloudDensityMultiplier"] = p.style.cloudDensityMultiplier;
+  j["cloudShapeScale"] = p.style.cloudShapeScale;
+  j["cloudDetailScale"] = p.style.cloudDetailScale;
+  j["cloudWeatherScale"] = p.style.cloudWeatherScale;
+  j["cloudLightAbsorption"] = p.style.cloudLightAbsorption;
+  j["cloudAmbientStrength"] = p.style.cloudAmbientStrength;
+  j["cloudCurlStrength"] = p.style.cloudCurlStrength;
+  j["cloudPhaseG"] = p.style.cloudPhaseG;
+  j["cloudSilverIntensity"] = p.style.cloudSilverIntensity;
+  j["cloudSilverSpread"] = p.style.cloudSilverSpread;
+  j["cloudPowderStrength"] = p.style.cloudPowderStrength;
+  j["cloudMaxMarchDist"] = p.style.cloudMaxMarchDist;
+  j["cloudMaxSteps"] = p.style.cloudMaxSteps;
+  j["cloudLightTaps"] = p.style.cloudLightTaps;
+  j["cloudTypeBias"] = p.style.cloudTypeBias;
+  j["cloudDetailStrength"] = p.style.cloudDetailStrength;
   j["sunDiscIntensity"] = p.sunDiscIntensity;
   j["moonGlowIntensity"] = p.moonGlowIntensity;
   j["starIntensity"] = p.starIntensity;
@@ -281,6 +348,14 @@ void registerVkScriptBindings(sol::state &lua, VkAppState &state) {
 
   // ── render ─────────────────────────────────────────────────────────
   auto renderTable = lua.create_named_table("render");
+  // Runtime owns scenery composition; keep these out of EngineCore bindings.
+  // Commands and scripts execute on the main thread, where regeneration is safe.
+  renderTable["scenery"] = [st](const std::string &id) {
+    return st->terrainSubsystem && st->terrainSubsystem->applyScenery(id);
+  };
+  renderTable["scenery_id"] = [st]() -> std::string {
+    return st->terrainSubsystem ? st->terrainSubsystem->sceneryId() : std::string{};
+  };
 
   // render.params{ exposure=, sunPitch=, ... } -- every field optional, and
   // anything omitted keeps its current value. Deliberately a keyword table
@@ -317,9 +392,39 @@ void registerVkScriptBindings(sol::state &lua, VkAppState &state) {
     t["instancesDrawn"] = s.instancesDrawn;
     t["instancesCulled"] = s.instancesCulled;
     t["vegInstancesDrawn"] = s.vegInstancesDrawn;
+    t["vegTrianglesDrawn"] = s.vegTrianglesDrawn;
+    t["grassTrianglesDrawn"] = s.grassTrianglesDrawn;
+    t["treeTrianglesDrawn"] = s.treeTrianglesDrawn;
+    t["tlasRebuiltThisFrame"] = s.tlasRebuiltThisFrame;
     t["tlasInstances"] = s.tlasInstances;
     t["meshSlotsLive"] = s.meshSlotsLive;
     t["meshSlotsFree"] = s.meshSlotsFree;
+    t["gpuTotalMs"] = s.gpuTotalMs;
+    t["gpuPrepareMs"] = s.gpuPrepareMs;
+    t["gpuDepthMs"] = s.gpuDepthMs;
+    t["gpuAtmosphereMs"] = s.gpuAtmosphereMs;
+    t["gpuSceneMs"] = s.gpuSceneMs;
+    t["gpuWaterMs"] = s.gpuWaterMs;
+    t["gpuPostMs"] = s.gpuPostMs;
+    t["gpuBloomMs"] = s.gpuBloomMs;
+    t["cpuFogMs"] = st->renderer->cpuFogMilliseconds();
+    t["cpuBloomMs"] = st->renderer->cpuBloomMilliseconds();
+    t["gpuCloudsMs"] = s.gpuCloudsMs;
+    t["gpuSkyEnvironmentMs"] = s.gpuSkyEnvironmentMs;
+    t["gpuSkyLutsMs"] = s.gpuSkyLutsMs;
+    t["gpuCloudShadowMs"] = s.gpuCloudShadowMs;
+    t["gpuCloudHistoryMs"] = s.gpuCloudHistoryMs;
+    t["cloudHistoryAllocatedBytes"] = s.cloudHistoryAllocatedBytes;
+    t["cloudDetailAllocatedBytes"] = s.cloudDetailAllocatedBytes;
+    t["gpuExposureMeterMs"] = s.gpuExposureMeterMs;
+    t["meteredLuminance"] = s.meteredLuminance;
+    t["gpuSSAOMs"] = s.gpuSSAOMs;
+    t["gpuFogVisibilityMs"] = s.gpuFogVisibilityMs;
+    t["gpuFogInjectionMs"] = s.gpuFogInjectionMs;
+    t["gpuFogHistoryMs"] = s.gpuFogHistoryMs;
+    t["gpuFogIntegrationMs"] = s.gpuFogIntegrationMs;
+    t["atmosphereAllocatedBytes"] = s.atmosphereAllocatedBytes;
+
     return t;
   };
 
@@ -405,14 +510,69 @@ void registerVkScriptBindings(sol::state &lua, VkAppState &state) {
       onGround = t.get_or("onGround", onGround);
     }
     if (onGround && st->terrainSubsystem)
-      pos.y = st->terrainSubsystem->heightAt(glm::vec2(pos.x, pos.z)) + 1.2f;
+      pos.y = st->terrainSubsystem->heightAt(glm::vec2(pos.x, pos.z)) + 1.62f;
 
     const EntityId id = gameplay::spawnPlayer(reg, pos, yaw, pitch, "");
+    const EntityId bodyId = st->scene.spawnPrimitive("cube");
+    if (bodyId != 0) {
+      reg.get<NameComponent>(bodyId).name = "Player Body";
+      auto &body = reg.get<TransformComponent>(bodyId);
+      body.position = pos + glm::vec3(0.0f, -0.55f, 0.0f);
+      body.scale = glm::vec3(0.38f, 0.62f, 0.24f);
+    }
     LOG_INFO("Game", "spawned Player entity " + std::to_string(id));
     return static_cast<uint32_t>(id);
   };
 
   // ── terrain ────────────────────────────────────────────────────────
+  auto weaponTable=lua.create_named_table("weapon");
+  weaponTable["equip"]=[st](uint32_t id) {
+    auto &reg=st->scene.registry();
+    if(!reg.valid(id)||!reg.has<CameraComponent>(id))return false;
+    if(!reg.has<RifleComponent>(id))reg.emplace<RifleComponent>(id);
+    reg.get<RifleComponent>(id).state.enabled=true;
+    st->gameplay.playerId=id;
+    return true;
+  };
+  weaponTable["control"]=[st](sol::table t) {
+    auto &r=st->rifleSystem;r.manualInput=t.get_or("manual",true);
+    r.trigger=t.get_or("trigger",false);r.aim=t.get_or("aim",false);
+    r.reloadRequested=t.get_or("reload",false);
+  };
+  weaponTable["mode"]=[st](bool automatic) {
+    auto &reg=st->scene.registry();const auto id=st->gameplay.playerId;
+    if(reg.has<RifleComponent>(id))reg.get<RifleComponent>(id).state.automatic=automatic;
+  };
+  weaponTable["health"]=[st](uint32_t id) {
+    auto &reg=st->scene.registry();
+    return reg.has<DestructibleComponent>(id)?reg.get<DestructibleComponent>(id).health:-1.f;
+  };
+  weaponTable["target"]=[st](sol::table t) {
+    auto &reg=st->scene.registry();auto id=st->scene.spawnPrimitive("cube");
+    glm::vec3 pos(0,1.62f,-12);readColor(t,"pos",pos);
+    reg.get<TransformComponent>(id).position=pos;
+    reg.get<TransformComponent>(id).scale={.7f,1.4f,.2f};
+    reg.get<NameComponent>(id).name="Shooting target";
+    reg.emplace<DestructibleComponent>(id).health=std::clamp(t.get_or("health",100.f),1.f,10000.f);
+    auto &col=reg.emplace<ColliderComponent>(id);col.shape=ColliderComponent::Shape::Box;
+    auto &rb=reg.emplace<RigidbodyComponent>(id);rb.type=RigidbodyComponent::Type::Static;
+    return uint32_t(id);
+  };
+  weaponTable["reload"]=[st]() {st->rifleSystem.reloadRequested=true;};
+  weaponTable["state"]=[st,&lua]() {
+    sol::table t=lua.create_table();auto &reg=st->scene.registry();
+    const auto id=st->gameplay.playerId;
+    if(reg.has<RifleComponent>(id)) {
+      const auto &w=reg.get<RifleComponent>(id).state;
+      t["magazine"]=w.magazine;t["reserve"]=w.reserve;t["shots"]=w.shotsFired;
+      t["reloading"]=w.reloading();t["reloadProgress"]=w.reloadProgress();
+      t["automatic"]=w.automatic;
+      t["shotAge"]=st->rifleSystem.shotAge();t["aim"]=st->rifleSystem.aimBlend();
+      t["hit"]=st->gameplay.debug.debugGameplayHit;t["hitEntity"]=st->gameplay.debug.debugGameplayHitId;
+    }
+    return t;
+  };
+
   auto terrainTable = lua.create_named_table("terrain");
 
   // Water surface altitude at a world XZ (sea level, or a lake's own level),
@@ -493,6 +653,15 @@ void registerVkScriptBindings(sol::state &lua, VkAppState &state) {
     return st->terrainSubsystem ? st->terrainSubsystem->heightAt(glm::vec2(x, z))
                                 : 0.0f;
   };
+  // Main-thread authoring, shared with the editor brush. Fog-field workers
+  // receive an immutable snapshot and reject any older edit generation.
+  terrainTable["brush_height"] = [st](float x,float z,float radius,float strength,bool lower) -> bool {
+    if(!st->terrainSubsystem || !st->terrainSubsystem->hasTerrain() ||
+       !std::isfinite(x) || !std::isfinite(z) || !std::isfinite(radius) ||
+       !std::isfinite(strength) || radius<=0) return false;
+    st->terrainSubsystem->applyHeightBrush(glm::vec2(x,z),radius,strength,lower);
+    return true;
+  };
 
   // terrain.regenerate{...} rebuilds terrain that already exists, and
   // CREATES it when there is none.
@@ -523,6 +692,7 @@ void registerVkScriptBindings(sol::state &lua, VkAppState &state) {
           opts.get_or("treeDensity", s.treeDensityMultiplier);
       s.grassDensityMultiplier =
           opts.get_or("grassDensity", s.grassDensityMultiplier);
+      s.grassCastShadows = opts.get_or("grassCastShadows",s.grassCastShadows);
       s.rockDensityMultiplier =
           opts.get_or("rockDensity", s.rockDensityMultiplier);
     }
@@ -561,6 +731,7 @@ void registerVkScriptBindings(sol::state &lua, VkAppState &state) {
     t["grass"] = s.spawnGrass;
     t["treeDensity"] = s.treeDensityMultiplier;
     t["grassDensity"] = s.grassDensityMultiplier;
+    t["grassCastShadows"] = s.grassCastShadows;
     t["rockDensity"] = s.rockDensityMultiplier;
     return t;
   };

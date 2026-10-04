@@ -1,6 +1,7 @@
 #include "TerrainChunkManager.h"
 
 #include "TerrainChunkMesher.h"
+#include "TerrainWater.h"
 
 #include <algorithm>
 #include <array>
@@ -167,6 +168,16 @@ void TerrainChunkManager::workerLoop() {
     MeshData mesh = buildTerrainChunkMesh(heights, fields, samplesPerEdge,
                                           mSettings.chunkWorldSize,
                                           mSettings.outcropThreshold);
+    WaterCellCache grassWaterCache;
+    const glm::vec3 chunkCentre(minCorner.x + mSettings.chunkWorldSize*.5f, 0,
+                               minCorner.y + mSettings.chunkWorldSize*.5f);
+    for (auto &sub : mesh.submeshes) for (auto &v : sub.vertices) {
+      const float forest = v.terrainParams.z, mountain = v.terrainParams.w;
+      v.grassGroundOcclusion = grassGroundOcclusionAt(mManifest, *mNoiseSet,
+          mSettings, v.pos + chunkCentre, v.normal,
+          glm::vec3(std::max(0.0f, 1.0f-forest-mountain), forest, mountain),
+          v.uv.y, &grassWaterCache);
+    }
 
     // Chunk-average biome weights: mean over the sampled ground-field grid
     // (there's no single dominant category any more -- scatterVegetation
@@ -196,7 +207,11 @@ void TerrainChunkManager::workerLoop() {
     // per-plant/rock detail (no impostor mesh in this design), so skipping
     // it there avoids wasted placement work for instances that would add
     // little visible value at typical view distances.
-    if (job.lod == 0) {
+    // The authored woodland needs trees on the opposite bank as well as
+    // beside the camera. Tying them to terrain LOD0 cut the forest off in a
+    // square at 128m. Its manifest bounds tree distance; grass keeps its own
+    // hard radius and falloff, independent of the terrain mesh resolution.
+    if (job.lod == 0 || mSettings.authoredWoodland) {
       const uint32_t chunkSeed = chunkSeedFor(mSettings.seed, job.coord);
       scatterLayers(mManifest, *mNoiseSet, mSettings, minCorner,
                    mSettings.chunkWorldSize, chunkSeed, job.chebyshev,

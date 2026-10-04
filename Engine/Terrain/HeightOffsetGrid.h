@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <shared_mutex>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -38,6 +39,9 @@ public:
   // edits are geometrically desynced or artistically meaningless against a
   // newly-generated terrain shape). Main-thread only.
   void clear();
+  // Worker jobs keep a private immutable copy, so a later edit/regeneration
+  // cannot change a fog field halfway through its evaluation.
+  std::shared_ptr<const HeightOffsetGrid> snapshot() const;
 
 private:
   std::vector<float> &gridFor(ChunkCoord coord, uint32_t chunkResolution);

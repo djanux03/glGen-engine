@@ -1,0 +1,33 @@
+#version 460
+layout(local_size_x=8,local_size_y=8) in;
+layout(set=0,binding=0) uniform sampler2D uInput;
+layout(set=0,binding=1) uniform sampler2D uLower;
+layout(set=0,binding=2,rgba16f) uniform image2D uOutput;
+layout(push_constant) uniform Push {vec4 controls;} pc;
+void main() {
+    ivec2 cell=ivec2(gl_GlobalInvocationID.xy),size=imageSize(uOutput);
+    if(any(greaterThanEqual(cell,size))) return;
+    vec2 uv=(vec2(cell)+.5)/vec2(size);
+    vec3 color=vec3(0);
+    if(pc.controls.x<.5) {
+        vec2 texel=1.0/vec2(textureSize(uInput,0));
+        float weightSum=0;
+        // A normalized tent includes fractional texels on odd viewport sizes.
+        // Clamp-to-edge keeps a uniform image uniform right to the border.
+        for(int y=-1;y<=1;++y) for(int x=-1;x<=1;++x) {
+            float weight=float((x==0?2:1)*(y==0?2:1));
+            vec3 sampleColor=textureLod(uInput,uv+vec2(x,y)*texel,0).rgb;
+            if(pc.controls.w>.5) weight/=1.0+max(max(sampleColor.r,sampleColor.g),sampleColor.b);
+            color+=sampleColor*weight;weightSum+=weight;
+        }
+        color/=max(weightSum,1e-6);
+    } else {
+        vec2 texel=1.0/vec2(textureSize(uLower,0));
+        for(int y=-1;y<=1;++y) for(int x=-1;x<=1;++x)
+            color+=textureLod(uLower,uv+vec2(x,y)*texel,0).rgb*float((x==0?2:1)*(y==0?2:1))/16.0;
+        // Only this invocation reads/writes its own current-level pixel. The
+        // filtered neighbourhood comes from a different, completed mip image.
+        color=color*pc.controls.z+imageLoad(uOutput,cell).rgb*pc.controls.y;
+    }
+    imageStore(uOutput,cell,vec4(color,1));
+}

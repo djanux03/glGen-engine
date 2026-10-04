@@ -47,6 +47,14 @@ struct EffectiveScatterLayer {
 EffectiveScatterLayer effectiveLayer(const ScatterLayer &layer,
                                      const TerrainSettings &settings);
 
+// Expected clump coverage in [0,1], using the placement authority's biome, patch,
+// track, slope and water gates. World-space evaluation keeps chunk/LOD borders
+// continuous without querying neighbouring chunks or tracing individual blades.
+float grassGroundOcclusionAt(const ScatterManifest &manifest,
+    const TerrainNoiseSet &noise, const TerrainSettings &settings,
+    glm::vec3 worldPos, glm::vec3 normal, glm::vec3 biomeWeights,
+    float moisture, WaterCellCache *waterCache = nullptr);
+
 // Replaces the old fixed-species VegetationInstance. `layerIndex` indexes
 // into the SAME ScatterManifest passed to scatterLayers() -- the caller
 // (VkTerrainSubsystem) resolves it back to a mesh handle.

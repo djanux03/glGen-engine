@@ -1,0 +1,98 @@
+{
+  "hazel_bush": {
+    "triangles": 370,
+    "sha256": "8759ea1197474cf9e8fae97f0340372951cba866089e589b456a15d6a879ace0"
+  },
+  "low_scrub": {
+    "triangles": 518,
+    "sha256": "278809981721be1df717110db2fd337fcbc1a9040bd0a992dafaf3362301f530"
+  },
+  "fractured_granite": {
+    "triangles": 512,
+    "sha256": "f1144dfd375f54a4e34bf3d8f71cc8f37f9780ea70c6130116253cd0bd6134c7"
+  },
+  "granite_slab": {
+    "triangles": 512,
+    "sha256": "88644047762246e620e0026b49ea4a1bd660b507ac30cd2152206215506d5c2a"
+  },
+  "granite_crag": {
+    "triangles": 512,
+    "sha256": "d476d4fdde6b6a79001a9c124a372d7c7bd72168c1536ddb6f32654fa6b27fb0"
+  },
+  "hazel_bush_mid": {
+    "triangles": 110,
+    "sha256": "ac47f87833ea05f0d12f1981572ee4870b448b47ef725464443f1a17b6739439"
+  },
+  "low_scrub_mid": {
+    "triangles": 154,
+    "sha256": "009c2605361e167246d01836f0e0fd94474215f17a4f6628eab1ca2c04b8b252"
+  },
+  "fractured_granite_mid": {
+    "triangles": 128,
+    "sha256": "09b005c9a166cfcf0f88da546aa3d923dddfb8f6b65364fbe3df68a859be6bcd"
+  },
+  "granite_slab_mid": {
+    "triangles": 128,
+    "sha256": "c6a0d05d3e8fd7e25eb85386fbe6276267a7bce8527cb63638ad721df7f0189d"
+  },
+  "granite_crag_mid": {
+    "triangles": 128,
+    "sha256": "c79087590ef43e978353b550d44bc59b1735daef633c218d49b98f11b1a68d94"
+  },
+  "hazel_bush_far": {
+    "triangles": 30,
+    "sha256": "0a4f9758fe0f0540b6e84c9da6afb1f0b14e10abe2ab90f68c8ef080ec2b1cce"
+  },
+  "low_scrub_far": {
+    "triangles": 42,
+    "sha256": "a0f8ee586e36ec1671632604f3a1009352856270d15f2346dc65ac48307d81ed"
+  },
+  "fractured_granite_far": {
+    "triangles": 32,
+    "sha256": "9bb5a5c3c02124404882bd9fb0d98009537b19369919a5dbe2fdbef82b8be74d"
+  },
+  "granite_slab_far": {
+    "triangles": 32,
+    "sha256": "06c95f35c4c68e24eafacfc520338f6c88bc6e3b93bcd0443c8f09ec053ebd29"
+  },
+  "granite_crag_far": {
+    "triangles": 32,
+    "sha256": "06ce4cad0abb19cb6dee9bd4fffb0acfa0b437c1c66fe7f9e6dd637eaa5cb879"
+  },
+  "woodland_fern": {
+    "triangles": 756,
+    "sha256": "8bf295cf3dcd3b2190cd097f32b5789fe0c6f5e0be76be983be5c524739888fe"
+  },
+  "pebble_bed": {
+    "triangles": 224,
+    "sha256": "fc3419acbe8be7e38474834664be1803881b525ec1b070d0b313b02ec09031bf"
+  },
+  "woodland_fern_mid": {
+    "triangles": 240,
+    "sha256": "69499f8196129fce0a93ca1b9177545f6d21e6c2def80edeb7a701184d0aa64b"
+  },
+  "pebble_bed_mid": {
+    "triangles": 64,
+    "sha256": "07e394276e95120aa02495e6dcaa14170f2be78297cef5eb7f524676868571d2"
+  },
+  "woodland_fern_far": {
+    "triangles": 54,
+    "sha256": "2b07fe0057cbb5bb5f99ddcb3947ed0e295ce4f15a8067e643794a6788fd9fa4"
+  },
+  "pebble_bed_far": {
+    "triangles": 8,
+    "sha256": "2f9fedf718530a58167ff5f0aed734725bb175d0ea1db3390757fd35d85612c2"
+  },
+  "forest_deadwood": {
+    "triangles": 74,
+    "sha256": "fedb942add785094b3477f98be0cd90ea220dc5e34e0b7f900d42a47bfb8be65"
+  },
+  "broken_ground_sticks": {
+    "triangles": 168,
+    "sha256": "e7109eef7f6811864bd9efa05ea801a5259d7051a7788490fa99d71aaab39e6a"
+  },
+  "curled_leaf_litter": {
+    "triangles": 126,
+    "sha256": "752b38ffcd53cf49bcad1be35fbc3718c774b53533cca53504e385559a615692"
+  }
+}

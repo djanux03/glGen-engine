@@ -41,10 +41,11 @@ static constexpr uint NUM_LAYERS(2);
 }; // namespace BroadPhaseLayers
 
 namespace {
-glm::quat physicsRotation(const TransformComponent &transform) {
-  return glm::quat(glm::vec3(glm::radians(transform.rotation.x),
+glm::quat physicsRotation(const TransformComponent &transform, bool locked) {
+  // A locked character's pitch belongs to its camera, never its capsule.
+  return glm::quat(glm::vec3(locked ? 0.f : glm::radians(transform.rotation.x),
                             glm::radians(transform.rotation.y),
-                            glm::radians(transform.rotation.z)));
+                            locked ? 0.f : glm::radians(transform.rotation.z)));
 }
 
 glm::vec3 safeAbsScale(const glm::vec3 &scale) {
@@ -56,8 +57,8 @@ float maxComponent(const glm::vec3 &v) {
 }
 
 glm::vec3 colliderBodyPosition(const TransformComponent &transform,
-                               const ColliderComponent &collider) {
-  return transform.position + physicsRotation(transform) *
+                               const ColliderComponent &collider, bool locked) {
+  return transform.position + physicsRotation(transform, locked) *
                                   (collider.offset * transform.scale);
 }
 
@@ -219,12 +220,12 @@ void ::PhysicsSystem::update(Registry &registry, float dt) {
           glm::distance(rb.lastRotation, transform.rotation) > 0.001f) {
 
         const glm::vec3 bodyPos =
-            collider ? colliderBodyPosition(transform, *collider)
+            collider ? colliderBodyPosition(transform, *collider, rb.lockRotation && registry.has<CameraComponent>(entity))
                      : transform.position;
         JPH::RVec3 jphPos((JPH::Real)bodyPos.x, (JPH::Real)bodyPos.y,
                           (JPH::Real)bodyPos.z);
 
-        glm::quat q = physicsRotation(transform);
+        glm::quat q = physicsRotation(transform, rb.lockRotation && registry.has<CameraComponent>(entity));
         JPH::Quat jphRot(q.x, q.y, q.z, q.w);
 
         bodyInterface.SetPositionAndRotation(id, jphPos, jphRot,
@@ -314,8 +315,9 @@ void ::PhysicsSystem::createBodies(Registry &registry) {
       layer = Layers::MOVING;
     }
 
-    glm::quat q = physicsRotation(transform);
-    const glm::vec3 bodyPos = colliderBodyPosition(transform, collider);
+    const bool cameraBody = rigidBody.lockRotation && registry.has<CameraComponent>(entity);
+    glm::quat q = physicsRotation(transform, cameraBody);
+    const glm::vec3 bodyPos = colliderBodyPosition(transform, collider, cameraBody);
     JPH::RVec3 position((JPH::Real)bodyPos.x, (JPH::Real)bodyPos.y,
                         (JPH::Real)bodyPos.z);
     JPH::Quat rotation(q.x, q.y, q.z, q.w);
@@ -324,6 +326,8 @@ void ::PhysicsSystem::createBodies(Registry &registry) {
                                        layer);
     settings.mRestitution = rigidBody.restitution;
     settings.mFriction = rigidBody.friction;
+    if (rigidBody.lockRotation)
+      settings.mAllowedDOFs = JPH::EAllowedDOFs::TranslationX | JPH::EAllowedDOFs::TranslationY | JPH::EAllowedDOFs::TranslationZ;
     if (rigidBody.type == RigidbodyComponent::Type::Dynamic) {
       settings.mOverrideMassProperties =
           JPH::EOverrideMassProperties::CalculateInertia;

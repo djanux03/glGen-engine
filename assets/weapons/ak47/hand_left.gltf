@@ -1,0 +1,111 @@
+{
+  "asset": {
+    "version": "2.0"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "hand_left",
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2
+          },
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "hand_left.bin",
+      "byteLength": 391296
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 146736,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 146736,
+      "byteLength": 146736,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 293472,
+      "byteLength": 97824,
+      "target": 34962
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 12228,
+      "type": "VEC3",
+      "min": [
+        -0.20043636858463287,
+        -0.23113255202770233,
+        -0.05934959650039673
+      ],
+      "max": [
+        0.11692632734775543,
+        0.10615187138319016,
+        0.40904784202575684
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 12228,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 12228,
+      "type": "VEC2"
+    }
+  ],
+  "materials": [
+    {
+      "name": "Photographic skin",
+      "pbrMetallicRoughness": {
+        "baseColorTexture": {
+          "index": 0
+        },
+        "metallicFactor": 0,
+        "roughnessFactor": 0.57
+      }
+    }
+  ],
+  "images": [
+    {
+      "uri": "hands_albedo.png"
+    }
+  ],
+  "textures": [
+    {
+      "source": 0
+    }
+  ]
+}

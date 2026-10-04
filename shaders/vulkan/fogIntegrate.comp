@@ -1,0 +1,21 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "atmosphereData.glsl"
+layout(set=0,binding=6,rgba16f) writeonly uniform image3D uIntegratedOutput;
+layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
+void main() {
+    ivec2 cell=ivec2(gl_GlobalInvocationID.xy),size=imageSize(uIntegratedOutput).xy;
+    if(any(greaterThanEqual(cell,size))) return;
+    vec2 uv=(vec2(cell)+.5)/vec2(size);
+    vec3 ray=fogRay(uv);
+    float depthScale=1.0/max(-(uAtmosphere.view*vec4(ray,0)).z,.001);
+    vec4 accumulated=vec4(0,0,0,1);
+    imageStore(uIntegratedOutput,ivec3(cell,0),accumulated);
+    for(int z=0;z<int(uAtmosphere.grid.z);++z) {
+        vec4 medium=texelFetch(uFogFiltered,ivec3(cell,z),0);
+        float distance=(fogBoundary(float(z+1))-fogBoundary(float(z)))*depthScale;
+        accumulated.rgb+=accumulated.a*medium.rgb*fogSegmentWeight(medium.a,distance);
+        accumulated.a*=exp(-medium.a*distance);
+        imageStore(uIntegratedOutput,ivec3(cell,z+1),accumulated);
+    }
+}

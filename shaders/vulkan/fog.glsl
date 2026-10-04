@@ -140,16 +140,21 @@ float fogGroundDensityAt(float worldY) {
 // limit there is the flat-slab answer, density0 * len.
 float fogGroundOpticalDepth(float y0, float dy, float len) {
     float falloff = max(uFrame.fogParams.w, 0.0);
-    float density0 = uFrame.fogParams.x *
-                     exp(-max(y0 - uFrame.miscParams.y, 0.0) * falloff);
-    float k = dy * falloff;
-    if (falloff < 1e-5 || abs(k) < 1e-4)
-        return density0 * len;
-    // Rays climbing out of the layer (k > 0) converge on a finite total no
-    // matter how far they run; rays descending into it grow without bound,
-    // which is correct -- looking steeply down through mist from altitude
-    // should saturate.
-    return density0 * (1.0 - exp(-k * len)) / k;
+    float density=max(uFrame.fogParams.x,0.0);
+    float h0=y0-uFrame.miscParams.y,h1=h0+dy*len;
+    // Density is CLAMPED below the reference height in fogGroundDensityAt.
+    // Integrating an unclamped exponential instead made descending rays
+    // explode and gave opposite views of the same segment different fog.
+    if(falloff<1e-5)return density*len;
+    if(abs(dy)*len<1e-4)return density*len*exp(-max(h0,0.0)*falloff);
+    float low=min(h0,h1),high=max(h0,h1);
+    float below=max(min(high,0.0)-low,0.0);
+    float span=max(high-max(low,0.0),0.0);
+    float x=falloff*span;
+    // Evaluate from the lower endpoint so no positive exponent can overflow.
+    // Series avoids cancellation for shallow rays over long distances.
+    float integral=x<.001?span*(1.0-x*.5+x*x/6.0):(1.0-exp(-x))/falloff;
+    return density*(below+exp(-max(low,0.0)*falloff)*integral)/abs(dy);
 }
 
 struct FogSample {
@@ -177,19 +182,20 @@ struct FogSample {
 // pixel in the screen corner is ~15% further away than one in the center at
 // the same view Z, and got ~15% too little fog for it. Deriving it in one
 // place also removes the possibility of the three scene shaders disagreeing.
-FogSample fogAlongView(vec3 worldPos, float densityMult, float aerialMult,
+FogSample fogAlongSegment(vec3 camPos, vec3 worldPos, float startDistance,
+                       float densityMult, float aerialMult,
                        vec3 tint, vec3 skyAhead, vec3 skyAbove) {
     FogSample fog;
     fog.transmittance = vec3(1.0);
     fog.inscatter = vec3(0.0);
     fog.opacity = 0.0;
+    if(uFrame.atmosphereParams.x<.5) return fog;
 
-    vec3 camPos = uFrame.camPosWS.xyz;
     float dist = distance(worldPos, camPos);
     // Fog begins at fogStart: shrink the segment rather than subtracting from
     // the distance, so the height integral runs over the part of the ray that
     // is actually fogged instead of over a shifted phantom segment.
-    float start = clamp(uFrame.fogParams.y, 0.0, dist);
+    float start = clamp(startDistance, 0.0, dist);
     float len = dist - start;
     if (len <= 0.0 || uFrame.fogParams.z <= 0.001)
         return fog;
@@ -249,6 +255,23 @@ FogSample fogAlongView(vec3 worldPos, float densityMult, float aerialMult,
                         atmPhaseHG(mu, clamp(uFrame.fogParams3.x, 0.0, 0.95)) *
                         uFrame.fogParams2.y);
 
+    // Blizzard whiteout & horizontal blowing snow streaks (The Long Dark)
+    if (uFrame.blizzardParams.x > 0.001
+#ifdef FOG_AERIAL_ONLY
+        && false
+#endif
+    ) {
+        float blizzard = clamp(uFrame.blizzardParams.x, 0.0, 1.0);
+        float bSpeed = uFrame.blizzardParams.y;
+        vec3 windOffset = vec3(uFrame.miscParams.z * bSpeed, uFrame.miscParams.z * (-bSpeed * 0.2), uFrame.miscParams.z * (bSpeed * 0.4));
+        vec3 pB = (segMid + windOffset) * 0.08;
+        float snowStreak = fogNoise2D(vec2(pB.x * 0.35 + pB.z * 0.15, pB.y * 2.8 + pB.x * 0.7));
+        float blizzardDensity = blizzard * (0.012 + snowStreak * 0.022);
+        sigmaGround += blizzardDensity;
+        vec3 snowScatter = mix(vec3(0.92, 0.95, 0.98), skyAbove, 0.25);
+        srcGround += blizzardDensity * snowScatter;
+    }
+
     // ---- one medium -------------------------------------------------------
     vec3 sigma = sigmaAerial + vec3(sigmaGround);
     vec3 src = srcAerial + srcGround;
@@ -263,6 +286,9 @@ FogSample fogAlongView(vec3 worldPos, float densityMult, float aerialMult,
     // run to completion, 0 disables it outright, and values between mean what
     // they always did -- never lose more than this much of the surface.
     vec3 floorT = vec3(1.0 - clamp(uFrame.fogParams.z, 0.0, 1.0));
+#ifdef FOG_AERIAL_ONLY
+    floorT=vec3(0); // the compositor clamps the combined transport once
+#endif
     fog.transmittance = max(T, floorT);
     // Scale the added light by the same clamp, or a scene with fog dialled
     // down still receives full in-scatter on top of an unattenuated surface
@@ -272,6 +298,12 @@ FogSample fogAlongView(vec3 worldPos, float densityMult, float aerialMult,
     fog.inscatter = max(Lscat * admitted, vec3(0.0));
     fog.opacity = 1.0 - dot(fog.transmittance, vec3(0.2126, 0.7152, 0.0722));
     return fog;
+}
+
+FogSample fogAlongView(vec3 worldPos, float densityMult, float aerialMult,
+                       vec3 tint, vec3 skyAhead, vec3 skyAbove) {
+    return fogAlongSegment(uFrame.camPosWS.xyz,worldPos,uFrame.fogParams.y,
+                           densityMult,aerialMult,tint,skyAhead,skyAbove);
 }
 
 vec3 fogApply(vec3 color, FogSample fog) {
@@ -302,7 +334,10 @@ vec3 fogSky(vec3 color, vec3 viewDir, vec3 skyAbove) {
     // 4000 m stands in for "infinite" on the level/descending branches: far
     // enough past the far plane to saturate, near enough to keep exp() in a
     // range where the result is a clean 0 rather than a denormal.
-    float tau = (falloff < 1e-5 || k <= 1e-4) ? density0 * 4000.0 : density0 / k;
+    float tau = k > 1e-5 ? density0/k :
+        fogGroundOpticalDepth(uFrame.camPosWS.y,viewDir.y,4000.0);
+    if(k>1e-5&&uFrame.camPosWS.y<uFrame.miscParams.y)
+        tau+=uFrame.fogParams.x*(uFrame.miscParams.y-uFrame.camPosWS.y)/viewDir.y;
     tau *= strength;
 
     vec3 L = normalize(-uFrame.lightDir.xyz);

@@ -1,0 +1,17 @@
+{
+  "id": "scene/godrays_demo",
+  "generator": "import.gltf",
+  "seed": 0,
+  "params": {
+    "path": "assets/imported/godrays_demo.glb",
+    "recenter": "baseY",
+    "normalizeSize": 40.0
+  },
+  "provenance": {
+    "source": "https://github.com/mrdoob/three.js/blob/dev/examples/models/gltf/godrays_demo.glb",
+    "name": "Sunken Pillars",
+    "class": "scene",
+    "author": "three.js",
+    "tool": "glgen-fetch"
+  }
+}

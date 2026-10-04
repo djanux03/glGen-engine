@@ -1,0 +1,33 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#include "frameData.glsl"
+#include "atmosphereData.glsl"
+#include "skyModel.glsl"
+#include "fog.glsl"
+#include "fogMedium.glsl"
+layout(set=2,binding=0) uniform accelerationStructureEXT uTLAS;
+#include "surfaceShadow.glsl"
+layout(set=0,binding=7,rgba16f) writeonly uniform image3D uVisibilityOutput;
+layout(local_size_x=4,local_size_y=4,local_size_z=4) in;
+void main() {
+    ivec3 cell=ivec3(gl_GlobalInvocationID),size=imageSize(uVisibilityOutput);
+    if(any(greaterThanEqual(cell,size))) return;
+    vec3 uvw=(vec3(cell)+.5)/vec3(size);
+    float slice=uvw.z*uAtmosphere.grid.z;
+    vec3 p=fogPosition(uvw.xy,fogBoundary(max(slice,1.0)));
+    float visibility=1.0;
+    float density=uAtmosphere.ground.x*exp(-max(p.y-uAtmosphere.ground.z,0.0)*uAtmosphere.ground.y)+uAtmosphere.dust.x;
+    density+=fogBlizzardExtinction(p)+fogTerrainExtinction(p,-(uAtmosphere.view*vec4(p,1)).z);
+    if(uAtmosphere.controls.y>.5&&density>1e-6&&uFrame.lightParams.x>1e-6) {
+        visibility=0;
+        for(int i=0;i<4;++i) {
+            float angle=float(i)*1.57079632679;
+            vec3 direction=normalize(vec3(cos(angle)*.7,1,sin(angle)*.7));
+            visibility+=traceShadowMasked(p,direction,100.0,0xffu)*.25;
+        }
+    }
+    imageStore(uVisibilityOutput,cell,vec4(visibility));
+}

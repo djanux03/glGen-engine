@@ -1,7 +1,11 @@
+#include "MeshNormals.h"
 #include "Logger.h"
 #include "MeshParse.h"
 
 #include "tiny_gltf.h"
+
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -102,20 +106,53 @@ struct GLTFParseContext {
     return key;
   }
 
-  void processNode(int nodeIndex) {
+  static glm::mat4 getNodeLocalMatrix(const tinygltf::Node &node) {
+    if (node.matrix.size() == 16) {
+      glm::mat4 m(1.0f);
+      for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r)
+          m[c][r] = static_cast<float>(node.matrix[c * 4 + r]);
+      return m;
+    }
+    glm::mat4 m(1.0f);
+    if (node.translation.size() == 3) {
+      m = glm::translate(m, glm::vec3(static_cast<float>(node.translation[0]),
+                                      static_cast<float>(node.translation[1]),
+                                      static_cast<float>(node.translation[2])));
+    }
+    if (node.rotation.size() == 4) {
+      // glTF quaternion is [x, y, z, w], glm::quat constructor is (w, x, y, z)
+      glm::quat q(static_cast<float>(node.rotation[3]),
+                  static_cast<float>(node.rotation[0]),
+                  static_cast<float>(node.rotation[1]),
+                  static_cast<float>(node.rotation[2]));
+      m = m * glm::mat4_cast(q);
+    }
+    if (node.scale.size() == 3) {
+      m = glm::scale(m, glm::vec3(static_cast<float>(node.scale[0]),
+                                  static_cast<float>(node.scale[1]),
+                                  static_cast<float>(node.scale[2])));
+    }
+    return m;
+  }
+
+  void processNode(int nodeIndex, const glm::mat4 &parentTransform = glm::mat4(1.0f)) {
     if (nodeIndex < 0 || nodeIndex >= (int)model.nodes.size())
       return;
 
     const tinygltf::Node &node = model.nodes[nodeIndex];
+    const glm::mat4 worldTransform = parentTransform * getNodeLocalMatrix(node);
 
     if (node.mesh >= 0)
-      processMesh(model.meshes[node.mesh]);
+      processMesh(model.meshes[node.mesh], worldTransform);
 
     for (size_t i = 0; i < node.children.size(); i++)
-      processNode(node.children[i]);
+      processNode(node.children[i], worldTransform);
   }
 
-  void processMesh(const tinygltf::Mesh &mesh) {
+  void processMesh(const tinygltf::Mesh &mesh, const glm::mat4 &worldTransform) {
+    const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(worldTransform)));
+
     for (size_t i = 0; i < mesh.primitives.size(); i++) {
       const tinygltf::Primitive &primitive = mesh.primitives[i];
 
@@ -187,7 +224,9 @@ struct GLTFParseContext {
         MeshVertex vertex;
         const float *pos =
             reinterpret_cast<const float *>(positions + v * posStride);
-        vertex.pos = glm::vec3(pos[0], pos[1], pos[2]);
+        const glm::vec4 worldPos =
+            worldTransform * glm::vec4(pos[0], pos[1], pos[2], 1.0f);
+        vertex.pos = glm::vec3(worldPos);
 
         submesh.aabbMin = glm::min(submesh.aabbMin, vertex.pos);
         submesh.aabbMax = glm::max(submesh.aabbMax, vertex.pos);
@@ -196,9 +235,10 @@ struct GLTFParseContext {
         if (normals) {
           const float *n =
               reinterpret_cast<const float *>(normals + v * normStride);
-          vertex.normal = glm::vec3(n[0], n[1], n[2]);
+          const glm::vec3 worldNorm = normalMatrix * glm::vec3(n[0], n[1], n[2]);
+          vertex.normal = glm::length(worldNorm) > 1e-6f ? glm::normalize(worldNorm) : glm::vec3(0, 1, 0);
         } else {
-          vertex.normal = glm::vec3(0, 1, 0);
+          vertex.normal = glm::vec3(0); // reconstructed from triangles after node transforms
         }
 
         if (uvs) {
@@ -434,5 +474,6 @@ std::unique_ptr<MeshData> parseMeshGLTF(const std::string &path) {
                         std::to_string(data->submeshes.size()) +
                         " submeshes.");
 
+  repairMissingNormals(*data);
   return data;
 }

@@ -23,6 +23,9 @@ struct MeshVertex {
   // but needs zero new pipelines/upload paths, since non-terrain pipelines
   // simply never declare a vertex attribute for it.
   glm::vec4 terrainParams{0.0f};
+  // Terrain-only broad grass contact shading, baked from shared patch masks.
+  // Ordinary mesh pipelines leave this attribute unbound.
+  float grassGroundOcclusion = 0.0f;
 };
 
 // Decoded 8-bit image payload for textures that cannot be (re)read from disk

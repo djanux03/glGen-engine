@@ -6,6 +6,7 @@
 #include "ECS/Components.h"
 #include "Keyboard.h"
 #include "Mouse.h"
+#include "Gameplay/PlayerSpawn.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -122,7 +123,7 @@ void VkPlayerControllerSystem::update(VkAppState &state, float dt, bool active) 
 
   const bool sprint =
       Keyboard::key(GLFW_KEY_LEFT_SHIFT) || Keyboard::key(GLFW_KEY_RIGHT_SHIFT);
-  const float baseSpeed = 50.0f;
+  const float baseSpeed = 5.0f;
   const float speed =
       baseSpeed *
       (!state.input.creativeFlight && sprint ? state.input.runMult : 1.0f);
@@ -149,7 +150,7 @@ void VkPlayerControllerSystem::update(VkAppState &state, float dt, bool active) 
   float groundClearance = 1.65f;
   if (reg.has<ColliderComponent>(state.gameplay.playerId)) {
     const auto &col = reg.get<ColliderComponent>(state.gameplay.playerId);
-    groundClearance = col.dimensions.y * 0.9f;
+    groundClearance = gameplay::playerEyeHeight(tr, col);
   }
   constexpr float kGroundSnap = 1.2f;
   constexpr float kGravity = -9.8f;
@@ -159,13 +160,18 @@ void VkPlayerControllerSystem::update(VkAppState &state, float dt, bool active) 
   mGrounded = false;
   float groundY = -3.402823466e+38F;
 
-  PhysicsRaycastResult groundHit = state.physicsSystem.raycast(
-      tr.position, glm::vec3(0.0f, -1.0f, 0.0f), 5.0f, state.gameplay.playerId);
-  if (groundHit.hit) {
-    groundY = groundHit.position.y;
-  } else if (state.terrainSubsystem) {
+  if (state.terrainSubsystem && state.terrainSubsystem->hasTerrain()) {
+    // The terrain sampler is available before streamed collision chunks are
+    // ready. A ray from eye height can hit an interactive tree capsule and
+    // incorrectly treat its crown as walkable ground, snapping the player up.
     groundY = state.terrainSubsystem->heightAt(
         glm::vec2(tr.position.x, tr.position.z));
+  } else {
+    PhysicsRaycastResult groundHit = state.physicsSystem.raycast(
+        tr.position, glm::vec3(0.0f, -1.0f, 0.0f), 5.0f,
+        state.gameplay.playerId);
+    if (groundHit.hit)
+      groundY = groundHit.position.y;
   }
 
   const float desiredY = groundY + groundClearance;
@@ -174,6 +180,14 @@ void VkPlayerControllerSystem::update(VkAppState &state, float dt, bool active) 
     tr.position.y = desiredY;
     mVerticalVelocity = 0.0f;
     mGrounded = true;
+    if (reg.has<RigidbodyComponent>(state.gameplay.playerId)) {
+      auto &rb = reg.get<RigidbodyComponent>(state.gameplay.playerId);
+      // Ground samples precede streamed colliders. Do not bank Jolt gravity
+      // while analytically grounded, then drop through the floor in one step.
+      rb.pendingLinearVelocity = rb.linearVelocity;
+      rb.pendingLinearVelocity.y = 0;
+      rb.setLinearVelocity = true;
+    }
   }
 
   if (mGrounded && Keyboard::key(GLFW_KEY_SPACE)) {

@@ -1,0 +1,51 @@
+#version 460
+layout(local_size_x=8,local_size_y=8) in;
+layout(set=0,binding=0) uniform sampler2D uCurrent;
+layout(set=0,binding=1) uniform sampler2D uScatteringDepth;
+layout(set=0,binding=2) uniform sampler2D uHistory;
+layout(set=0,binding=3) uniform sampler2D uHistoryDepth;
+layout(set=0,binding=4,rgba16f) writeonly uniform image2D outHistory;
+layout(set=0,binding=5,r32f) writeonly uniform image2D outDepth;
+layout(set=0,binding=6,std140) uniform Data {mat4 invViewProj,previousViewProj;vec4 camera,previousCamera,wind,controls;} u;
+void main() {
+ ivec2 p=ivec2(gl_GlobalInvocationID.xy),size=imageSize(outHistory);
+ if(any(greaterThanEqual(p,size)))return;
+ vec2 uv=(vec2(p)+.5)/vec2(size);vec4 current=texelFetch(uCurrent,p,0);
+ float depth=texelFetch(uScatteringDepth,p,0).r;
+ vec4 value=current;
+ if(u.controls.x>.5&&depth>0) {
+  vec4 farPoint=u.invViewProj*vec4(uv*2-1,1,1);
+  vec3 world=u.camera.xyz+normalize(farPoint.xyz/farPoint.w-u.camera.xyz)*depth;
+  // Density uses world XZ + wind offset; the same parcel was therefore at
+  // world + (currentWind - previousWind) in the preceding frame.
+  vec3 previousWorld=world+u.wind.xyz;
+  vec4 clip=u.previousViewProj*vec4(previousWorld,1);
+  vec2 pastUv=clip.xy/clip.w*.5+.5;
+  if(clip.w>0&&all(greaterThanEqual(pastUv,vec2(0)))&&all(lessThanEqual(pastUv,vec2(1)))) {
+   float expected=length(previousWorld-u.previousCamera.xyz),error=1e30;
+   ivec2 base=ivec2(floor(pastUv*vec2(size)-.5));
+   for(int y=0;y<2;++y)for(int x=0;x<2;++x) {
+    float oldDepth=texelFetch(uHistoryDepth,clamp(base+ivec2(x,y),ivec2(0),size-1),0).r;
+    if(oldDepth>0)error=min(error,abs(oldDepth-expected));
+   }
+   if(error<max(50.0,expected*.08)) {
+    vec4 lo=current,hi=current,mean=vec4(0),moment=vec4(0);
+    for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x) {
+     vec4 n=texelFetch(uCurrent,clamp(p+ivec2(x,y),ivec2(0),size-1),0);
+     lo=min(lo,n);hi=max(hi,n);mean+=n;moment+=n*n;
+    }
+    mean/=9;moment/=9;vec4 sigma=sqrt(max(moment-mean*mean,vec4(0)));
+    lo=max(lo,mean-sigma*1.5);hi=min(hi,mean+sigma*1.5);
+    vec4 history=clamp(textureLod(uHistory,pastUv,0),lo,hi);
+    float motion=length((pastUv-uv)*vec2(size));
+    float weight=u.controls.y*mix(1.0,.75,smoothstep(1,16,motion));
+    weight*=1.0-smoothstep(.08,.35,abs(history.a-current.a));
+    value=mix(current,history,weight);
+   }
+  }
+ }
+ imageStore(outHistory,p,vec4(max(value.rgb,vec3(0)),clamp(value.a,0,1)));
+ // Depth always belongs to today's volume; filtering it drags a disappearing
+ // bank through empty sky and makes disocclusion impossible to reject.
+ imageStore(outDepth,p,vec4(depth));
+}

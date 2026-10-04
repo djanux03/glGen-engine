@@ -21,6 +21,7 @@
 #include "gameplay/VkPlayerControllerSystem.h"
 #include "gameplay/VkPlayerInteractionSystem.h"
 #include "gameplay/VkSpaceshipControlSystem.h"
+#include "gameplay/VkRifleSystem.h"
 
 #include "SubsystemManager.h"
 
@@ -34,6 +35,7 @@ class VulkanRenderSystem;
 } // namespace vkrhi
 class VkEditor;
 class VkTerrainSubsystem;
+class VkAudioSubsystem;
 
 struct VkAppState {
   // Window / timing
@@ -82,6 +84,7 @@ struct VkAppState {
   VkPlayerControllerSystem playerController;
   VkPlayerInteractionSystem playerInteraction;
   VkSpaceshipControlSystem spaceshipControl;
+  VkRifleSystem rifleSystem;
 
   // Non-owning: these live in glGenVk's main() for the app's lifetime; the
   // subsystems and gameplay systems above only reference them.
@@ -95,6 +98,7 @@ struct VkAppState {
   // ground candidate that doesn't depend on it is what keeps the player
   // from falling through on spawn or right after a terrain regenerate().
   VkTerrainSubsystem *terrainSubsystem = nullptr;
+  VkAudioSubsystem *audioSubsystem = nullptr;
 
   SubsystemManager subsystems;
 };

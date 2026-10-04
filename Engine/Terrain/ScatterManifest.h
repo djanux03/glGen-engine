@@ -13,7 +13,7 @@
 // R5 lights up Grass-typed layers, which R4 parsed but skipped. Grass
 // differs from trees/rocks in kind, not just density: it is placed by the
 // tens of thousands per chunk, so it needs its own culling granularity
-// (cullCellSize), its own draw distance, no ray-traced shadow contribution,
+// (cullCellSize), its own draw distance, sparse ray-traced shadow geometry,
 // and vertex wind. Those knobs live on ScatterLayer alongside the existing
 // placement rules rather than in a separate grass system -- placement,
 // biome gating and clustering are identical machinery.
@@ -32,6 +32,13 @@ enum class ScatterCollisionType {
                  // yet -- ColliderComponent only has Box/Sphere/Capsule)
 };
 
+// Optional render-only detail levels. Placement and collision always use the
+// base mesh; a camera move switches geometry without regenerating scatter.
+struct ScatterMeshLod {
+  std::string meshPath;
+  float distance = 0.0f;
+};
+
 struct ScatterClustering {
   // Tree stands: a low-frequency mask gates candidates so trees cluster
   // into groves with clearings, rather than an even sprinkle.
@@ -43,13 +50,25 @@ struct ScatterClustering {
   bool outcrops = false;
 };
 
+// Fixed landmarks share the normal instanced rendering and chunk lifetime.
+// Coordinates are world XZ; Y follows the generated terrain.
+struct ScatterPlacement {
+  glm::vec2 worldXZ{0};
+  float yawDegrees = 0;
+  float scale = 1;
+};
+
 // One scattered layer. Field names/defaults mirror the plan's §6a JSON
 // example 1:1 so a hand-written terrain_scatter.json reads naturally.
 struct ScatterLayer {
   std::string name;
   std::string meshPath; // resolved relative to the project root if not absolute
+  // Optional casting-only mesh, sharing local coordinates with the base mesh.
+  // Grass normally uses baked patch contact shading and leaves this empty.
+  std::string shadowMeshPath;
   ScatterLayerType type = ScatterLayerType::Tree;
 
+  std::vector<ScatterPlacement> fixedPlacements;
   float density = 0.01f; // instances / m^2 at full biome weight (1.0)
 
   // Per-biome density multipliers -- dotted with the biome weights at each
@@ -103,14 +122,14 @@ struct ScatterLayer {
   float slopeMax = 1.0f;      // reject candidates steeper than this (0..1, 1=vertical)
   float moistureMin = 0.0f;
   float sinkIntoGround = 0.0f; // meters sunk below the sampled ground height
+  // Large rocks/deadwood should leave authored service tracks navigable.
+  // Small gravel can opt out; fixed landmarks keep their explicit placement.
+  bool avoidTracks = false;
 
   ScatterCollisionType collision = ScatterCollisionType::None;
-  // R5: now actually wired (it was inert in R4). false keeps this layer out
-  // of the TLAS entirely, so it neither casts nor receives ray-traced
-  // shadows. Grass MUST set this false: the TLAS gets one instance per
-  // placement, and grass places instances by the ten-thousand -- the build
-  // cost and traversal cost both scale with it, for a shadow contribution
-  // that is invisible at blade scale.
+  // false keeps this layer out of the TLAS (casting only; shadow reception
+  // still comes from the shader). Stock grass disables casting and uses broad
+  // ground contact shading; a separate master switch bounds custom grass too.
   bool castRayShadow = true;
   bool interactive = false; // trees only: eligible for capsule promotion
 
@@ -137,6 +156,7 @@ struct ScatterLayer {
   // grass can cut out at 90m while trees stay visible to the far plane.
   // 0 or >= 1e6 = fall back to the global setting.
   float maxDrawDistance = 1.0e6f;
+  std::vector<ScatterMeshLod> meshLods;
   // Distance at which placement density starts thinning toward zero at
   // maxDrawDistance. Applied at scatter time against the camera position the
   // chunk was built for, so it is a coarse, per-chunk-build approximation --
@@ -156,10 +176,8 @@ struct ScatterLayer {
   // instance, fading to none at its tip. 0 = flat, unoccluded shading.
   //
   // Real grass is shadowed near the ground by its own neighbours and by the
-  // blades above it. Reproducing that literally means putting every blade in
-  // the ray-traced shadow pass, which grass cannot afford (see
-  // castRayShadow). This approximates the result with a vertical gradient in
-  // the fragment shader instead -- one multiply, no geometry, no rays -- and
+  // blades above it. This also drives the terrain patch contact mask; the
+  // vertical gradient approximates unresolved ambient occlusion -- one multiply -- and
   // it is what makes grass read as growing OUT of the terrain rather than
   // resting on top of it. Applies mostly to ambient, which is where the
   // real-world effect lives.
@@ -167,6 +185,8 @@ struct ScatterLayer {
   // Painterly silhouette/backlight multiplier. Kept in the manifest so
   // replacement Blender foliage can tune its crown response per layer.
   float foliageSssStrength = 1.0f;
+  // Opt-in surface snow; unrelated scene objects never inherit winter coating.
+  bool receivesSnow = false;
 
   // Side length (meters) of the sub-cell grid this layer's instances are
   // bucketed into for frustum/distance culling. 0 = one culling range per
@@ -239,3 +259,7 @@ bool loadScatterManifest(const std::string &jsonPath, ScatterManifest &out);
 // directories if needed. Used once at first run (if terrain_scatter.json
 // doesn't exist yet) so there's something for the user to edit.
 bool writeScatterManifest(const std::string &jsonPath, const ScatterManifest &manifest);
+
+#include "json.hpp"
+nlohmann::json scatterManifestToJson(const ScatterManifest &manifest);
+bool scatterManifestFromJson(const nlohmann::json &j, ScatterManifest &out);

@@ -125,7 +125,14 @@ bool VulkanRenderSystem::update(Registry &registry, VulkanRenderer &renderer) {
     if (handle == UINT32_MAX)
       continue;
 
-    renderer.addInstance(handle, worldMatrix(registry, e));
+    const MaterialAsset *material=nullptr;
+    if(registry.has<MaterialOverrideComponent>(e)) {
+      const auto &override=registry.get<MaterialOverrideComponent>(e);
+      if(override.enabled)material=&override.material;
+    }
+    // Keep one GPU mesh/BLAS per asset. An instance override is draw state,
+    // not a reason to clone geometry or change every copy of the same asset.
+    renderer.addInstance(handle,worldMatrix(registry,e),mc.isTerrain,material,mc.castsShadow,mc.isViewModel);
   }
 
   // First scene, or new meshes since the last finalize: (re)build the BLAS

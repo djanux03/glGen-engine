@@ -8,7 +8,7 @@ struct AudioSettings {
   float masterVolume = 1.0f;
 
   bool ambientEnabled = true;
-  std::string ambientPath;
+  std::string ambientPath = "assets/cricket.ogg";
   float ambientVolume = 0.65f;
 
   bool footstepsEnabled = true;

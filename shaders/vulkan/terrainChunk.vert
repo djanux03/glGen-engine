@@ -1,9 +1,9 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-// Terrain-only vertex stage -- a copy of mesh.vert plus a 4th vertex
-// attribute (MeshVertex::terrainParams: curvature, rockMask, wForest,
-// wMountain, all 0..1) that only the terrain pipeline binds. Kept as a
+// Terrain-only vertex stage -- a copy of mesh.vert plus terrainParams
+// (curvature, rockMask, wForest, wMountain) and grass contact shade.
+// Only the terrain pipeline binds these extra attributes. Kept as a
 // separate shader file rather than added to mesh.vert itself because
 // mesh.vert is shared by every prop/scene pipeline, which only declare 3
 // vertex attributes (pos/normal/uv) in their VkPipelineVertexInputStateCreateInfo
@@ -19,12 +19,14 @@ layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inUV;
 layout(location = 3) in vec4 inTerrainParams;
+layout(location = 4) in float inGrassGroundOcclusion;
 
 layout(location = 0) out vec3 vNormalWS;
 layout(location = 1) out vec2 vUV;
 layout(location = 2) out vec3 vWorldPos;
 layout(location = 3) out float vViewZ;
 layout(location = 4) out vec4 vTerrainParams;
+layout(location = 5) out float vGrassGroundOcclusion;
 
 #include "frameData.glsl"
 
@@ -41,4 +43,5 @@ void main() {
     vWorldPos = world.xyz;
     vViewZ = -(uFrame.view * world).z; // positive distance in front of camera
     vTerrainParams = inTerrainParams;
+    vGrassGroundOcclusion = inGrassGroundOcclusion;
 }

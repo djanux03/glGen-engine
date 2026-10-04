@@ -1,0 +1,8 @@
+{
+  "asset": "meadow_floor_albedo.png",
+  "source": "Generated with the built-in image_gen tool",
+  "date": "2026-10-03",
+  "prompt": "Use case: photorealistic-natural\nAsset type: seamless square terrain base-colour texture for a realistic Vulkan game meadow, 2048x2048.\nPrimary request: a directly overhead orthographic photogrammetry-style scan of a damp rough meadow floor, composed mainly of flattened short olive grass and fine old straw intertwined over moss and soil. Natural irregular thin bent grass leaves lying close to the ground, a few tiny broken sticks, small muted brown leaf scraps. Colour palette is restrained grey olive, moss green, khaki straw and dark earthy roots. Fine detail but soft low contrast, realistic gradual colour variation along each individual flattened grass leaf. Varied little patches and gaps, no uniform lawn, no upright tall blades.\nLighting: neutral diffuse overcast, de-lit albedo, no directional cast shadows, no glossy highlights, no vignette.\nComposition: covers the entire square from edge to edge, no sky, no scene perspective, no grey cutout backdrop. Seamlessly tileable edges and even density with natural small-scale irregularity. Physical footprint around 1.5 metres square. No big rocks, no flowers, no text, no border. This is the ground underneath separate 3D grass bunches, not a picture of a grass field.",
+  "usage": "Stock meadow slot 0: flattened grass and moss under separate 3D botanical bunches. Diffuse albedo only; no mismatched normal or height map.",
+  "physicalFootprintMetres": 1.8
+}

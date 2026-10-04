@@ -1,0 +1,15 @@
+{
+  "id": "terrain/low_scrub",
+  "generator": "import.gltf",
+  "seed": 0,
+  "params": {
+    "path": "assets/terrain_dressing/low_scrub.gltf",
+    "recenter": "baseY"
+  },
+  "provenance": {
+    "class": "terrain_dressing",
+    "author": "glGen",
+    "tool": "Tools/glgen-trees/make_terrain_dressing.py",
+    "note": "Original deterministic mesh; existing texture provenance retained. Shared render LODs are connected by scenery scatter manifests."
+  }
+}

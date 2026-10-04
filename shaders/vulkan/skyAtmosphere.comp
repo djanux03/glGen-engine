@@ -1,0 +1,74 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "skyLutSample.glsl"
+layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
+layout(set=0,binding=19,rgba16f) uniform writeonly image2D outTrans;
+layout(set=0,binding=20,rgba16f) uniform writeonly image2D outMulti;
+layout(set=0,binding=21,rgba16f) uniform writeonly image2D outSky;
+layout(set=0,binding=22,rgba16f) uniform writeonly image2D outSkyT;
+layout(set=0,binding=23,rgba16f) uniform writeonly image3D outAerial;
+layout(set=0,binding=24,rgba16f) uniform writeonly image3D outAerialT;
+layout(push_constant) uniform Push {mat4 invViewProj;vec4 camera;vec4 sun;vec4 moon;vec4 controls;} pc;
+// pc.camera.w=haze, controls.w=pass. Sun/moon directions point to emitters;
+// their w values are the existing top-of-atmosphere irradiance scale.
+void integrate(vec3 p,vec3 ray,float maximum,int steps,bool bounce,bool isotropic,
+               vec3 toSun,vec3 toMoon,vec3 sun,vec3 moon,
+               out vec3 L,out vec3 T,out vec3 response) {
+ L=vec3(0);T=vec3(1);response=vec3(0);
+ vec2 ground=skySphere(p,ray,SKY_BOTTOM),shell=skySphere(p,ray,SKY_TOP);
+ bool hitsGround=ground.x>0;float distance=min(maximum,max(shell.y,0));
+ if(hitsGround) distance=min(distance,ground.x);
+ float previous=0;
+ for(int i=0;i<steps;++i) {
+  float u=float(i+1)/steps,next=distance*u*u,dt=next-previous;
+  vec3 samplePoint=p+ray*(previous+next)*.5;previous=next;
+  float h=max(length(samplePoint)-SKY_BOTTOM,0);
+  vec3 ext=skyExtinction(h,pc.camera.w),scatter=skyScattering(h,pc.camera.w),weight=skyWeight(ext,dt);
+  vec3 phase=isotropic?scatter/(4*SKY_PI):skyPhaseScattering(h,pc.camera.w,dot(ray,toSun));
+  vec3 source=sun*(skyLightTransmission(samplePoint,toSun)*phase);
+  if(!isotropic) source+=sun*skyMultiple(samplePoint,toSun)*scatter;
+  if(dot(moon,moon)>0) source+=moon*(skyLightTransmission(samplePoint,toMoon)*skyPhaseScattering(h,pc.camera.w,dot(ray,toMoon))+skyMultiple(samplePoint,toMoon)*scatter);
+  L+=T*source*weight;response+=T*scatter*weight;T*=exp(-ext*dt);
+ }
+ if(bounce&&hitsGround&&ground.x<=maximum) {
+  vec3 end=p+ray*ground.x,n=normalize(end);const vec3 albedo=vec3(.062,.072,.048);
+  L+=T*albedo/SKY_PI*(sun*skyLightTransmission(end,toSun)*max(dot(n,toSun),0)+moon*skyLightTransmission(end,toMoon)*max(dot(n,toMoon),0));
+  response+=T*albedo;
+ }
+}
+void main() {
+ ivec3 id=ivec3(gl_GlobalInvocationID);int pass=int(pc.controls.w);
+ if(pass==0) {
+  if(any(greaterThanEqual(id.xy,ivec2(256,64))))return;
+  vec2 params=skyTransParams(vec2(id.xy)/vec2(255,63));vec3 p=vec3(0,params.x,0),ray=vec3(sqrt(max(0,1-params.y*params.y)),params.y,0);
+  float distance=max(skySphere(p,ray,SKY_TOP).y,0),previous=0;vec3 tau=vec3(0);
+  for(int i=0;i<256;++i) {float u=float(i+1)/256,next=distance*u*u;vec3 point=p+ray*(previous+next)*.5;tau+=skyExtinction(length(point)-SKY_BOTTOM,pc.camera.w)*(next-previous);previous=next;}
+  imageStore(outTrans,id.xy,vec4(exp(-tau),1));return;
+ }
+ if(pass==1) {
+  if(any(greaterThanEqual(id.xy,ivec2(32))))return;
+  vec2 uv=vec2(id.xy)/31;float mu=uv.x*2-1;
+  vec3 p=vec3(0,SKY_BOTTOM+max(.002,uv.y*(SKY_TOP-SKY_BOTTOM)),0),light=vec3(sqrt(max(0,1-mu*mu)),mu,0),sum=vec3(0),feedback=vec3(0);
+  // Equal-solid-angle deterministic sphere quadrature. Psi_ms = L2/(1-f_ms)
+  // is the isotropic higher-order closure from Hillaire equations 7 and 10.
+  for(int i=0;i<64;++i) {float y=1-2*(float(i)+.5)/64,az=float(i)*2.39996323;vec3 ray=vec3(cos(az)*sqrt(1-y*y),y,sin(az)*sqrt(1-y*y)),L,T,R;
+   integrate(p,ray,1e5,32,true,true,light,-light,vec3(1),vec3(0),L,T,R);sum+=L/64;feedback+=R/64;}
+  imageStore(outMulti,id.xy,vec4(sum/max(vec3(.001),1-feedback),1));return;
+ }
+ if(pass==2) {
+  if(any(greaterThanEqual(id.xy,ivec2(192,108))))return;
+  vec3 p=skyPlanet(pc.camera.y);vec2 params=skyViewParams((vec2(id.xy)+.5)/vec2(192,108),p.y);
+  vec3 ray=vec3(sqrt(max(0,1-params.y*params.y))*sqrt(max(0,1-params.x*params.x)),params.x,params.y*sqrt(max(0,1-params.x*params.x)));
+  // Camera sky is rotationally symmetric about the sun; the moon is antipodal
+  // in the current engine, so its contribution fits this same 2-D table.
+  vec3 light=vec3(0,pc.sun.y,sqrt(max(0,1-pc.sun.y*pc.sun.y))),L,T,R;
+  integrate(p,ray,1e5,48,true,false,light,-light,vec3(pc.sun.w),vec3(.72,.82,1)*pc.moon.w,L,T,R);
+  imageStore(outSky,id.xy,vec4(L,1));imageStore(outSkyT,id.xy,vec4(T,1));return;
+ }
+ if(any(greaterThanEqual(id,ivec3(32))))return;
+ vec2 uv=(vec2(id.xy)+.5)/32;vec4 farPoint=pc.invViewProj*vec4(uv*2-1,1,1);vec3 delta=farPoint.xyz/farPoint.w-pc.camera.xyz;
+ vec3 ray=normalize(delta);float forward=dot(ray,normalize((pc.invViewProj*vec4(0,0,1,1)).xyz/(pc.invViewProj*vec4(0,0,1,1)).w-pc.camera.xyz));
+ float distance=32*pow(float(id.z)/31,2)/max(forward,.001);vec3 L,T,R;
+ integrate(skyPlanet(pc.camera.y),ray,distance,32,false,false,pc.sun.xyz,pc.moon.xyz,vec3(pc.sun.w),vec3(.72,.82,1)*pc.moon.w,L,T,R);
+ imageStore(outAerial,id,vec4(L,1));imageStore(outAerialT,id,vec4(T,1));
+}

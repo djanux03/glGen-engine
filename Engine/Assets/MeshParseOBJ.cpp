@@ -1,3 +1,4 @@
+#include "MeshNormals.h"
 #include "Logger.h"
 #include "MeshParse.h"
 
@@ -432,6 +433,7 @@ std::unique_ptr<MeshData> parseMeshOBJ(const std::string &objPath) {
     }
   }
 
+  repairMissingNormals(*data);
   return data;
 }
 

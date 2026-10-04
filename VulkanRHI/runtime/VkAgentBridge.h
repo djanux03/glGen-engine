@@ -1,4 +1,5 @@
 #pragma once
+#include "Rendering/AtmosphereSettings.h"
 // VkAgentBridge.h — the engine-facing half of the command port.
 //
 // CommandServer owns sockets and queues and knows nothing about the engine;
@@ -83,19 +84,27 @@ private:
     uint32_t entity = 0;
     std::string basePath;
     int steps = 8;
-    int current = -1; // -1 = not yet started
+    // Starting at -1 emitted an extra view and shifted every golden's angle.
+    int current = 0;
     float radius = 6.0f;
     float centerY = 0.0f;
     float baseY = 0.0f;
     bool shotRequested = false;
+    int settleFrames = 8; // converge sky/temporal history after each camera cut
     std::vector<std::string> paths;
     // Camera/light state to restore when the sequence finishes, so a
     // turntable does not silently leave the editor looking somewhere else.
     glm::vec3 savedCamPos{0.0f};
     float savedYaw = 0.0f, savedPitch = 0.0f;
     bool savedAutoExposure = false;
+    bool savedTemporalAA = false;
+    bool savedDeterministicCapture = false;
     float savedFixedTime = -1.0f;
     bool savedCameraGrade = true;
+    float savedExposure = 1.0f, savedSunYaw = 0.0f, savedSunPitch = 0.0f;
+    float savedFogDensity = 0.0f, savedFogMaxOpacity = 1.0f;
+    atmosphere::Settings savedAtmosphere;
+    float savedCloudMaxSteps=64,savedCloudLightTaps=3,savedCloudDetailScale=90;
   };
 
   void registerHandlers_();

@@ -1,5 +1,6 @@
 #include "TerrainScatter.h"
 #include "TerrainWater.h"
+#include "WoodlandLayout.h"
 
 #include <algorithm>
 #include <cmath>
@@ -104,6 +105,28 @@ private:
   std::unordered_map<int64_t, std::vector<glm::vec2>> mCells;
 };
 
+// Grass exposes even a heavily jittered grid as rows of repeated tufts when
+// viewed from above. A bounded dart-throwing pass retains the density budget
+// with no privileged horizontal/vertical axes; trees and rocks keep their
+// existing grid seeds and placements. Hash state makes each chunk reproducible.
+template <typename PlaceFn>
+void grassPoints(glm::vec2 origin, float size, float cellSize,
+                 uint32_t layerSeed, PlaceFn place) {
+  const int count = std::max(1, static_cast<int>(size*size/(cellSize*cellSize)));
+  SpacingGrid candidates(cellSize*.45f);
+  int accepted = 0;
+  for (int attempt=0; attempt<count*5 && accepted<count; ++attempt) {
+    uint32_t state = cellSeed(layerSeed,attempt,713);
+    // rand01 includes 1.0; keep ownership half-open even at that endpoint.
+    const float x = origin.x + std::min(rand01(state),.999999f)*size;
+    const float z = origin.y + std::min(rand01(state),.999999f)*size;
+    if (!candidates.accepts(x,z)) continue;
+    candidates.insert(x,z);
+    ++accepted;
+    place(x,z,state);
+  }
+}
+
 glm::vec3 normalAt(const TerrainNoiseSet &noiseSet, const TerrainSettings &settings,
                    glm::vec2 pos, float eps = 0.75f) {
   auto heightAt = [&](glm::vec2 p) {
@@ -206,6 +229,51 @@ EffectiveScatterLayer effectiveLayer(const ScatterLayer &layer,
   return e;
 }
 
+float grassGroundOcclusionAt(const ScatterManifest &manifest,
+    const TerrainNoiseSet &noise, const TerrainSettings &settings,
+    glm::vec3 worldPos, glm::vec3 normal, glm::vec3 biomeWeights,
+    float moisture, WaterCellCache *waterCache) {
+  if (!settings.spawnVegetation || !settings.spawnGrass ||
+      settings.grassDensityMultiplier <= 0 || settings.grassOcclusionStrength <= 0)
+    return 0;
+  const glm::vec2 pos(worldPos.x, worldPos.z);
+  const float surface = waterSurfaceAt(noise, settings, pos, nullptr, waterCache);
+  if (surface > kNoWater * .5f && worldPos.y < surface + settings.shoreScatterMargin)
+    return 0;
+  const auto habitat = settings.authoredWoodland
+      ? woodland::sample(pos, settings.worldRadius) : woodland::Sample{};
+  const float trackKeep = settings.authoredWoodland
+      ? 1.0f - woodland::smooth(.10f, .88f, habitat.track) : 1.0f;
+  if (settings.authoredWoodland && habitat.rock > .35f) return 0;
+  const float slope = 1.0f - glm::clamp(normal.y, 0.0f, 1.0f);
+  float opticalDensity = 0;
+  for (size_t li = 0; li < manifest.layers.size(); ++li) {
+    const auto &layer = manifest.layers[li];
+    if (layer.type != ScatterLayerType::Grass || slope > layer.slopeMax ||
+        moisture < layer.moistureMin) continue;
+    const auto eff = effectiveLayer(layer, settings);
+    if (eff.density <= 0 || eff.groundOcclusion <= 0) continue;
+    const float biome = glm::clamp(glm::dot(biomeWeights,
+        glm::vec3(layer.biomeMeadow, layer.biomeForest, layer.biomeMountain)), 0.0f, 1.0f);
+    float keep = 1;
+    if (layer.patchScale > 1e-4f) {
+      const float offset = static_cast<float>(li) * 137.0f;
+      const float f = .06f * layer.patchScale;
+      const float patch = noise.detail.noise(pos.x*f+offset, pos.y*f-offset)*.5f+.5f;
+      keep = woodland::smooth(layer.patchThreshold-.13f, layer.patchThreshold+.13f, patch);
+    }
+    const float scale = (eff.scaleMin + eff.scaleMax) * .5f;
+    // About a metre-wide clump footprint, with bounded overlap. Broad contact
+    // shade follows density rather than drawing a black line for every leaf.
+    opticalDensity += eff.density * biome * keep * trackKeep *
+        eff.groundOcclusion * 1.54f * scale * scale;
+  }
+  // Store coverage, not a capped lighting reduction. Capping this at .42
+  // left dense stands mostly sunlit; the shader needs the full canopy mask
+  // to attenuate direct sun more strongly than diffuse sky light.
+  return 1.0f - std::exp(-1.7f * opticalDensity);
+}
+
 void scatterLayers(const ScatterManifest &manifest, const TerrainNoiseSet &noiseSet,
                    const TerrainSettings &settings, glm::vec2 chunkOrigin,
                    float chunkWorldSize, uint32_t chunkSeed,
@@ -292,6 +360,27 @@ void scatterLayers(const ScatterManifest &manifest, const TerrainNoiseSet &noise
     }
 
     const EffectiveScatterLayer eff = effectiveLayer(layer, settings);
+    if (!layer.fixedPlacements.empty()) {
+      // Half-open ownership prevents duplicates on a chunk boundary. Fixed
+      // landmarks bypass density/biome gates; reducing grass never moves them.
+      for (size_t pi=0; pi<layer.fixedPlacements.size(); ++pi) {
+        const auto &placement = layer.fixedPlacements[pi];
+        const auto pos = placement.worldXZ;
+        if (pos.x < chunkOrigin.x || pos.y < chunkOrigin.y ||
+            pos.x >= chunkOrigin.x+chunkWorldSize || pos.y >= chunkOrigin.y+chunkWorldSize)
+          continue;
+        const auto sample = sampleMacro(noiseSet,pos,settings);
+        const float h = computeHeight(sample,noiseSet,pos,settings,nullptr);
+        uint32_t state = hash32(static_cast<uint32_t>(pi)+static_cast<uint32_t>(li)*1009u);
+        makeInstance(layer,eff,li,{pos.x,h,pos.y},{0,1,0},state,
+                     sampleBiomeWeights(sample,settings,h));
+        auto &inst = out.back();
+        inst.transform = glm::translate(glm::mat4(1),glm::vec3(pos.x,h-layer.sinkIntoGround,pos.y))
+            *glm::rotate(glm::mat4(1),glm::radians(placement.yawDegrees),glm::vec3(0,1,0))
+            *glm::scale(glm::mat4(1),glm::vec3(placement.scale));
+      }
+      continue;
+    }
     if (eff.density <= 1e-6f)
       continue;
 
@@ -328,12 +417,27 @@ void scatterLayers(const ScatterManifest &manifest, const TerrainNoiseSet &noise
     // patches (which would defeat having two layers at all).
     const float patchOffset = static_cast<float>(li) * 137.0f;
 
-    jitteredGrid(chunkOrigin, chunkWorldSize, cellSize, layerSeed,
-                [&](float x, float z, uint32_t state) {
+    auto place = [&](float x, float z, uint32_t state) {
                   const glm::vec2 pos(x, z);
                   TerrainMacroSample sample = sampleMacro(noiseSet, pos, settings);
                   const float h = computeHeight(sample, noiseSet, pos, settings, nullptr);
                   const BiomeWeights w = sampleBiomeWeights(sample, settings, h);
+
+                  // Paths and exposed rock must stay open even if a scatter
+                  // layer accepts every biome. Use the mesher's layout authority.
+                  if (settings.authoredWoodland &&
+                      (layer.type != ScatterLayerType::Rock || layer.avoidTracks)) {
+                    const auto habitat = woodland::sample(pos, settings.worldRadius);
+                    // Fine ground cover thins through the ragged shoulder instead
+                    // of stopping at a single contour. Keep trees/large rocks out
+                    // of the road, and keep the compacted centre free of grass.
+                    const bool blockedTrack = layer.type == ScatterLayerType::Grass
+                        ? rand01(state) < woodland::smooth(.10f,.88f,habitat.track)
+                        : habitat.track > .12f;
+                    if (blockedTrack ||
+                        (layer.type != ScatterLayerType::Rock && habitat.rock > .35f))
+                      return;
+                  }
 
                   // Biome gate: this layer's per-biome multipliers dotted
                   // with the ACTUAL weights at this point (not the chunk
@@ -358,7 +462,12 @@ void scatterLayers(const ScatterManifest &manifest, const TerrainNoiseSet &noise
                     const float patch =
                         noiseSet.detail.noise(x * f + patchOffset, z * f - patchOffset) *
                             0.5f + 0.5f;
-                    if (patch < layer.patchThreshold)
+                    // Feather grass patch density; binary rejection left bare
+                    // strips between identical islands even at high density.
+                    const float keep = woodland::smooth(layer.patchThreshold-.13f,
+                                                        layer.patchThreshold+.13f,patch);
+                    if (layer.type == ScatterLayerType::Grass
+                            ? rand01(state) > keep : patch < layer.patchThreshold)
                       return;
                   }
 
@@ -430,15 +539,43 @@ void scatterLayers(const ScatterManifest &manifest, const TerrainNoiseSet &noise
                       const float ang = rand01(state) * glm::two_pi<float>();
                       const glm::vec2 satPos(x + std::cos(ang) * ring,
                                              z + std::sin(ang) * ring);
+                      // Satellites used to bypass every anchor gate: they could
+                      // float in lakes, block tracks and leak out of their owner
+                      // chunk. Check their own location before adding an instance.
+                      if (satPos.x < chunkOrigin.x || satPos.y < chunkOrigin.y ||
+                          satPos.x >= chunkOrigin.x + chunkWorldSize ||
+                          satPos.y >= chunkOrigin.y + chunkWorldSize)
+                        continue;
                       TerrainMacroSample satSample = sampleMacro(noiseSet, satPos, settings);
                       const float satH =
                           computeHeight(satSample, noiseSet, satPos, settings, nullptr);
                       const BiomeWeights satW = sampleBiomeWeights(satSample, settings, satH);
                       const glm::vec3 satNormal = normalAt(noiseSet, settings, satPos);
+                      if (1.0f - glm::clamp(satNormal.y, 0.0f, 1.0f) > layer.slopeMax ||
+                          satSample.moisture < layer.moistureMin)
+                        continue;
+                      const float satSurface = waterSurfaceAt(noiseSet, settings, satPos,
+                                                               nullptr, &waterCache);
+                      if (satSurface > kNoWater * .5f &&
+                          satH < satSurface + settings.shoreScatterMargin)
+                        continue;
+                      if (settings.authoredWoodland && layer.avoidTracks &&
+                          woodland::sample(satPos, settings.worldRadius).track > .12f)
+                        continue;
+                      const float satBiome = satW.meadow * layer.biomeMeadow +
+                                             satW.forest * layer.biomeForest +
+                                             satW.mountain * layer.biomeMountain;
+                      if (rand01(state) > glm::clamp(satBiome, 0.0f, 1.0f))
+                        continue;
+                      if (useSpacing && !spacing.accepts(satPos.x, satPos.y))
+                        continue;
+                      if (useSpacing) spacing.insert(satPos.x, satPos.y);
                       makeInstance(layer, eff, li, glm::vec3(satPos.x, satH, satPos.y),
                                   satNormal, state, satW);
                     }
                   }
-                });
+                };
+    if (isGrass) grassPoints(chunkOrigin,chunkWorldSize,cellSize,layerSeed,place);
+    else jitteredGrid(chunkOrigin,chunkWorldSize,cellSize,layerSeed,place);
   }
 }

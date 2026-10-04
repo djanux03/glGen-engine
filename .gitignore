@@ -99,6 +99,8 @@ install_manifest.txt
 /build.log
 
 /Build-tests/
+/Build-weapon-import/
+/Tools/.runtime/
 /Build-painterly/
 
 # Claude Code agent scaffolding (worktrees, local settings)

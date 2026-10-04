@@ -2,6 +2,8 @@
 
 #include "json.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 
@@ -58,9 +60,22 @@ std::string collisionTypeToString(ScatterCollisionType t) {
 void loadLayer(const json &j, ScatterLayer &layer) {
   loadString(j, "name", layer.name);
   loadString(j, "mesh", layer.meshPath);
+  loadString(j, "shadowMesh", layer.shadowMeshPath);
   if (j.contains("type") && j["type"].is_string())
     layer.type = parseLayerType(j["type"].get<std::string>());
   loadFloat(j, "density", layer.density);
+  if (j.contains("fixedPlacements") && j["fixedPlacements"].is_array()) {
+    for (const auto &a : j["fixedPlacements"]) {
+      if (!a.is_array() || a.size() != 4 ||
+          !a[0].is_number() || !a[1].is_number() ||
+          !a[2].is_number() || !a[3].is_number()) continue;
+      ScatterPlacement p{{a[0].get<float>(), a[1].get<float>()},
+                         a[2].get<float>(), a[3].get<float>()};
+      if (std::isfinite(p.worldXZ.x) && std::isfinite(p.worldXZ.y) &&
+          std::isfinite(p.yawDegrees) && std::isfinite(p.scale) && p.scale > 0)
+        layer.fixedPlacements.push_back(p);
+    }
+  }
 
   if (j.contains("biomes") && j["biomes"].is_object()) {
     const json &b = j["biomes"];
@@ -96,6 +111,7 @@ void loadLayer(const json &j, ScatterLayer &layer) {
   loadFloat(j, "slopeMax", layer.slopeMax);
   loadFloat(j, "moistureMin", layer.moistureMin);
   loadFloat(j, "sinkIntoGround", layer.sinkIntoGround);
+  loadBool(j, "avoidTracks", layer.avoidTracks);
 
   if (j.contains("collision") && j["collision"].is_string())
     layer.collision = parseCollisionType(j["collision"].get<std::string>());
@@ -111,8 +127,24 @@ void loadLayer(const json &j, ScatterLayer &layer) {
   }
 
   loadVec3(j, "tint", layer.tint);
+  if (j.contains("receivesSnow") && j["receivesSnow"].is_boolean())
+    layer.receivesSnow = j["receivesSnow"].get<bool>();
 
   loadFloat(j, "maxDrawDistance", layer.maxDrawDistance);
+  layer.meshLods.clear();
+  if (j.contains("meshLods") && j["meshLods"].is_array()) {
+    for (const auto &entry : j["meshLods"]) {
+      if (!entry.is_object()) continue;
+      ScatterMeshLod lod;
+      loadString(entry, "mesh", lod.meshPath);
+      loadFloat(entry, "distance", lod.distance);
+      if (!lod.meshPath.empty() && std::isfinite(lod.distance) && lod.distance > 0)
+        layer.meshLods.push_back(std::move(lod));
+    }
+    std::stable_sort(layer.meshLods.begin(), layer.meshLods.end(),
+                     [](const auto &a, const auto &b) { return a.distance < b.distance; });
+  }
+
   loadFloat(j, "densityFalloffStart", layer.densityFalloffStart);
   loadBool(j, "wind", layer.wind);
   loadFloat(j, "windStrength", layer.windStrength);
@@ -132,6 +164,7 @@ json layerToJson(const ScatterLayer &layer) {
   json j;
   j["name"] = layer.name;
   j["mesh"] = layer.meshPath;
+  if (!layer.shadowMeshPath.empty()) j["shadowMesh"] = layer.shadowMeshPath;
   j["type"] = layerTypeToString(layer.type);
   j["density"] = layer.density;
   j["biomes"] = {{"meadow", layer.biomeMeadow},
@@ -141,6 +174,11 @@ json layerToJson(const ScatterLayer &layer) {
                      {"standRadius", layer.clustering.standRadius},
                      {"clearingChance", layer.clustering.clearingChance},
                      {"outcrops", layer.clustering.outcrops}};
+  if (!layer.fixedPlacements.empty()) {
+    j["fixedPlacements"] = json::array();
+    for (const auto &p : layer.fixedPlacements)
+      j["fixedPlacements"].push_back({p.worldXZ.x,p.worldXZ.y,p.yawDegrees,p.scale});
+  }
   j["minSpacing"] = layer.minSpacing;
   j["scale"] = {layer.scaleMin, layer.scaleMax};
   j["heightScale"] = {layer.heightScaleMin, layer.heightScaleMax};
@@ -150,13 +188,21 @@ json layerToJson(const ScatterLayer &layer) {
   j["slopeMax"] = layer.slopeMax;
   j["moistureMin"] = layer.moistureMin;
   j["sinkIntoGround"] = layer.sinkIntoGround;
+  j["avoidTracks"] = layer.avoidTracks;
   j["collision"] = collisionTypeToString(layer.collision);
   j["castRayShadow"] = layer.castRayShadow;
   j["interactive"] = layer.interactive;
   j["meshUpAxisFixDeg"] = {layer.meshUpAxisFixDeg.x, layer.meshUpAxisFixDeg.y,
                           layer.meshUpAxisFixDeg.z};
+  j["receivesSnow"] = layer.receivesSnow;
   j["tint"] = {layer.tint.x, layer.tint.y, layer.tint.z};
   j["maxDrawDistance"] = layer.maxDrawDistance;
+  if (!layer.meshLods.empty()) {
+    j["meshLods"] = json::array();
+    for (const auto &lod : layer.meshLods)
+      j["meshLods"].push_back({{"mesh", lod.meshPath}, {"distance", lod.distance}});
+  }
+
   j["densityFalloffStart"] = layer.densityFalloffStart;
   j["wind"] = layer.wind;
   j["windStrength"] = layer.windStrength;
@@ -191,9 +237,18 @@ ScatterManifest defaultScatterManifest() {
   // bigger tree. heightScale is left near 1.0 here and used only for slight
   // per-instance unevenness -- see ScatterLayer::heightScaleMin.
   // minSpacing keeps trunks from interpenetrating at these canopy widths.
+  //
+  // The mesh is the spruce model (bark trunk + alpha-masked needle-spray
+  // cards, baked by Tools/glgen-trees/make_dense_spruce.py from the photo
+  // textures in assets/trees/spruce), not the faceted conifer_tall.obj cone
+  // stack: cut-out branch
+  // cards give a real ragged silhouette and dappled light, and the ray-traced
+  // shadows alpha-test them (surfaceShadow.glsl), so each tree casts the
+  // shadow of its branches rather than of a solid cone. The model is ~5 m
+  // tall, hence the scale range is roughly double the old one.
   ScatterLayer pine;
   pine.name = "pine_canopy";
-  pine.meshPath = "assets/trees/conifer_tall.obj";
+  pine.meshPath = "assets/trees/spruce/spruce_dense.gltf";
   pine.type = ScatterLayerType::Tree;
   pine.density = 0.05f;
   pine.biomeMeadow = 0.06f;  // rare lone trees
@@ -203,8 +258,8 @@ ScatterManifest defaultScatterManifest() {
   pine.clustering.standRadius = 25.0f;
   pine.clustering.clearingChance = 0.25f;
   pine.minSpacing = 6.0f;
-  pine.scaleMin = 0.9f;
-  pine.scaleMax = 1.5f;
+  pine.scaleMin = 2.0f;
+  pine.scaleMax = 3.3f;
   // Just enough spread to break up a uniform canopy line; small enough that
   // no individual tree reads as stretched.
   pine.heightScaleMin = 0.94f;
@@ -234,7 +289,7 @@ ScatterManifest defaultScatterManifest() {
   // shoulder-high scrub should not stop the player.
   ScatterLayer sapling;
   sapling.name = "pine_young";
-  sapling.meshPath = "assets/trees/conifer_small.obj";
+  sapling.meshPath = "assets/trees/spruce/spruce_dense.gltf";
   sapling.type = ScatterLayerType::Tree;
   sapling.density = 0.07f;
   sapling.biomeMeadow = 0.10f;
@@ -244,8 +299,8 @@ ScatterManifest defaultScatterManifest() {
   sapling.clustering.standRadius = 18.0f;
   sapling.clustering.clearingChance = 0.35f;
   sapling.minSpacing = 2.4f;
-  sapling.scaleMin = 0.30f;
-  sapling.scaleMax = 0.65f;
+  sapling.scaleMin = 0.45f;
+  sapling.scaleMax = 1.2f;
   sapling.heightScaleMin = 0.90f;
   sapling.heightScaleMax = 1.08f;
   sapling.leanMaxDeg = 11.0f;
@@ -283,63 +338,60 @@ ScatterManifest defaultScatterManifest() {
   m.layers.push_back(boulder);
 
   // --- Ground cover ---
-  // grass.obj is a real geometric clump (77 verts / 128 tris), not an alpha
-  // card, so it needs no cutout and looks correct from any angle -- the
-  // vegetation pipeline already rasterizes with VK_CULL_MODE_NONE. Its MTL
-  // points at a Forest.psd this engine cannot load, hence the explicit tints
-  // below.
+  // History: these layers used terraingeneratorassets/grass.obj, a solid
+  // 128-triangle clump authored with its up-axis along local X (hence the
+  // old -90 degree kGrassUpFix) and an MTL pointing at an unloadable
+  // Forest.psd (hence the old strong tints). Anyone reverting to it needs
+  // both back.
   //
-  // Like tree.obj (same source .blend), it is authored with its up-axis
-  // along local X, not Y: slicing the mesh along X gives a clean
-  // narrow-at-the-root, fanning-to-the-tips profile, while slicing along Y
-  // or Z gives that same fan seen side-on. Without kTreeUpFix every clump
-  // lies flat on the ground. Post-fix the mesh is ~0.72 units tall.
-  //
-  // The four settings that make grass affordable, all of them mandatory:
-  //   castRayShadow=false  keeps ~40k instances/chunk out of the TLAS
+  // The settings that keep dense grass affordable:
+  //   meshLods             retain blade detail only in the foreground
   //   maxDrawDistance      cuts drawing well before the terrain far plane
   //   cullCellSize         gives the distance test sub-chunk resolution
   //   patchScale           leaves bare ground, so density buys coverage
   //                        variety instead of a uniform carpet
+  //
+  // Shared variants mix low cover, taller curved blades and pale flowering
+  // stalks. Terrain patch coverage supplies contact shade
+  // without adding grass leaves to the TLAS.
   ScatterLayer grass;
   grass.name = "grass_meadow";
-  grass.meshPath = "assets/terraingeneratorassets/grass.obj";
+  grass.meshPath = "assets/grass/meadow_fine.gltf";
   grass.type = ScatterLayerType::Grass;
-  // instances/m^2 -- ~3 orders of magnitude above the tree layers. At 1.2 the
-  // ~0.7m-wide clumps sit ~0.9m apart, so they very nearly touch: dense
-  // enough to read as continuous cover, while keeping one 64m chunk at
-  // ~5k instances rather than the ~6.5k a fully-closed carpet would need.
-  grass.density = 1.2f;
+  // Distributed roots and an uneven patch mask leave the textured floor in
+  // view; filling every gap previously produced a uniform ribbon lattice.
+  grass.density = 1.3f;
   grass.biomeMeadow = 1.0f;
-  grass.biomeForest = 0.45f; // thins under canopy
-  grass.biomeMountain = 0.12f;
-  // grass.obj is ~0.72m wide / 0.57m tall unscaled, so these put a clump at
-  // roughly 0.3-0.6m across and 0.2-0.6m tall -- ankle-to-shin height. Scaled
-  // much above 1.0 the clump's individual blades become readable as
-  // metre-long shards rather than grass.
-  grass.scaleMin = 0.45f;
-  grass.scaleMax = 0.85f;
-  grass.heightScaleMin = 0.8f;
-  grass.heightScaleMax = 1.3f;
-  grass.leanMaxDeg = 14.0f;
+  grass.biomeForest = 0.65f; // thins under canopy
+  grass.biomeMountain = 0.32f;
+  // Mostly upright leaves with shorter sprigs; seed stalks have their own layer.
+  grass.scaleMin = 0.85f;
+  grass.scaleMax = 1.15f;
+  grass.heightScaleMin = 0.68f;
+  grass.heightScaleMax = 1.22f;
+  grass.leanMaxDeg = 7.0f;
   grass.randomYaw = true;
-  grass.alignToNormal = 0.7f; // lies along the slope it grows on
+  grass.alignToNormal = 0.9f; // lies along the slope it grows on
   grass.slopeMax = 0.72f;
-  grass.sinkIntoGround = 0.06f; // hides the clump's flat base
+  grass.sinkIntoGround = 0.015f;
   grass.collision = ScatterCollisionType::None;
   grass.castRayShadow = false;
   grass.interactive = false;
-  grass.tint = glm::vec3(0.42f, 0.66f, 0.26f);
+  // Near-neutral: the gradient atlas already has grass colour. The old tint
+  // (0.42, 0.66, 0.26) coloured an untextured mesh and would drown it.
+  grass.tint = glm::vec3(1.0f);
   grass.maxDrawDistance = 95.0f;
   grass.densityFalloffStart = 55.0f;
   grass.wind = true;
-  grass.windStrength = 0.13f;
+  grass.windStrength = 0.045f;
   grass.windSpeed = 1.6f;
-  grass.cullCellSize = 8.0f;
-  grass.patchScale = 1.0f;
-  grass.patchThreshold = 0.34f;
-  grass.groundOcclusion = 0.62f;
-  const glm::vec3 kGrassUpFix(0.0f, 0.0f, -90.0f);
+  grass.cullCellSize = 3.0f;
+  grass.meshLods = {{"assets/grass/meadow_fine_mid.gltf",12.0f},
+                   {"assets/grass/meadow_fine_far.gltf",40.0f}};
+  grass.patchScale = 1.35f;
+  grass.patchThreshold = 0.40f;
+  grass.groundOcclusion = 0.38f;
+  const glm::vec3 kGrassUpFix(0.0f, 0.0f, 0.0f); // glTF is Y-up
   grass.meshUpAxisFixDeg = kGrassUpFix;
   m.layers.push_back(grass);
 
@@ -348,18 +400,19 @@ ScatterManifest defaultScatterManifest() {
   // don't coincide. Same silhouette-variety argument as the two pine layers.
   ScatterLayer tuft;
   tuft.name = "grass_tuft";
-  tuft.meshPath = "assets/terraingeneratorassets/grass.obj";
+  tuft.meshPath = "assets/grass/meadow_seedheads.gltf";
+  tuft.shadowMeshPath = grass.shadowMeshPath;
   tuft.type = ScatterLayerType::Grass;
-  tuft.density = 0.45f;
+  tuft.density = 0.28f;
   tuft.biomeMeadow = 0.8f;
   tuft.biomeForest = 1.0f;
   tuft.biomeMountain = 0.3f;
   // Knee-to-thigh height: taller than the ground cover, but still grass.
-  tuft.scaleMin = 0.6f;
-  tuft.scaleMax = 1.0f;
-  tuft.heightScaleMin = 1.3f;
-  tuft.heightScaleMax = 2.0f;
-  tuft.leanMaxDeg = 20.0f;
+  tuft.scaleMin = 0.85f;
+  tuft.scaleMax = 1.12f;
+  tuft.heightScaleMin = .8f;
+  tuft.heightScaleMax = 1.15f;
+  tuft.leanMaxDeg = 5.0f;
   tuft.randomYaw = true;
   tuft.alignToNormal = 0.5f;
   tuft.slopeMax = 0.8f;
@@ -367,20 +420,55 @@ ScatterManifest defaultScatterManifest() {
   tuft.collision = ScatterCollisionType::None;
   tuft.castRayShadow = false;
   tuft.interactive = false;
-  tuft.tint = glm::vec3(0.55f, 0.62f, 0.24f);
+  tuft.tint = glm::vec3(1.0f, 0.97f, 0.82f); // drier, sun-bleached
   tuft.maxDrawDistance = 110.0f;
   tuft.densityFalloffStart = 70.0f;
   tuft.wind = true;
-  tuft.windStrength = 0.26f;
+  tuft.windStrength = 0.045f;
   tuft.windSpeed = 1.25f;
-  tuft.cullCellSize = 10.0f;
+  tuft.cullCellSize = 3.0f;
+  tuft.meshLods = {{"assets/grass/meadow_seedheads_mid.gltf",12.0f},
+                   {"assets/grass/meadow_seedheads_far.gltf",40.0f}};
   tuft.patchScale = 2.3f;
   tuft.patchThreshold = 0.46f;
-  tuft.groundOcclusion = 0.55f;
-  // Must match grass_meadow's -- both layers share grass.obj, and the
+  tuft.groundOcclusion = 0.32f;
+  // Must match grass_meadow's -- both layers share one mesh, and the
   // corrective rotation is a property of the file (see loadScatterMeshData).
   tuft.meshUpAxisFixDeg = kGrassUpFix;
   m.layers.push_back(tuft);
+
+  // Short sprigs accent the open floor beneath occasional taller patches.
+  ScatterLayer under = grass;
+  under.name = "grass_low_sward";
+  under.meshPath = "assets/grass/meadow_low.gltf";
+  under.density = 1.0f;
+  under.scaleMin = .85f; under.scaleMax = 1.2f;
+  under.heightScaleMin = .8f; under.heightScaleMax = 1.2f;
+  under.leanMaxDeg = 3;
+  under.windStrength = .025f;
+  under.groundOcclusion = .28f;
+  under.maxDrawDistance = 90; under.densityFalloffStart = 70;
+  under.patchScale = 1.8f; under.patchThreshold = .42f;
+  under.meshLods = {{"assets/grass/meadow_low_mid.gltf",10.0f},
+                    {"assets/grass/meadow_low_far.gltf",30.0f}};
+  m.layers.push_back(under);
+
+  // Distinct silhouettes share meshes across all instances. Append variants
+  // so existing tree/rock layer indices (and therefore their seeds) stay stable.
+  ScatterLayer broad = grass;
+  broad.name = "grass_broad_leaf";
+  broad.meshPath = "assets/grass/meadow_broad.gltf";
+  broad.meshLods = {{"assets/grass/meadow_broad_mid.gltf",12},
+                   {"assets/grass/meadow_broad_far.gltf",40}};
+  broad.density = .8f; broad.patchScale = 1.8f;
+  m.layers.push_back(broad);
+  ScatterLayer dry = grass;
+  dry.name = "grass_dry_stems";
+  dry.meshPath = "assets/grass/meadow_dry.gltf";
+  dry.meshLods = {{"assets/grass/meadow_dry_mid.gltf",12},
+                 {"assets/grass/meadow_dry_far.gltf",40}};
+  dry.density = .5f; dry.patchScale = 2.1f; dry.patchThreshold = .43f;
+  m.layers.push_back(dry);
 
   return m;
 }
@@ -397,6 +485,10 @@ bool loadScatterManifest(const std::string &jsonPath, ScatterManifest &out) {
     return false; // malformed JSON -- caller falls back to the default manifest
   }
 
+  return scatterManifestFromJson(j, out);
+}
+
+bool scatterManifestFromJson(const json &j, ScatterManifest &out) {
   if (!j.contains("layers") || !j["layers"].is_array())
     return false;
 
@@ -428,6 +520,15 @@ bool writeScatterManifest(const std::string &jsonPath, const ScatterManifest &ma
   if (path.has_parent_path())
     std::filesystem::create_directories(path.parent_path(), ec);
 
+  json j = scatterManifestToJson(manifest);
+  std::ofstream f(jsonPath);
+  if (!f.is_open())
+    return false;
+  f << j.dump(2);
+  return true;
+}
+
+json scatterManifestToJson(const ScatterManifest &manifest) {
   json j;
   j["version"] = manifest.version;
   json layers = json::array();
@@ -435,9 +536,5 @@ bool writeScatterManifest(const std::string &jsonPath, const ScatterManifest &ma
     layers.push_back(layerToJson(layer));
   j["layers"] = layers;
 
-  std::ofstream f(jsonPath);
-  if (!f.is_open())
-    return false;
-  f << j.dump(2);
-  return true;
+  return j;
 }

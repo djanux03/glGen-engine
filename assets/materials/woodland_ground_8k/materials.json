@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "description": "Woodland ground PBR textures; runtime paths are 2K, optional master paths are 8K; paths are relative to the repository root.",
+  "runtimeResolution": [
+    2048,
+    2048
+  ],
+  "masterResolution": [
+    8192,
+    8192
+  ],
+  "sourceResolution": [
+    1254,
+    1254
+  ],
+  "sourceDetail": "Built-in image generation at 1254x1254, edge-matched and Lanczos-upscaled. Height, normal, and roughness are derived from the generated color tiles.",
+  "materials": {
+    "moss": {
+      "name": "Woodland Moss",
+      "albedo": "assets/materials/woodland_ground_8k/textures/woodland_moss_basecolor.jpg",
+      "normal": "assets/materials/woodland_ground_8k/textures/woodland_moss_normal.jpg",
+      "roughness": "assets/materials/woodland_ground_8k/textures/woodland_moss_roughness.jpg",
+      "height": "assets/materials/woodland_ground_8k/textures/woodland_moss_height.jpg",
+      "tiling": 4.5,
+      "masters8k": {
+        "albedo": "assets/materials/woodland_ground_8k/masters_8k/woodland_moss_basecolor.jpg",
+        "normal": "assets/materials/woodland_ground_8k/masters_8k/woodland_moss_normal.jpg",
+        "roughness": "assets/materials/woodland_ground_8k/masters_8k/woodland_moss_roughness.jpg",
+        "height": "assets/materials/woodland_ground_8k/masters_8k/woodland_moss_height.jpg"
+      },
+      "source": "assets/materials/woodland_ground_8k/source_tiles/moss_source.png",
+      "sourceResolution": [
+        1254,
+        1254
+      ]
+    },
+    "forest_litter": {
+      "name": "Forest Leaf Litter",
+      "albedo": "assets/materials/woodland_ground_8k/textures/woodland_forest_litter_basecolor.jpg",
+      "normal": "assets/materials/woodland_ground_8k/textures/woodland_forest_litter_normal.jpg",
+      "roughness": "assets/materials/woodland_ground_8k/textures/woodland_forest_litter_roughness.jpg",
+      "height": "assets/materials/woodland_ground_8k/textures/woodland_forest_litter_height.jpg",
+      "tiling": 4.0,
+      "masters8k": {
+        "albedo": "assets/materials/woodland_ground_8k/masters_8k/woodland_forest_litter_basecolor.jpg",
+        "normal": "assets/materials/woodland_ground_8k/masters_8k/woodland_forest_litter_normal.jpg",
+        "roughness": "assets/materials/woodland_ground_8k/masters_8k/woodland_forest_litter_roughness.jpg",
+        "height": "assets/materials/woodland_ground_8k/masters_8k/woodland_forest_litter_height.jpg"
+      },
+      "source": "assets/materials/woodland_ground_8k/source_tiles/forest_litter_source.png",
+      "sourceResolution": [
+        1254,
+        1254
+      ]
+    },
+    "gravel": {
+      "name": "Compacted Woodland Gravel",
+      "albedo": "assets/materials/woodland_ground_8k/textures/woodland_gravel_basecolor.jpg",
+      "normal": "assets/materials/woodland_ground_8k/textures/woodland_gravel_normal.jpg",
+      "roughness": "assets/materials/woodland_ground_8k/textures/woodland_gravel_roughness.jpg",
+      "height": "assets/materials/woodland_ground_8k/textures/woodland_gravel_height.jpg",
+      "tiling": 3.5,
+      "masters8k": {
+        "albedo": "assets/materials/woodland_ground_8k/masters_8k/woodland_gravel_basecolor.jpg",
+        "normal": "assets/materials/woodland_ground_8k/masters_8k/woodland_gravel_normal.jpg",
+        "roughness": "assets/materials/woodland_ground_8k/masters_8k/woodland_gravel_roughness.jpg",
+        "height": "assets/materials/woodland_ground_8k/masters_8k/woodland_gravel_height.jpg"
+      },
+      "source": "assets/materials/woodland_ground_8k/source_tiles/gravel_source.png",
+      "sourceResolution": [
+        1254,
+        1254
+      ]
+    },
+    "bedrock": {
+      "name": "Exposed Forest Bedrock",
+      "albedo": "assets/materials/woodland_ground_8k/textures/woodland_bedrock_basecolor.jpg",
+      "normal": "assets/materials/woodland_ground_8k/textures/woodland_bedrock_normal.jpg",
+      "roughness": "assets/materials/woodland_ground_8k/textures/woodland_bedrock_roughness.jpg",
+      "height": "assets/materials/woodland_ground_8k/textures/woodland_bedrock_height.jpg",
+      "tiling": 4.5,
+      "masters8k": {
+        "albedo": "assets/materials/woodland_ground_8k/masters_8k/woodland_bedrock_basecolor.jpg",
+        "normal": "assets/materials/woodland_ground_8k/masters_8k/woodland_bedrock_normal.jpg",
+        "roughness": "assets/materials/woodland_ground_8k/masters_8k/woodland_bedrock_roughness.jpg",
+        "height": "assets/materials/woodland_ground_8k/masters_8k/woodland_bedrock_height.jpg"
+      },
+      "source": "assets/materials/woodland_ground_8k/source_tiles/bedrock_source.png",
+      "sourceResolution": [
+        1254,
+        1254
+      ]
+    },
+    "wet_soil": {
+      "name": "Marsh Wet Soil",
+      "albedo": "assets/materials/woodland_ground_8k/textures/woodland_wet_soil_basecolor.jpg",
+      "normal": "assets/materials/woodland_ground_8k/textures/woodland_wet_soil_normal.jpg",
+      "roughness": "assets/materials/woodland_ground_8k/textures/woodland_wet_soil_roughness.jpg",
+      "height": "assets/materials/woodland_ground_8k/textures/woodland_wet_soil_height.jpg",
+      "tiling": 3.5,
+      "masters8k": {
+        "albedo": "assets/materials/woodland_ground_8k/masters_8k/woodland_wet_soil_basecolor.jpg",
+        "normal": "assets/materials/woodland_ground_8k/masters_8k/woodland_wet_soil_normal.jpg",
+        "roughness": "assets/materials/woodland_ground_8k/masters_8k/woodland_wet_soil_roughness.jpg",
+        "height": "assets/materials/woodland_ground_8k/masters_8k/woodland_wet_soil_height.jpg"
+      },
+      "source": "assets/materials/woodland_ground_8k/source_tiles/wet_soil_source.png",
+      "sourceResolution": [
+        1254,
+        1254
+      ]
+    }
+  }
+}

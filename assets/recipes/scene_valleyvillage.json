@@ -1,0 +1,17 @@
+{
+  "id": "scene/valleyvillage",
+  "generator": "import.gltf",
+  "seed": 0,
+  "params": {
+    "path": "assets/imported/valleyvillage.glb",
+    "recenter": "baseY",
+    "normalizeSize": 100.0
+  },
+  "provenance": {
+    "source": "https://github.com/BabylonJS/Assets/blob/master/meshes/valleyvillage.glb",
+    "name": "Valley Village",
+    "class": "scene",
+    "author": "BabylonJS Community",
+    "tool": "glgen-fetch"
+  }
+}

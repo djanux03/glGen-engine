@@ -1,0 +1,23 @@
+{
+  "id": "prop/cairn",
+  "generator": "kitbash.v1",
+  "seed": 1111,
+  "params": {
+    "color": [0.46, 0.44, 0.41],
+    "roughness": 0.92,
+    "metallic": 0.0,
+    "jitter": 0.008,
+    "parts": [
+      { "shape": "box", "pos": [0.0, 0.08, 0.0], "size": [0.55, 0.16, 0.48], "rotation": [3.0, 14.0, -2.0], "color": [0.45, 0.43, 0.40] },
+      { "shape": "box", "pos": [0.02, 0.23, -0.01], "size": [0.44, 0.14, 0.38], "rotation": [-4.0, -22.0, 5.0], "color": [0.50, 0.48, 0.45] },
+      { "shape": "box", "pos": [-0.01, 0.36, 0.02], "size": [0.34, 0.13, 0.30], "rotation": [6.0, 35.0, 2.0], "color": [0.42, 0.40, 0.38] },
+      { "shape": "box", "pos": [0.01, 0.48, -0.01], "size": [0.25, 0.12, 0.22], "rotation": [-2.0, -10.0, -4.0], "color": [0.48, 0.46, 0.44] },
+      { "shape": "box", "pos": [0.0, 0.58, 0.0], "size": [0.15, 0.10, 0.14], "rotation": [5.0, 45.0, -3.0], "color": [0.52, 0.50, 0.47] }
+    ]
+  },
+  "provenance": {
+    "class": "prop",
+    "name": "Trail Marker Cairn",
+    "author": "glgen-mcp"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "entities": [
+    {
+      "id": 1,
+      "mesh": {
+        "assetId": "gen://import.gltf/scene/virtual_city",
+        "castsShadow": true,
+        "type": "None",
+        "visible": true
+      },
+      "name": "VirtualCityBlock",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    }
+  ]
+}

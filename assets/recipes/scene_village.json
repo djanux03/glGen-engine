@@ -1,0 +1,17 @@
+{
+  "id": "scene/village",
+  "generator": "import.gltf",
+  "seed": 0,
+  "params": {
+    "path": "assets/imported/village.glb",
+    "recenter": "baseY",
+    "normalizeSize": 50.0
+  },
+  "provenance": {
+    "source": "https://github.com/BabylonJS/Assets/blob/master/meshes/village.glb",
+    "name": "Cozy Village",
+    "class": "scene",
+    "author": "BabylonJS Community",
+    "tool": "glgen-fetch"
+  }
+}

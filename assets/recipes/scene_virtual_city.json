@@ -1,0 +1,17 @@
+{
+  "id": "scene/virtual_city",
+  "generator": "import.gltf",
+  "seed": 0,
+  "params": {
+    "path": "assets/imported/VirtualCity.glb",
+    "recenter": "baseY",
+    "normalizeSize": 60.0
+  },
+  "provenance": {
+    "source": "https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/VirtualCity",
+    "name": "Virtual City Block",
+    "class": "scene",
+    "author": "3DRT / Khronos Group",
+    "tool": "glgen-fetch"
+  }
+}

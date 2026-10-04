@@ -5,6 +5,7 @@
 #include "ECS/Components.h"
 #include "Keyboard.h"
 #include "Mouse.h"
+#include "subsystems/VkTerrainSubsystem.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -373,6 +374,46 @@ void endGrab(VkAppState &state, Registry &reg) {
 }
 } // namespace
 
+void VkPlayerInteractionSystem::fireRifle(VkAppState &state, const glm::vec3 &origin,
+                                         const glm::vec3 &direction) {
+  Registry &reg=state.scene.registry();
+  state.gameplay.debug.debugGameplayAimOrigin=origin;
+  state.gameplay.debug.debugGameplayAimDirection=direction;
+  auto hit=gameplayRaycast(state,origin,direction,500.f,state.gameplay.playerId,0.f);
+  if (state.terrainSubsystem && state.terrainSubsystem->hasTerrain()) {
+    const auto ground=state.terrainSubsystem->raycastTerrain(origin,direction,500.f);
+    if (ground.hit && (!hit.hit || ground.distance<hit.distance)) {
+      hit.hit=true;hit.entityId=0;hit.distance=ground.distance;
+      hit.position=ground.point;
+      const auto xz=ground.xz;const float eps=.1f;
+      const float dx=state.terrainSubsystem->heightAt(xz+glm::vec2(eps,0))-state.terrainSubsystem->heightAt(xz-glm::vec2(eps,0));
+      const float dz=state.terrainSubsystem->heightAt(xz+glm::vec2(0,eps))-state.terrainSubsystem->heightAt(xz-glm::vec2(0,eps));
+      hit.normal=glm::normalize(glm::vec3(-dx,2*eps,-dz));
+      state.gameplay.debug.debugGameplayAimOrigin=origin;
+    }
+  }
+  const bool damaged=damageDestructibleHit(state,reg,hit,direction,34.f);
+  if (damaged) {
+    auto &d=reg.get<DestructibleComponent>(hit.entityId);
+    if (d.health<=0 && d.hideOriginal && reg.has<MeshComponent>(hit.entityId)) {
+      reg.get<MeshComponent>(hit.entityId).visible=false;
+      d.fractured=true;
+      reg.removeComponent<ColliderComponent>(hit.entityId);
+    }
+  }
+  // A collidable prop can react to a shot even without a health component.
+  if (hit.hit && hit.entityId && reg.has<RigidbodyComponent>(hit.entityId)) {
+      auto &body=reg.get<RigidbodyComponent>(hit.entityId);
+      if(body.type==RigidbodyComponent::Type::Dynamic) {
+        body.pendingLinearVelocity=direction*std::min(12.f,75.f/std::max(body.mass,1.f));
+        body.setLinearVelocity=true;
+      }
+  }
+  setGameplayDebug(state,reg,hit,damaged?"Rifle: damage":"Rifle", "No target in range");
+  state.gameplay.debug.debugGameplayHitPosition=hit.hit?hit.position:origin+direction*500.f;
+  state.gameplay.debug.debugGameplayHitNormal=hit.hit?hit.normal:-direction;
+}
+
 void VkPlayerInteractionSystem::reset() { mCraterCooldown = 0.0f; }
 
 void VkPlayerInteractionSystem::update(VkAppState &state, float dt) {
@@ -394,6 +435,11 @@ void VkPlayerInteractionSystem::update(VkAppState &state, float dt) {
   state.gameplay.debug.debugCamUp = glm::vec3(0.0f, 1.0f, 0.0f);
   state.gameplay.debug.debugGameplayAimOrigin = camTr.position;
   state.gameplay.debug.debugGameplayAimDirection = front;
+
+  // A rifle consumes both mouse buttons. The old tool's RMB damage and
+  // Shift+LMB grab must not fire while the player is aiming or sprinting.
+  if (reg.has<RifleComponent>(state.gameplay.playerId) &&
+      reg.get<RifleComponent>(state.gameplay.playerId).state.enabled) return;
 
   const bool primaryDown = Mouse::button(GLFW_MOUSE_BUTTON_LEFT);
   const bool primaryPressed = Mouse::buttonWentDown(GLFW_MOUSE_BUTTON_LEFT);

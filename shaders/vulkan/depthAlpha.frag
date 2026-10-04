@@ -28,6 +28,8 @@ float opacityChannel(vec4 value){
 void main(){
     float alpha=texture(uTextures[nonuniformEXT(pc.textureIndex)],vUV).a;
     if((pc.materialFlags&HAS_OPACITY_MAP)!=0u)
-        alpha*=opacityChannel(texture(uTextures[nonuniformEXT(pc.opacityIndex)],vUV));
+        // Replace, not multiply -- must match mesh.frag/meshInstanced.frag
+        // or the prepass and colour pass disagree about which texels exist.
+        alpha=opacityChannel(texture(uTextures[nonuniformEXT(pc.opacityIndex)],vUV));
     if(alpha<pc.alphaCutoff)discard;
 }

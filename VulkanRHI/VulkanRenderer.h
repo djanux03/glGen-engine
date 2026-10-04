@@ -1,10 +1,14 @@
 #pragma once
 
 #include "VulkanAccel.h"
+#include "VulkanAtmosphereRenderer.h"
+#include "VulkanCloudHistory.h"
+#include "VulkanExposureMeter.h"
 #include "VulkanBindless.h"
 #include "VulkanMesh.h"
 #include "VulkanPipelineCache.h"
 #include "VulkanSwapchain.h"
+#include "Rendering/AtmosphereSettings.h"
 
 #include <vk_mem_alloc.h>
 
@@ -20,6 +24,7 @@
 #include <vector>
 
 struct MeshData; // engine CPU model data (Engine/Assets/MeshData.h)
+struct MaterialAsset; // engine CPU material data (Engine/Rendering/Material.h)
 
 namespace vkrhi {
 
@@ -36,6 +41,14 @@ public:
             const std::string &shaderDir,
             std::function<void(uint32_t &, uint32_t &)> queryFramebufferSize,
             const std::string &assetDir = std::string());
+  void setAtmosphereTerrainField(std::vector<glm::vec4> values,glm::vec2 origin,float span) {
+    mAtmosphere.terrainField(std::move(values),origin,span);
+  }
+  void enableAtmosphereProbe(bool enabled) {mAtmosphere.enableProbe(enabled);mCloudHistory.enableProbe(enabled);}
+  void clearWaterHeightField() {mWaterFieldSize=0;}
+  nlohmann::json atmosphereProbe() const {auto value=mAtmosphere.probe();value["cloudHistory"]=mCloudHistory.probe();return value;}
+  float cpuFogMilliseconds() const {return mAtmosphere.cpuFogMilliseconds();}
+  float cpuBloomMilliseconds() const {return mAtmosphere.cpuBloomMilliseconds();}
 
   // --- engine-drivable scene API ---------------------------------------
   // Build the scene after init(): create meshes, place instances, then call
@@ -67,7 +80,10 @@ public:
   // active chunk set instead of growing forever.
   void destroyMesh(MeshHandle handle);
   void addInstance(MeshHandle mesh, const glm::mat4 &transform,
-                   bool isTerrain = false);
+                   bool isTerrain = false,
+                   const MaterialAsset *materialOverride = nullptr,
+                   bool castsShadow = true, bool isViewModel = false,
+                   uint32_t viewModelFlags = 0);
   void clearInstances() { mInstances.clear(); }
 
   // Per-instance data for the GPU-instanced vegetation/scatter pipeline
@@ -103,21 +119,29 @@ public:
     uint32_t first = 0;
     uint32_t count = 0;
   };
+  struct VegMeshLod {
+    MeshHandle mesh = UINT32_MAX;
+    float distance = 0.0f;
+  };
   struct VegBatch {
     MeshHandle mesh;
+    // Shared meshes can have different placements/render behavior per layer.
+    uint32_t layerKey = 0;
+    std::vector<VegMeshLod> meshLods;
+    MeshHandle shadowMesh = UINT32_MAX; // optional sparse casting-only geometry
+    bool grass = false;
     std::vector<VegInstanceGpu> instances;
     std::vector<VegRange> ranges; // covers `instances` in order, chunk-grouped
 
     // R5 per-batch overrides. These exist because grass and trees cannot
-    // share one global setting: grass must cut out at ~90m and contribute no
-    // ray-traced shadow, while trees must stay visible to the far plane and
-    // must cast.
+    // share one global setting: grass needs bounded sparse shadows and a short
+    // draw radius, while trees must stay visible to the far plane and cast.
     //
     // Draw distance for THIS batch, overriding Params::vegDrawDistance.
     // <= 0 = use the global value.
     float drawDistance = 0.0f;
-    // false = this batch never enters the TLAS, so it neither casts nor
-    // receives ray-traced shadows. The TLAS takes one instance per
+    // false = this batch never enters the TLAS, so it cannot cast shadows.
+    // It still receives shadows from the trees/terrain in the TLAS. The TLAS takes one instance per
     // placement; at grass instance counts that is the difference between a
     // usable frame time and an unusable one.
     bool rayTracedShadows = true;
@@ -135,6 +159,7 @@ public:
     // cast on itself; see meshInstanced.frag.
     float groundOcclusion = 0.0f;
     float foliageSssStrength = 1.0f;
+    bool receivesSnow = false;
   };
   // Call when the scatter set CHANGES (chunk with vegetation streamed in/
   // out), not per frame -- uploads and TLAS-input caching key off it.
@@ -199,19 +224,19 @@ public:
           {{0.48f, 0.50f, 0.55f}, {0.25f, 0.30f, 0.39f}, 9.0f, 0.0f},
           {{0.55f, 0.52f, 0.47f}, {0.29f, 0.31f, 0.36f}, 8.0f, 0.0f},
       }};
-      float autumnAmount = 0.42f, facetStrength = 0.78f;
-      float washEdgeDarkening = 0.18f, worldPaperStrength = 0.045f;
+      float autumnAmount = 0.0f, facetStrength = 0.0f;
+      float washEdgeDarkening = 0.0f, worldPaperStrength = 0.0f;
       float vibrance = 0.15f, splitBalance = 0.48f;
       glm::vec3 splitShadow{0.80f, 0.86f, 1.0f};
       glm::vec3 splitHighlight{1.0f, 0.90f, 0.72f};
       glm::vec3 outlineColor{0.075f, 0.085f, 0.12f};
-      float outlineWidth = 1.0f, outlineStrength = 0.72f;
+      float outlineWidth = 1.0f, outlineStrength = 0.0f;
       float outlineDepthThreshold = 0.012f, outlineNormalThreshold = 0.22f;
-      float outlineDistance = 220.0f, screenPaperStrength = 0.035f;
+      float outlineDistance = 220.0f, screenPaperStrength = 0.0f;
       bool fxaaEnabled = true;
       glm::vec3 skyZenith{0.20f, 0.46f, 0.62f};
       glm::vec3 skyHorizon{0.93f, 0.72f, 0.49f};
-      float skyGradeStrength = 0.62f, skyBands = 5.0f;
+      float skyGradeStrength = 0.0f, skyBands = 5.0f;
       float skyBandSoftness = 0.30f, sunSoftness = 0.45f;
       float cloudCoverage = 0.47f, cloudSoftness = 0.18f;
       // Deck geometry + density. cloudDeckHeight is the BOTTOM of the cloud
@@ -236,6 +261,7 @@ public:
       // weather map, eroded by the four-channel Nubis detail noise, lit with
       // the Nubis2/3 light-energy model. Half-resolution, composited over the
       // sky before geometry.
+      bool paintedClouds = true;
       bool cloudVolumetricEnabled = true;
       // 0..1 fade for the whole layer. 0 leaves the sky bare (and skips the
       // pass entirely), 1 is the full deck.
@@ -333,14 +359,17 @@ public:
       float radius = 8.0f;
       glm::vec3 color = glm::vec3(1.0f, 0.75f, 0.45f);
       float intensity = 80.0f;
+      float volumetricParticipation = 1.0f;
+      bool volumetricShadows = true;
     };
     std::array<PointLight, 4> pointLights{};
     uint32_t pointLightCount = 0;
+    atmosphere::Settings atmosphere;
 
     // Screen-space ambient occlusion (darkens ambient-only, never direct light).
     float aoRadius = 0.5f;   // view-space hemisphere radius
-    float aoBias = 0.025f;   // self-occlusion bias
-    float aoStrength = 1.0f; // 0 = off, 1 = full effect
+    float aoBias = 0.004f;   // retain contact from centimetre-sized ground debris
+    float aoStrength = 1.8f; // 0 = off; >1 strengthens contact occlusion
 
     // Atmosphere / sky (skyModel.glsl + sky.frag).
     float atmosphereHaze = 0.30f;   // 0 = alpine-clear, 1 = heavy humid haze (Mie)
@@ -368,13 +397,13 @@ public:
 
     // Ray-traced volumetric light scattering (god rays): half-res raymarch
     // with a ray-query shadow test per step, composited additively before
-    // bloom. The medium is the same height fog the surface shaders use.
+    // bloom. Its base density is independent of surface fog, while its
+    // altitude reference and falloff can follow the same ground profile.
     bool volumetricEnabled = true;
-    // Raised further still (was 0.7, then 3.0) -- pushed again since the
-    // last pass still read as too subtle. No shader-side clamp on this
-    // multiplier (see volumetric.frag), so it scales linearly all the way
-    // to the tonemapper; the editor slider ceiling was raised to match.
-    float volumetricIntensity = 4.5f; // 0 = off
+    // Art-directed after the scattering medium was decoupled from surface
+    // fog. Higher values strengthen the shafts; volumetric.frag caps their
+    // final additive radiance to keep open-sky views from washing out.
+    float volumetricIntensity = 0.8f; // 0 = off
     // Tighter forward lobe (was 0.6, then 0.8) = a sharper, more directional
     // beam toward the sun instead of a soft ambient haze -- reads as
     // visible rays rather than just brighter fog. 0.95 is effectively the
@@ -383,12 +412,10 @@ public:
     float volumetricAnisotropy = 0.87f; // HG g: forward-scatter around the sun
     float volumetricMaxDist = 170.0f;   // meters marched from the camera
     int volumetricSteps = 18;           // shadow rays per half-res pixel
-    // Scales the scattering medium's density INDEPENDENTLY of the surface
-    // height-fog dial (volumetric.frag used to inherit fogParams.x*0.25
-    // outright -- cranking ray visibility meant fogging the whole scene
-    // too). >1 = thicker/more visible shafts (and a shorter effective
-    // range, since more of the medium extinguishes); default already
-    // meaningfully thicker than the old implicit 1.0.
+    // Scales the scattering medium's independent extinction coefficient:
+    // 1.0 = 0.001/m at the height reference. This keeps shafts visible in
+    // clear scenes without fogging surfaces; higher values thicken shafts
+    // and shorten their effective range as more light scatters out.
     float volumetricDensityScale = 1.75f;
     // Independent multiplier on how much the medium thins with altitude
     // (0 = uniform density at all heights regardless of surface fog's own
@@ -415,7 +442,7 @@ public:
     // extinction coefficient (per meter) at fogHeightRef, thinning upward
     // with scale height 1/fogHeightFalloff.
     float fogDensity = 0.006f;
-    float fogStart = 30.0f;
+    float fogStart = 0.0f;
     // Now a FLOOR on transmittance, not a ceiling on a blend: 1 lets fog run
     // to completion so distant terrain dissolves into a matching horizon, 0
     // disables fog entirely (which is what GLGEN_SMOKE_NOFOG and the
@@ -522,7 +549,15 @@ public:
     float saturation = 1.0f;
     float contrast = 1.0f;
     float vignette = 0.15f;
-    int tonemapMode = 0; // 0=Painterly 1=ACES 2=Reinhard 3=Linear
+    bool temporalAA = false; // scenery opts in; diagnostic views bypass history
+    float temporalSharpness = .22f; // bounded detail recovery after history resolve
+    float edgeSoftness = .35f; // gentle spatial coverage filter on high-contrast edges
+    float grassGroundDrawDistance = 0; // supplied by terrain's active grass layers
+    // 4 = AgX (the default for photoreal content): a log-encoded sigmoid in
+    // a rotated working space, so saturated highlights roll off to white
+    // the way film and cameras do, instead of skewing hue (ACES pushes a
+    // bright sky cyan and a sunset magenta) or clipping per channel.
+    int tonemapMode = 4; // 0=Painterly 1=ACES 2=Reinhard 3=Linear 4=AgX
     // Simple sun-elevation-driven auto-exposure (not histogram-based): each
     // frame, `exposure` eases toward a target derived from how high the sun
     // is. ON by default since the physically-scaled day/night range is far
@@ -533,16 +568,12 @@ public:
     float autoExposureMax = 3.6f;  // target exposure at night
     float autoExposureSpeed = 0.05f; // per-frame ease factor toward target
 
-    // Bloom (half-res bright-pass extract + separable blur, additive in the
-    // tonemap pass before the tonemap curve).
-    float bloomThreshold = 1.0f; // brightness where bloom starts contributing
-    float bloomKnee = 0.5f;      // soft-knee width around the threshold
-    float bloomIntensity = 0.2f; // 0 = off
-    // Weight of the second, quarter-res blur pass RELATIVE to bloomIntensity
-    // (a wider/softer glow, summed on top of the tight half-res one -- see
-    // tonemap.frag). Was a hardcoded 0.6 multiplier; exposed so the wide
-    // glow's spatial spread can be dialed down (toward 0 = tight core only)
-    // without touching bloomIntensity itself.
+    // Compatibility fields for old settings. Strength migrates to the
+    // normalized six-level pyramid; its old shape controls are retained
+    // for round trips and no longer change the shipping bloom filter.
+    float bloomThreshold = 1.0f;
+    float bloomKnee = 0.5f;
+    float bloomIntensity = 0.04f;
     float bloomWideIntensity = 0.6f;
 
     // Terrain materials (band edges in world-height METERS / slope), scaled
@@ -600,6 +631,9 @@ public:
     // has to be byte-comparable with a previous one -- without it, golden-image
     // regression cannot work at all, because the sky is never twice the same.
     float fixedTimeSeconds = -1.0f;
+    // Internal review override; normal fixed-clock runs still exercise
+    // rotating cloud samples and temporal accumulation.
+    bool deterministicCapture = false;
 
     // Debug visualization (frameData.glsl miscParams.x): 0=off 1=albedo
     // 2=normals 3=fog 4=SSAO 5=shadow visibility 6=NaN detector 7=biome
@@ -622,6 +656,8 @@ public:
       std::string normalPath;
       std::string roughnessPath;
       float tiling = 8.0f; // world units per texture repeat
+      std::string heightPath;
+      float reliefDepth = 0.04f; // metres; ignored without a height map
     };
     // Order: 0=meadow 1=forest 2=dirt 3=rock 4=scree -- matches
     // terrainTexA/B/C/D's field order in FrameDataGpu exactly.
@@ -630,6 +666,56 @@ public:
     // edited; cleared by resolveTerrainMaterialsIfDirty() once it has
     // (re)loaded every slot.
     bool terrainMaterialsDirty = true;
+    float snowCoverage = 0.0f;
+    float snowPatchScale = 18.0f;
+    float snowSlopeLimit = 0.48f;
+    float snowAltitudeBoost = 0.18f;
+    glm::vec3 snowTint{0.73f, 0.79f, 0.83f};
+    float snowRoughness = 0.91f;
+    TerrainMaterialSlot snowMaterial;
+    // The Long Dark overhaul parameters
+    float snowSparkle = 0.65f;        // Crystalline micro-glint on snow
+    float snowWindDrift = 0.6f;       // Directional sastrugi wind ripples
+    float snowSubsurface = 0.45f;     // Cold cyan shadow scatter
+    bool iceEnabled = false;          // Frozen lake / ice shader mode
+    float iceRoughness = 0.18f;       // Ice specular sharpness
+    float iceClarity = 4.0f;          // Deep icy absorption depth
+    float iceCracksStrength = 0.7f;   // Subsurface fracture lines
+    float iceFrostCoverage = 0.35f;   // Frosted white patches on lake ice
+    glm::vec3 iceTint{0.68f, 0.84f, 0.90f};
+    // Off by default: an aurora is a high-latitude event, and defaulting it
+    // on put one over every night scene, alpine meadows included. The Long
+    // Dark / bleak_winter sceneries enable it explicitly.
+    bool auroraEnabled = false;       // Geomagnetic Aurora Borealis
+    float auroraIntensity = 1.0f;     // Aurora brightness
+    float auroraSpeed = 0.35f;        // Undulation speed
+    float auroraGroundGlow = 1.0f;    // Light reflected into env cubemap & ground
+    float blizzardStrength = 0.0f;    // 0 = calm, 1 = howling whiteout
+    float frostVignetteStrength = 0.0f;// Screen-edge frostbite crystals
+    // Both default OFF. They used to default to 0.5/0.55, and since neither
+    // graphics_settings.json nor the non-Long-Dark sceneries set them, every
+    // scene -- not just The Long Dark -- rendered with a half-strength cel
+    // ramp on its diffuse term and blue-tinted shadows. That is most of why
+    // faceted trees read as flat bands. Stylised profiles set them explicitly.
+    float stylizedLightingRamp = 0.0f;// 0 = smooth PBR, 1 = stepped painterly
+    float shadowCoolBias = 0.0f;      // Push shadows toward cold cobalt/indigo
+
+    // Photoreal shading controls (FrameDataGpu::realismParams). Each is a
+    // 0..1 blend toward the physically-motivated path, so a stylised
+    // scenery can dial them back without losing the rest of the renderer.
+    //  - terrainPhotoAlbedo: 0 = painted palette x luminance overlay (the old
+    //    look), 1 = the photographic albedo textures as authored.
+    //  - foliageNormalSoften: bends instanced-foliage normals toward a
+    //    rounded canopy volume, so low-poly crowns shade as masses of leaves
+    //    instead of as flat facets.
+    //  - specularOcclusion: split-sum IBL occlusion, reflection horizon
+    //    clipping and albedo-aware multi-bounce AO.
+    //  - terrainTriplanar: triplanar projection on steep rock, instead of
+    //    the top-down projection stretching into streaks on cliffs.
+    float terrainPhotoAlbedo = 1.0f;
+    float foliageNormalSoften = 0.6f;
+    float specularOcclusion = 1.0f;
+    float terrainTriplanar = 1.0f;
 
     // R3 (MEADOW_TERRAIN_REVAMP_PLAN.md §5.5): biome lighting & atmosphere.
     // Per-pixel terrain response -- see FrameDataGpu's biomeAmbient*/
@@ -685,11 +771,29 @@ public:
     uint32_t instancesCulled = 0; // mesh instances skipped by it
     uint32_t vegRangesDrawn = 0;
     uint32_t vegRangesCulled = 0;
+    uint64_t vegTrianglesDrawn = 0;
+    uint64_t grassTrianglesDrawn = 0;
+    uint64_t treeTrianglesDrawn = 0;
     uint32_t vegInstancesDrawn = 0;
     uint32_t tlasInstances = 0;   // instances in the current TLAS input list
     bool tlasRebuiltThisFrame = false;
     uint32_t meshSlotsLive = 0;
     uint32_t meshSlotsFree = 0;
+    // Completed GPU work from this frame slot, excluding presentation/pacing.
+    float gpuTotalMs = 0.0f;
+    float gpuPrepareMs = 0.0f;
+    float gpuDepthMs = 0.0f;
+    float gpuAtmosphereMs = 0.0f;
+    float gpuSceneMs = 0.0f;
+    float gpuWaterMs = 0.0f;
+    float gpuPostMs = 0.0f;
+    float gpuFogVisibilityMs = 0, gpuFogInjectionMs = 0, gpuFogHistoryMs = 0, gpuFogIntegrationMs = 0;
+    uint64_t atmosphereAllocatedBytes = 0;
+    float gpuBloomMs = 0;
+    float gpuCloudsMs = 0, gpuSkyEnvironmentMs = 0, gpuSSAOMs = 0, gpuSkyLutsMs = 0, gpuCloudShadowMs = 0, gpuCloudHistoryMs = 0;
+    uint64_t cloudHistoryAllocatedBytes = 0;
+    uint64_t cloudDetailAllocatedBytes = 0;
+    float gpuExposureMeterMs=0,meteredLuminance=0;
   };
   const FrameStats &frameStats() const { return mFrameStats; }
 
@@ -698,6 +802,7 @@ public:
   // current world position. VulkanRenderer owns the exponential smoothing
   // (Params::cameraGradeSmoothTime) and derives the tonemap pass's grade
   // from the smoothed result -- see drawFrame()'s tonemap push constant.
+  void setAuthoredTerrainSurface(bool enabled) { mAuthoredTerrainSurface = enabled; }
   void setCameraBiomeWeights(glm::vec3 raw) { mCameraBiomeWeightsRaw = raw; }
 
   // Records an overlay (e.g. ImGui) inside the tonemap pass, on the swapchain.
@@ -817,6 +922,32 @@ private:
     glm::vec4 styleCloud4; // x=phaseG y=silverIntensity z=silverSpread w=powderStrength
     glm::vec4 styleCloud5; // x=maxMarchDist y=maxSteps z=lightTaps w=cloudTypeBias
     glm::vec4 styleCloud6; // x=detailStrength (y/z/w reserved)
+    glm::vec4 snowParams; // coverage, patch metres, slope limit, altitude boost
+    glm::vec4 snowColor; // rgb tint, roughness
+    glm::uvec4 snowTextures; // albedo, normal, roughness, water height field
+    glm::vec4 snowExtra; // tiling, reserved
+    // The Long Dark graphics overhaul parameters
+    glm::vec4 snowParams2;     // x=sparkleStrength y=sparkleScale z=windDriftStrength w=subsurfaceCyan
+    glm::vec4 iceParams;       // x=iceMode(0..1) y=iceCracksStrength z=iceFrostCoverage w=iceDepthScatter
+    glm::vec4 iceColor;        // rgb=iceTint w=iceRoughness
+    glm::vec4 auroraParams;    // x=auroraIntensity y=auroraSpeed z=auroraCurtainScale w=groundGlowIntensity
+    glm::vec4 auroraColorBase; // rgb=green/cyan base color w=fade
+    glm::vec4 auroraColorTip;  // rgb=magenta/purple tip color w=reserved
+    glm::vec4 blizzardParams;  // x=blizzardStrength y=snowWindSpeed z=whiteoutDensity w=frostVignetteStrength
+    glm::vec4 tldStyleParams;  // x=stylizedDiffuseRamp y=shadowCoolBias z=inkOutlineStrength w=temporalSharpness
+    glm::vec4 realismParams;   // x=terrainPhotoAlbedo y=foliageNormalSoften z=specularOcclusion w=terrainTriplanar
+    // Buffer device address (lo, hi) of this frame's RtAlphaMeshGpu table in
+    // xy (zero = no alpha-tested meshes); zw reserved.
+    glm::uvec4 rtAlphaTable;
+    // Append only: every shader shares this UBO, including the sky and water.
+    glm::uvec4 terrainHeightTex;
+    glm::uvec4 terrainHeightTexExtra; // x=slot 4; yzw reserved
+    glm::vec4 terrainReliefDepth0;
+    glm::vec4 terrainReliefDepth1; // x=slot 4; yzw reserved
+    glm::vec4 postAAParams; // x=edgeSoftness y=grassGroundDrawDistance; zw reserved
+    glm::vec4 atmosphereParams; // enabled, froxel range, legacy dust extinction, falloff multiplier
+    glm::vec4 skyLutParams; // enabled, aerial range metres, reserved
+    glm::vec4 cloudShadowField; // projected ground origin XZ, span, enabled
   };
   // The GLSL mirror is shaders/vulkan/frameData.glsl; every scene shader
   // includes that whole block (no per-shader prefixes or offset hacks). If
@@ -865,7 +996,21 @@ private:
                 "FrameDataGpu layout drifted from frameData.glsl");
   static_assert(offsetof(FrameDataGpu, styleCloud2) == 1328,
                 "FrameDataGpu layout drifted from frameData.glsl");
-  static_assert(sizeof(FrameDataGpu) == 1408,
+  static_assert(offsetof(FrameDataGpu, snowParams2) == 1472,
+                "FrameDataGpu layout drifted from frameData.glsl");
+  static_assert(offsetof(FrameDataGpu, realismParams) == 1600,
+                "FrameDataGpu layout drifted from frameData.glsl");
+  static_assert(offsetof(FrameDataGpu, rtAlphaTable) == 1616,
+                "FrameDataGpu layout drifted from frameData.glsl");
+  static_assert(offsetof(FrameDataGpu, terrainHeightTex) == 1632,
+                "FrameDataGpu layout drifted from frameData.glsl");
+  static_assert(offsetof(FrameDataGpu, postAAParams) == 1696,
+                "FrameDataGpu layout drifted from frameData.glsl");
+  static_assert(offsetof(FrameDataGpu, atmosphereParams) == 1712,
+                "FrameDataGpu layout drifted from frameData.glsl");
+  static_assert(offsetof(FrameDataGpu, skyLutParams) == 1728,"sky LUT frame layout");
+  static_assert(offsetof(FrameDataGpu, cloudShadowField) == 1744,"cloud field frame layout");
+  static_assert(sizeof(FrameDataGpu) == 1760,
                 "FrameDataGpu layout drifted from frameData.glsl");
 
   // Material flag bits (mesh.frag mirrors these exactly).
@@ -917,13 +1062,58 @@ private:
     glm::vec3 boundsMin{0.0f};
     glm::vec3 boundsMax{0.0f};
     bool hasBounds = false;
+    // Any draw item alpha-masked -> BLAS built non-opaque + alpha-tested
+    // shadow rays. See VulkanAccel::BlasInput::opaque.
+    bool alphaTested = false;
+    // Per-triangle opacity micromaps for those shadow rays: kRtMicroWords
+    // uint32 per triangle, one bit per micro-triangle of a 16x16 barycentric
+    // subdivision. See buildOpacityMicromaps().
+    VkBuffer alphaMaskBuffer = VK_NULL_HANDLE;
+    VmaAllocation alphaMaskAlloc = VK_NULL_HANDLE;
   };
+  static constexpr uint32_t kRtMicroSubdiv = 16;
+  static constexpr uint32_t kRtMicroWords =
+      kRtMicroSubdiv * kRtMicroSubdiv / 32;
+
+  // Ray-traced shadow alpha test. One record per mesh slot (index ==
+  // instanceCustomIndex) pointing at its vertex/index buffers and a run of
+  // per-submesh records; rebuilt into a per-frame host-visible buffer when
+  // the mesh set changes (mRtAlphaVersion).
+  struct RtAlphaMeshGpu {
+    VkDeviceAddress masks; // 0 = opaque mesh
+    uint64_t reserved;
+  };
+  static_assert(sizeof(RtAlphaMeshGpu) == 16, "matches surfaceShadow.glsl");
+  struct RtAlphaFrameBuffer {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation alloc = VK_NULL_HANDLE;
+    void *mapped = nullptr;
+    VkDeviceSize capacity = 0;
+    VkDeviceAddress address = 0;
+    uint64_t version = ~0ull;
+    VkDeviceSize itemsOffset = 0;
+  };
+  std::vector<RtAlphaFrameBuffer> mRtAlphaBuffers;
+  // Builds Mesh::alphaMaskBuffer from the alpha-masked submeshes' textures.
+  struct AlphaSource {
+    uint32_t indexOffset, indexCount;
+    std::string path;
+    uint32_t channel;
+    float cutoff;
+  };
+  uint64_t mRtAlphaVersion = 0;
+  glm::uvec4 updateRtAlphaTable(uint32_t frame);
 
   // A placed object: which mesh + its world transform.
   struct Instance {
     uint32_t meshIndex;
     glm::mat4 model;
     bool isTerrain = false; // routes to mTerrainChunkPipeline instead of mScenePipeline
+    bool castsShadow = true;
+    bool isViewModel = false;
+    uint32_t viewModelFlags = 0; // arm attachment policy, foreground only
+    bool hasMaterialOverride = false;
+    DrawItem materialOverride{};
   };
 
   bool createCommandPool();
@@ -935,6 +1125,9 @@ private:
   void writeTlasDescriptors();
   bool createTonemapResources();
   void updateTonemapSets();
+  bool createTemporalResources();
+  void updateTemporalSets();
+  bool createTemporalPipeline(const std::string &shaderDir);
   bool createSSAOResources();
   void updateSSAOSets();
   bool createBloomResources();
@@ -1009,8 +1202,12 @@ private:
     uint32_t albedoTex = UINT32_MAX;
     uint32_t normalTex = UINT32_MAX;
     uint32_t roughnessTex = UINT32_MAX;
+    uint32_t heightTex = UINT32_MAX;
   };
+  bool mAuthoredTerrainSurface = false;
   std::array<TerrainMaterialResolved, 5> mTerrainMaterialTex;
+  TerrainMaterialResolved mSnowMaterialTex;
+  uint32_t mSnowWaterTex = UINT32_MAX;
   // Called once per frame from drawFrame() before the FrameDataGpu packing
   // below; a cheap `if (!dirty) return` unless Params::terrainMaterialSlots
   // just changed (editor "Reload Textures" button, or first frame).
@@ -1026,7 +1223,7 @@ private:
   bool mHasLastGradeUpdate = false;
 
   uint32_t addTexture(const uint8_t *rgba, uint32_t w, uint32_t h,
-                      VkFormat format);
+                      VkFormat format, bool growCutoutFootprint = true);
   // flipY mirrors the GL engine's texture loading for raw (unflipped) model
   // UVs; the OBJ smoke path pre-flips UVs instead and loads unflipped.
   // srgb=false for linear (non-color) data: roughness/metallic/AO maps must
@@ -1044,6 +1241,11 @@ private:
   MeshHandle acquireMeshSlot(Mesh &&mesh);
   VulkanAccel::BlasInput blasInputForMesh(const Mesh &mesh) const;
 
+  VulkanAtmosphereRenderer mAtmosphere;
+  VulkanCloudHistory mCloudHistory;
+  VulkanExposureMeter mExposureMeter;
+  uint64_t mFogLightSignature=0;
+  uint64_t mCloudStyleSignature=0;
   VulkanContext *mCtx = nullptr;
   VkSurfaceKHR mSurface = VK_NULL_HANDLE;
   VulkanSwapchain mSwapchain;
@@ -1060,7 +1262,12 @@ private:
   std::vector<void *> mFrameUBOMapped;
 
   // --- textures (bindless) ---
+  // mSampler is also bound to render targets (HDR, depth, AO, bloom) which
+  // have a single mip; it must stay isotropic -- anisotropic taps on a depth
+  // or AO target smear across silhouettes. Material textures loaded from
+  // disk get mMaterialSampler instead: full mip chain, 16x anisotropy.
   VkSampler mSampler = VK_NULL_HANDLE;
+  VkSampler mMaterialSampler = VK_NULL_HANDLE;
   std::vector<VkImage> mTextureImages;
   std::vector<VmaAllocation> mTextureAllocs;
   std::vector<VkImageView> mTextureViews;
@@ -1075,6 +1282,10 @@ private:
   std::vector<VkImage> mDepthImages;
   std::vector<VmaAllocation> mDepthAllocs;
   std::vector<VkImageView> mDepthViews;
+  std::vector<VkImage> mViewmodelDepthImages;
+  std::vector<VmaAllocation> mViewmodelDepthAllocs;
+  std::vector<VkImageView> mViewmodelDepthViews;
+  VkPipeline mViewmodelPipeline = VK_NULL_HANDLE;
 
   // --- SSAO (raw + blurred, per frame in flight) ---
   VkFormat mAOFormat = VK_FORMAT_R8_UNORM;
@@ -1159,6 +1370,7 @@ private:
   std::vector<VkImageView> mEnvCubeViews;               // cube view, all mips
   std::vector<std::array<VkImageView, 6>> mEnvFaceViews; // 2D views, mip 0
   VkDescriptorPool mEnvVolPool = VK_NULL_HANDLE; // env + volumetric sampler sets
+  VkDescriptorSetLayout mEnvironmentSetLayout = VK_NULL_HANDLE;
   std::vector<VkDescriptorSet> mSceneEnvSets;    // sample mEnvCubeViews (set 4)
   VkPipeline mEnvMapPipeline = VK_NULL_HANDLE;   // sky variant: no depth attachment
 
@@ -1186,6 +1398,10 @@ private:
   VkImage mCloudDetailImage = VK_NULL_HANDLE;  // Nubis 4-channel detail
   VmaAllocation mCloudDetailAlloc = VK_NULL_HANDLE;
   VkImageView mCloudDetailView = VK_NULL_HANDLE;
+  VkImage mCloudPeriodicDetailImage = VK_NULL_HANDLE;
+  VmaAllocation mCloudPeriodicDetailAlloc = VK_NULL_HANDLE;
+  VkImageView mCloudPeriodicDetailView = VK_NULL_HANDLE;
+  uint64_t mCloudPeriodicDetailBytes = 0;
   VkImage mCloudWeatherImage = VK_NULL_HANDLE; // r=coverage g=wetness b=type
   VmaAllocation mCloudWeatherAlloc = VK_NULL_HANDLE;
   VkImageView mCloudWeatherView = VK_NULL_HANDLE;
@@ -1260,6 +1476,10 @@ private:
   VkPipeline mVegetationPipeline = VK_NULL_HANDLE;
   struct VegSpeciesBuffer {
     MeshHandle mesh = UINT32_MAX;
+    uint32_t layerKey = 0;
+    std::vector<VegMeshLod> meshLods;
+    MeshHandle shadowMesh = UINT32_MAX;
+    bool grass = false;
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation alloc = VK_NULL_HANDLE;
     void *mapped = nullptr;
@@ -1281,10 +1501,12 @@ private:
     float windMeshHeight = 1.0f;
     float groundOcclusion = 0.0f;
     float foliageSssStrength = 1.0f;
+    bool receivesSnow = false;
     // Per-frame scratch: merged contiguous [first,count) spans of visible
     // ranges, rebuilt by drawFrame() and drawn by both depth prepass and
     // scene pass.
-    std::vector<std::pair<uint32_t, uint32_t>> visibleSpans;
+    struct VisibleSpan { uint32_t first, count; MeshHandle mesh; };
+    std::vector<VisibleSpan> visibleSpans;
   };
   // One entry per species mesh with any placed instances. Grown (buffer
   // recreated larger) like a std::vector on overflow; never shrunk.
@@ -1317,6 +1539,19 @@ private:
   std::vector<VkDescriptorSet> mTonemapSets;
   VkPipelineLayout mTonemapPipelineLayout = VK_NULL_HANDLE;
   VkPipeline mTonemapPipeline = VK_NULL_HANDLE;
+
+  // Ping-pong scene-linear history, before bloom/grade/UI. Both slots are
+  // accessed on the graphics queue; image barriers order cross-frame reads.
+  std::vector<VkImage> mTemporalImages;
+  std::vector<VmaAllocation> mTemporalAllocs;
+  std::vector<VkImageView> mTemporalViews;
+  std::vector<VkDescriptorSet> mTemporalSets;
+  VkDescriptorPool mTemporalPool = VK_NULL_HANDLE;
+  VkPipelineLayout mTemporalPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline mTemporalPipeline = VK_NULL_HANDLE;
+  glm::mat4 mTemporalPrevViewProj{1.0f};
+  glm::vec3 mTemporalPrevEye{0.0f}, mTemporalPrevForward{0.0f};
+  bool mTemporalValid = false;
 
   // --- mesh (device-local) ---
   std::vector<Mesh> mMeshes;
@@ -1362,6 +1597,9 @@ private:
   // across meshes -- without it every streamed terrain chunk minted its own
   // white texture into the bindless array.
   std::unordered_map<uint32_t, uint32_t> mSolidColorTex;
+  std::unordered_map<std::string, uint32_t> mTerrainTextureCache;
+  std::chrono::steady_clock::time_point mLastExposureUpdate{};
+  bool mHasLastExposureUpdate = false;
 
   FrameStats mFrameStats;
 
@@ -1370,6 +1608,12 @@ private:
   std::vector<VkCommandBuffer> mCommandBuffers;
   std::vector<VkSemaphore> mImageAvailable;
   std::vector<VkFence> mInFlight;
+  // Read only after the slot fence retires: profiling never adds a GPU wait.
+  static constexpr uint32_t kGpuTimestampCount = 14;
+  std::array<VkQueryPool, kFramesInFlight> mGpuTimestampPools{};
+  std::array<bool, kFramesInFlight> mGpuTimestampsWritten{};
+  uint32_t mGpuTimestampBits = 0;
+  bool mGpuTimestampsInitialized = false;
   std::vector<VkSemaphore> mRenderFinished;
 
   uint32_t mCurrentFrame = 0;

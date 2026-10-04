@@ -1,4 +1,84 @@
 {
+  "grass/field_broad": {
+    "assetId": "gen://import.gltf/grass/field_broad",
+    "boundsMax": [
+      0.70758,
+      0.51553,
+      0.65701
+    ],
+    "boundsMin": [
+      -0.70758,
+      0,
+      -0.65701
+    ],
+    "submeshes": 3,
+    "triangles": 588,
+    "vertices": 632
+  },
+  "grass/field_dry": {
+    "assetId": "gen://import.gltf/grass/field_dry",
+    "boundsMax": [
+      0.67441,
+      1.00502,
+      0.66206
+    ],
+    "boundsMin": [
+      -0.67441,
+      0,
+      -0.66206
+    ],
+    "submeshes": 3,
+    "triangles": 620,
+    "vertices": 722
+  },
+  "grass/field_fine": {
+    "assetId": "gen://import.gltf/grass/field_fine",
+    "boundsMax": [
+      0.80134,
+      0.75129,
+      0.63755
+    ],
+    "boundsMin": [
+      -0.80134,
+      0,
+      -0.63755
+    ],
+    "submeshes": 3,
+    "triangles": 672,
+    "vertices": 722
+  },
+  "grass/field_low": {
+    "assetId": "gen://import.gltf/grass/field_low",
+    "boundsMax": [
+      0.62865,
+      0.25122,
+      0.68403
+    ],
+    "boundsMin": [
+      -0.62865,
+      0,
+      -0.68403
+    ],
+    "submeshes": 3,
+    "triangles": 560,
+    "vertices": 602
+  },
+  "grass/field_seedheads": {
+    "assetId": "gen://import.gltf/grass/field_seedheads",
+    "boundsMax": [
+      0.77847,
+      1.47113,
+      0.66719
+    ],
+    "boundsMin": [
+      -0.77847,
+      0,
+      -0.66719
+    ],
+    "submeshes": 3,
+    "triangles": 604,
+    "vertices": 742
+  },
   "grass/meadow_clump": {
     "assetId": "gen://grass.v1/grass/meadow_clump",
     "boundsMax": [
@@ -62,6 +142,134 @@
     "submeshes": 1,
     "triangles": 320,
     "vertices": 960
+  },
+  "terrain/forest_deadwood": {
+    "assetId": "gen://import.gltf/terrain/forest_deadwood",
+    "boundsMax": [
+      0.99916,
+      0.21759,
+      0.91133
+    ],
+    "boundsMin": [
+      -0.99916,
+      0,
+      -0.91133
+    ],
+    "submeshes": 1,
+    "triangles": 74,
+    "vertices": 222
+  },
+  "terrain/fractured_granite": {
+    "assetId": "gen://import.gltf/terrain/fractured_granite",
+    "boundsMax": [
+      1.27699,
+      1.4915,
+      1.17012
+    ],
+    "boundsMin": [
+      -1.27699,
+      0,
+      -1.17012
+    ],
+    "submeshes": 1,
+    "triangles": 512,
+    "vertices": 1536
+  },
+  "terrain/granite_crag": {
+    "assetId": "gen://import.gltf/terrain/granite_crag",
+    "boundsMax": [
+      0.80179,
+      2.1195,
+      0.8035
+    ],
+    "boundsMin": [
+      -0.80179,
+      0,
+      -0.8035
+    ],
+    "submeshes": 1,
+    "triangles": 512,
+    "vertices": 1536
+  },
+  "terrain/granite_slab": {
+    "assetId": "gen://import.gltf/terrain/granite_slab",
+    "boundsMax": [
+      1.4569,
+      0.7536,
+      0.78686
+    ],
+    "boundsMin": [
+      -1.4569,
+      0,
+      -0.78686
+    ],
+    "submeshes": 1,
+    "triangles": 512,
+    "vertices": 1536
+  },
+  "terrain/hazel_bush": {
+    "assetId": "gen://import.gltf/terrain/hazel_bush",
+    "boundsMax": [
+      0.93157,
+      1.35085,
+      0.89632
+    ],
+    "boundsMin": [
+      -0.93157,
+      0,
+      -0.89632
+    ],
+    "submeshes": 2,
+    "triangles": 370,
+    "vertices": 1110
+  },
+  "terrain/low_scrub": {
+    "assetId": "gen://import.gltf/terrain/low_scrub",
+    "boundsMax": [
+      1.14264,
+      0.86366,
+      1.20995
+    ],
+    "boundsMin": [
+      -1.14264,
+      0,
+      -1.20995
+    ],
+    "submeshes": 2,
+    "triangles": 518,
+    "vertices": 1554
+  },
+  "terrain/pebble_bed": {
+    "assetId": "gen://import.gltf/terrain/pebble_bed",
+    "boundsMax": [
+      0.56269,
+      0.14559,
+      0.43597
+    ],
+    "boundsMin": [
+      -0.56269,
+      0,
+      -0.43597
+    ],
+    "submeshes": 1,
+    "triangles": 224,
+    "vertices": 672
+  },
+  "terrain/woodland_fern": {
+    "assetId": "gen://import.gltf/terrain/woodland_fern",
+    "boundsMax": [
+      0.81423,
+      0.63307,
+      0.76918
+    ],
+    "boundsMin": [
+      -0.81423,
+      0,
+      -0.76918
+    ],
+    "submeshes": 2,
+    "triangles": 756,
+    "vertices": 2268
   },
   "tree/oak_broad": {
     "assetId": "gen://tree.v1/tree/oak_broad",

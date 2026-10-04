@@ -13,6 +13,8 @@
 #include <cstdint>
 
 struct TerrainSettings {
+  // Fixed pond / marsh / woodland layout, independent of the noise seed.
+  bool authoredWoodland = false;
   uint32_t seed = 1337;
   float chunkWorldSize = 64.0f;
   uint32_t chunkResolution = 129;
@@ -36,6 +38,7 @@ struct TerrainSettings {
   float landscapeScale = 2.2f;   // ported from old system; larger = broader macro landforms
   float valleySpan = 1.25f;      // ported from old system; broader/tighter valley basins
   bool useRidgeNoise = false;    // ported from old system; ridgeShape uses ridgeNoise() vs abs(fbm())
+  float ridgeBlend = 1.0f;       // 0 = rounded abs(fbm), 1 = full sharp ridge noise
 
   // --- R1: landform & 3-biome field (Engine/Terrain/TerrainNoise.cpp) ---
   // Mountain-region macro mask: one very-low-frequency field deciding where
@@ -202,12 +205,8 @@ struct TerrainSettings {
   // on the ground: it costs one multiply in the fragment shader, and without
   // it grass reads as sitting ON the terrain rather than growing OUT of it.
   float grassOcclusionStrength = 1.0f;
-  // Opt grass INTO the ray-traced shadow pass (the TLAS), so it casts real
-  // shadows on the terrain and on itself. Off by default and genuinely
-  // expensive: the TLAS takes one instance per placement and grass places
-  // tens of thousands per chunk, so both the build and every shadow ray's
-  // traversal scale with that count. Grass already RECEIVES ray-traced
-  // shadows from terrain and trees either way -- this only controls casting.
+  // Patch contact shading supplies grass's ground shadow without putting its
+  // blades into the TLAS. Receiving tree/terrain shadows stays independent.
   bool grassCastShadows = false;
   // Scales every Grass layer's maxDrawDistance/densityFalloffStart together,
   // so the falloff ramp keeps its shape. This is the single most effective

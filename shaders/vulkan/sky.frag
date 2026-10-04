@@ -3,6 +3,8 @@
 #define FRAME_DATA_SET 0
 #include "frameData.glsl"
 #include "skyModel.glsl"
+#define SKY_LUT_SET 2
+#include "skyLutSample.glsl"
 #include "fog.glsl"
 layout(location=0) in vec2 vNdc;
 layout(location=0) out vec4 outColor;
@@ -89,7 +91,12 @@ void main(){
  vec4 fw=pc.invViewProj*vec4(vNdc,1,1);vec3 dir=normalize(fw.xyz/fw.w-pc.camPos.xyz);
  vec3 toSun=normalize(pc.sunDir.xyz),toMoon=normalize(pc.moonDir.xyz);
  vec3 ro=atmPlanetPos(pc.camPos.y);
- AtmSample a=atmScatter(ro,dir,toSun,vec3(pc.sunDir.w),toMoon,
+ AtmSample a;
+ if(uFrame.skyLutParams.x>.5) {
+   vec2 uv=skyViewUv(dir,toSun,skyPlanet(pc.camPos.y).y);
+   a.radiance=texture(uSkyView,uv).rgb;a.transmittance=texture(uSkyViewTransmission,uv).rgb;
+   vec2 ground=atmRaySphere(ro,dir,kAtmRg);a.groundT=ground.x>0?ground.x:-1;
+ } else a=atmScatter(ro,dir,toSun,vec3(pc.sunDir.w),toMoon,
    vec3(.72,.82,1)*pc.moonDir.w,uFrame.styleSkyZenith.w,12);
  vec3 color=a.radiance*uFrame.styleSkyHorizon.w;
  float sunUp=smoothstep(-.14,.02,toSun.y);
@@ -97,7 +104,10 @@ void main(){
  bool sky=a.groundT<0.0;bool env=pc.passFlags.x>.5;
  float mu=dot(dir,toSun);
  float cloudMask=0.0;
- // The analytic deck below now runs ONLY for the environment-cubemap faces.
+ // The analytic deck also supplies the optional painted visible sky. Both
+ // then share cloud silhouettes and lighting without stochastic march noise.
+ // passFlags.w is its strength; z and w are mutually exclusive on the CPU.
+ // Otherwise the analytic deck runs only for the environment-cubemap faces.
  // The visible sky's clouds are the volumetric layer (clouds.frag), which is
  // marched at half res and composited over this pass -- drawing this one too
  // would put two decks in the frame. The cubemap keeps it because IBL is
@@ -105,7 +115,7 @@ void main(){
  // march; a cheap deck there is still far better than a clear sky, since it
  // is what tints the ambient light reaching every surface.
  CloudHit deck=cloudDeck(ro,dir);
- if(env&&sky&&deck.hit){
+ if((env||pc.passFlags.w>0.001)&&sky&&deck.hit){
    vec3 cp=vec3(deck.uv.x,0.0,deck.uv.y);
    cp.xz+=uFrame.styleCloud0.zw*pc.camPos.w;
    float warp=fbm(cp*.31+vec3(4,0,7));
@@ -114,7 +124,8 @@ void main(){
    float n=clamp(body*.86+erosion,0.0,1.0);
    float cov=clamp(uFrame.styleCloud0.x,0.0,1.0),soft=max(uFrame.styleCloud0.y,.01);
    float mask=cloudCoverageMask(n,cov,soft);
-   cloudMask=mask;
+   float deckStrength=env?1.0:pc.passFlags.w;
+   cloudMask=mask*deckStrength;
    // A ray leaving at elevation theta crosses a deck of thickness d over
    // d/sin(theta) of cloud, so grazing views see far more of it -- that is
    // why a broken sky overhead still closes into a solid band at the horizon.
@@ -155,7 +166,11 @@ void main(){
                    smoothstep(.30,.80,n));
      tint=mix(tint,uFrame.styleCloudLit.rgb,clamp(lit*powder,0.0,1.0)*.7);
      vec3 cloud=(direct*0.09+ambient)*tint;
-     float alpha=(1.0-exp(-tau))*mask;
+     // Distance washes tiny horizon cloud features into atmosphere, instead
+     // of resolving a kilometre-wide deck as rows of sharp horizontal streaks.
+     float aerial=exp(-deck.dist/30000.0);
+     float alpha=(1.0-exp(-tau))*mask*deckStrength*aerial;
+     cloudMask=alpha;
      color=mix(color,cloud,clamp(alpha,0.0,1.0));
    }
  }
@@ -174,6 +189,39 @@ void main(){
     color = cl.rgb * s + color * tr;
     cloudMask = 1.0 - tr;
   }
+
+  // ---- Aurora Borealis (The Long Dark geomagnetic sky & ground glow) ----
+  if (uFrame.auroraParams.x > 0.001 && sky && (1.0 - sunUp) > 0.05) {
+    float auroraInt = uFrame.auroraParams.x;
+    if (env) auroraInt *= uFrame.auroraParams.w; // ground glow scale for env cubemap
+    float t = uFrame.miscParams.z * uFrame.auroraParams.y;
+    if (dir.y > 0.04) {
+      vec2 aUv = (dir.xz / max(dir.y, 0.08)) * 0.15;
+      float ribbon1 = sin(aUv.x * 2.5 + sin(aUv.y * 1.8 + t * 1.2) * 1.5 + t * 0.8);
+      float ribbon2 = sin(aUv.x * 4.2 - cos(aUv.y * 2.7 - t * 0.9) * 1.8 + t * 1.4);
+      float curtainFold = pow(clamp(ribbon1 * 0.5 + ribbon2 * 0.5, 0.0, 1.0), 3.0);
+
+      float drapery = sin(dir.y * 55.0 + fbm(vec3(aUv * 3.0, t * 0.2)) * 6.0) * 0.5 + 0.5;
+      curtainFold *= mix(0.65, 1.35, drapery);
+
+      float hGrad = smoothstep(0.08, 0.65, dir.y);
+      vec3 aColor = mix(uFrame.auroraColorBase.rgb, uFrame.auroraColorTip.rgb, hGrad);
+
+      float aFade = smoothstep(0.04, 0.20, dir.y) * smoothstep(0.95, 0.60, dir.y) * (1.0 - sunUp);
+      float auroraRadiance = curtainFold * aFade * auroraInt * (1.0 - cloudMask * 0.85);
+
+      color += aColor * auroraRadiance * 3.2;
+    }
+  }
+
+  // Blizzard sky whiteout (The Long Dark)
+  if (uFrame.blizzardParams.x > 0.001) {
+    float blz = clamp(uFrame.blizzardParams.x, 0.0, 1.0);
+    vec3 blzSky = mix(vec3(0.12, 0.16, 0.22), vec3(0.85, 0.88, 0.92), sunUp);
+    color = mix(color, blzSky, blz * 0.85);
+    cloudMask = mix(cloudMask, 1.0, blz * 0.9);
+  }
+
  if(!env&&sky){
    // ---- sun disc -----------------------------------------------------
    // Colour comes from sunRadiance (transmittance-coloured on the CPU), not
@@ -266,7 +314,6 @@ void main(){
  // the fog; near the horizon (where tau is large enough to matter) that IS
  // the right color, and where it is wrong -- high overhead rays -- tau is
  // small enough that the source barely contributes.
- if(!env)
-   color=fogSky(color,dir,color);
+ // Visible sky camera transport is applied by the atmosphere compositor.
  outColor=vec4(max(color,vec3(0)),1);
 }

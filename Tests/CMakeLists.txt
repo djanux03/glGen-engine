@@ -41,6 +41,7 @@ endif()
 # We compile only the minimal .cpp files needed.
 add_executable(glgen_tests
   test_main.cpp
+  test_atmosphere.cpp
   test_sparse_set.cpp
   test_registry.cpp
   test_event_bus.cpp
@@ -49,9 +50,12 @@ add_executable(glgen_tests
   test_project_config.cpp
   test_editor_state.cpp
   test_gameplay_state.cpp
+  test_rifle.cpp
+  test_audio.cpp
   test_terrain_noise.cpp
   test_terrain_chunk_manager.cpp
   test_terrain_scatter.cpp
+  test_scenery.cpp
   test_terrain_brush.cpp
   test_asset_manager.cpp
   test_generators.cpp
@@ -59,6 +63,7 @@ add_executable(glgen_tests
   test_command_server.cpp
   test_mesh_decimate.cpp
   test_mesh_validate.cpp
+  test_mesh_normals.cpp
 
   # Engine sources needed by SubsystemManager and ProjectConfig tests
   "${ENGINE_DIR}/Core/SubsystemManager.cpp"
@@ -76,6 +81,7 @@ add_executable(glgen_tests
   "${ENGINE_DIR}/Terrain/TerrainScatter.cpp"
   "${ENGINE_DIR}/Terrain/HeightOffsetGrid.cpp"
   "${ENGINE_DIR}/Assets/MeshPrimitives.cpp"
+  "${ENGINE_DIR}/Scene/Scene.cpp"
 
   # Engine sources needed by the AssetManager tests. The file parsers it
   # calls are stubbed in test_asset_manager.cpp -- see the note there.

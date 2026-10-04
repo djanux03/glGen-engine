@@ -33,7 +33,7 @@ layout(set = FRAME_DATA_SET, binding = 0) uniform FrameData {
     uvec4 terrainTexC;      // x=dirtRoughness y=rockAlbedo z=rockNormal w=rockRoughness
     uvec4 terrainTexD;      // x=screeAlbedo y=screeNormal z=screeRoughness w=unused
     vec4 terrainTiling0;    // x=meadow y=forest z=dirt w=rock (world units per tile)
-    vec4 terrainTiling1;    // x=scree (y/z/w unused)
+    vec4 terrainTiling1;    // x=scree/wet soil y=authored woodland surface z/w unused
     // R3: biome lighting & atmosphere (see biomeLighting.glsl).
     vec4 biomeAmbientMeadow;   // rgb tint w=intensity scale
     vec4 biomeAmbientForest;   // rgb tint w=intensity scale
@@ -101,4 +101,31 @@ layout(set = FRAME_DATA_SET, binding = 0) uniform FrameData {
     vec4 styleCloud4; // x=phaseG y=silverIntensity z=silverSpread w=powderStrength
     vec4 styleCloud5; // x=maxMarchDist(m) y=maxSteps z=lightTaps w=cloudTypeBias
     vec4 styleCloud6; // x=detailStrength (y/z/w reserved)
+    vec4 snowParams;
+    vec4 snowColor;
+    uvec4 snowTextures;
+    vec4 snowExtra;
+    // The Long Dark graphics overhaul parameters
+    vec4 snowParams2;     // x=sparkleStrength y=sparkleScale z=windDriftStrength w=subsurfaceCyan
+    vec4 iceParams;       // x=iceMode(0..1) y=iceCracksStrength z=iceFrostCoverage w=iceDepthScatter
+    vec4 iceColor;        // rgb=iceTint w=iceRoughness
+    vec4 auroraParams;    // x=auroraIntensity y=auroraSpeed z=auroraCurtainScale w=groundGlowIntensity
+    vec4 auroraColorBase; // rgb=green/cyan base color w=fade
+    vec4 auroraColorTip;  // rgb=magenta/purple tip color w=reserved
+    vec4 blizzardParams;  // x=blizzardStrength y=snowWindSpeed z=whiteoutDensity w=frostVignetteStrength
+    vec4 tldStyleParams;  // x=stylizedDiffuseRamp y=shadowCoolBias z=inkOutlineStrength w=temporalSharpness
+    // Photoreal shading dials, all 0..1 (see VulkanRenderer::Params).
+    vec4 realismParams;   // x=terrainPhotoAlbedo y=foliageNormalSoften z=specularOcclusion w=terrainTriplanar
+    // Buffer device address (lo,hi) of the ray-traced shadow alpha-test
+    // table in xy: one record per mesh pointing at its opacity micromaps
+    // (zw reserved). See surfaceShadow.glsl, VulkanRenderer::updateRtAlphaTable.
+    uvec4 rtAlphaTable;
+    uvec4 terrainHeightTex;
+    uvec4 terrainHeightTexExtra;
+    vec4 terrainReliefDepth0;
+    vec4 terrainReliefDepth1;
+    vec4 postAAParams; // x=edgeSoftness y=grassGroundDrawDistance; zw reserved
+    vec4 atmosphereParams; // enabled, froxel range, dust extinction, falloff multiplier
+    vec4 skyLutParams; // enabled, aerial range metres, reserved
+    vec4 cloudShadowField; // projected ground origin XZ, span, enabled
 } uFrame;

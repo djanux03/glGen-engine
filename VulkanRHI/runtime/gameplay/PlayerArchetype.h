@@ -29,7 +29,7 @@ inline EntityId spawnPlayer(Registry &reg, const glm::vec3 &pos, float yawDeg,
   // CameraComponent), so both are set deliberately.
   reg.emplace<NameComponent>(id, NameComponent("Player"));
   reg.emplace<TransformComponent>(
-      id, TransformComponent{pos, glm::vec3(0.0f, yawDeg, 0.0f),
+      id, TransformComponent{pos, glm::vec3(pitchDeg, yawDeg, 0.0f),
                              glm::vec3(1.0f, 1.0f, 1.0f)});
 
   auto &cam = reg.emplace<CameraComponent>(id);
@@ -46,7 +46,11 @@ inline EntityId spawnPlayer(Registry &reg, const glm::vec3 &pos, float yawDeg,
   auto &col = reg.emplace<ColliderComponent>(id);
   col.shape = ColliderComponent::Shape::Capsule;
   col.dimensions = glm::vec3(0.6f, 1.8f, 0.6f);
-  col.offset = glm::vec3(0.0f, 0.9f, 0.0f); // capsule centre, feet at origin
+  // Transform position is the camera eye (1.62 m above ground). Keep the
+  // capsule centred around the character's hips; a positive offset placed
+  // the collider above the eye and made physics fight the controller's ground
+  // snap every frame.
+  col.offset = glm::vec3(0.0f, -0.72f, 0.0f);
 
   if (!scriptPath.empty())
     reg.emplace<ScriptComponent>(id).scriptPath = scriptPath;

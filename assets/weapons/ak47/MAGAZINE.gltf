@@ -1,0 +1,132 @@
+{
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3930,
+      "max": [
+        0.015622340142726898,
+        0.09747511893510818,
+        0.06312134861946106
+      ],
+      "min": [
+        -0.015402555465698242,
+        -0.12152279913425446,
+        -0.10298927873373032
+      ],
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 3930,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 3930,
+      "type": "VEC2"
+    }
+  ],
+  "asset": {
+    "version": "2.0"
+  },
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteLength": 47160,
+      "byteOffset": 0,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteLength": 47160,
+      "byteOffset": 47160,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteLength": 31440,
+      "byteOffset": 94320,
+      "target": 34962
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 125760,
+      "uri": "MAGAZINE.bin"
+    }
+  ],
+  "images": [
+    {
+      "uri": "T_AK47_C.png"
+    },
+    {
+      "uri": "normal_gl.png"
+    },
+    {
+      "uri": "orm.png"
+    }
+  ],
+  "materials": [
+    {
+      "name": "AK47",
+      "normalTexture": {
+        "index": 1
+      },
+      "occlusionTexture": {
+        "index": 2
+      },
+      "pbrMetallicRoughness": {
+        "baseColorTexture": {
+          "index": 0
+        },
+        "metallicFactor": 1,
+        "metallicRoughnessTexture": {
+          "index": 2
+        },
+        "roughnessFactor": 1
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "NORMAL": 1,
+            "POSITION": 0,
+            "TEXCOORD_0": 2
+          },
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0,
+      "name": "MAGAZINE"
+    }
+  ],
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "textures": [
+    {
+      "source": 0
+    },
+    {
+      "source": 1
+    },
+    {
+      "source": 2
+    }
+  ]
+}

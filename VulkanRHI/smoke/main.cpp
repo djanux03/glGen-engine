@@ -58,6 +58,7 @@ int main() {
   }
 
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+  glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
   GLFWwindow *window =
       glfwCreateWindow(1280, 720, "glGen Vulkan", nullptr, nullptr);
   if (!window) {
@@ -65,6 +66,27 @@ int main() {
     glfwTerminate();
     return 1;
   }
+
+  int monitorCount = 0;
+  GLFWmonitor **monitors = glfwGetMonitors(&monitorCount);
+  int targetMonitor = -1;
+  if (const char *envMon = std::getenv("GLGEN_MONITOR")) {
+    int val = std::atoi(envMon);
+    if (val >= 1 && val <= monitorCount)
+      targetMonitor = val - 1;
+    else if (val == 0)
+      targetMonitor = 0;
+  } else if (monitorCount > 1) {
+    targetMonitor = 1;
+  }
+
+  if (targetMonitor >= 0 && targetMonitor < monitorCount) {
+    int mx = 0, my = 0, mw = 0, mh = 0;
+    glfwGetMonitorWorkarea(monitors[targetMonitor], &mx, &my, &mw, &mh);
+    glfwSetWindowPos(window, mx + (mw > 1280 ? (mw - 1280) / 2 : 50),
+                     my + (mh > 720 ? (mh - 720) / 2 : 50));
+  }
+  glfwShowWindow(window);
 
   uint32_t glfwExtCount = 0;
   const char **glfwExts = glfwGetRequiredInstanceExtensions(&glfwExtCount);

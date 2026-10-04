@@ -26,10 +26,17 @@ public:
     uint32_t vertexStride;
     VkDeviceAddress indexAddress;
     uint32_t indexCount;
+    // False for meshes with alpha-masked materials (foliage cards, fences):
+    // their geometry is built NON-opaque so shadow rays report each hit as a
+    // candidate and the shader can alpha-test it (surfaceShadow.glsl).
+    bool opaque = true;
   };
   struct InstanceInput {
     uint32_t blasIndex;
     glm::mat4 transform;
+    // Separate translucent grass shadow casters from opaque world occluders.
+    // Shader rays can retain tree/rock shadows behind a sparse grass proxy.
+    bool grass = false;
   };
 
   // Resources whose GPU lifetime the CALLER must extend past in-flight

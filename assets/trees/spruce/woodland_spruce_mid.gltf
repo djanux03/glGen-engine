@@ -1,0 +1,212 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "glgen-trees/make_dense_spruce.py"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "nodes": [
+    0
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "SpruceDense",
+   "mesh": 0
+  }
+ ],
+ "meshes": [
+  {
+   "name": "SpruceDense",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2
+     },
+     "indices": 3,
+     "material": 0
+    },
+    {
+     "attributes": {
+      "POSITION": 4,
+      "NORMAL": 5,
+      "TEXCOORD_0": 6
+     },
+     "indices": 7,
+     "material": 1
+    }
+   ]
+  }
+ ],
+ "materials": [
+  {
+   "name": "Bark",
+   "pbrMetallicRoughness": {
+    "baseColorTexture": {
+     "index": 0
+    },
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.95
+   }
+  },
+  {
+   "name": "Needles",
+   "alphaMode": "MASK",
+   "alphaCutoff": 0.5,
+   "doubleSided": true,
+   "pbrMetallicRoughness": {
+    "baseColorTexture": {
+     "index": 1
+    },
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.8
+   }
+  }
+ ],
+ "textures": [
+  {
+   "source": 0
+  },
+  {
+   "source": 1
+  }
+ ],
+ "images": [
+  {
+   "uri": "bark09.png"
+  },
+  {
+   "uri": "spruce branch.png"
+  }
+ ],
+ "buffers": [
+  {
+   "uri": "woodland_spruce_mid.bin",
+   "byteLength": 42128
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 1248,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 1248,
+   "byteLength": 1248,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 2496,
+   "byteLength": 832,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 3328,
+   "byteLength": 2016,
+   "target": 34963
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 5344,
+   "byteLength": 11616,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 16960,
+   "byteLength": 11616,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 28576,
+   "byteLength": 7744,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 36320,
+   "byteLength": 5808,
+   "target": 34963
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 104,
+   "type": "VEC3",
+   "min": [
+    -0.12829796678930452,
+    0.0,
+    -0.1388297346946917
+   ],
+   "max": [
+    0.14754104693406744,
+    5.0,
+    0.1388297346946917
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5126,
+   "count": 104,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5126,
+   "count": 104,
+   "type": "VEC2"
+  },
+  {
+   "bufferView": 3,
+   "componentType": 5125,
+   "count": 504,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 4,
+   "componentType": 5126,
+   "count": 968,
+   "type": "VEC3",
+   "min": [
+    -0.90776979469475,
+    -0.008857190709305685,
+    -0.9203430345119648
+   ],
+   "max": [
+    0.8306839561076949,
+    5.1000000000000005,
+    0.8399418571690316
+   ]
+  },
+  {
+   "bufferView": 5,
+   "componentType": 5126,
+   "count": 968,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 6,
+   "componentType": 5126,
+   "count": 968,
+   "type": "VEC2"
+  },
+  {
+   "bufferView": 7,
+   "componentType": 5125,
+   "count": 1452,
+   "type": "SCALAR"
+  }
+ ]
+}

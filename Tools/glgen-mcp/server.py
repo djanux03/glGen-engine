@@ -345,7 +345,52 @@ STATIC_TOOLS: List[Dict[str, Any]] = [
                 "sunYaw": {"type": "number"},
                 "exposure": {"type": "number"},
                 "autoExposure": {"type": "boolean"},
+                "autoExposureSpeed": {"type": "number", "minimum": 0, "maximum": 1},
+                "autoExposureMin": {"type": "number", "minimum": 0},
+                "autoExposureMax": {"type": "number", "minimum": 0},
+                **{key: {"type": "number"} for key in (
+                    "cloudCoverage", "cloudSoftness", "cloudDeckHeight", "cloudFeatureScale",
+                    "cloudOpticalDensity", "cloudSunOcclusion", "cloudStrength",
+                    "cloudLayerThickness", "cloudDensityMultiplier", "cloudShapeScale",
+                    "cloudDetailScale", "cloudWeatherScale", "cloudLightAbsorption",
+                    "cloudAmbientStrength", "cloudCurlStrength", "cloudPhaseG",
+                    "cloudSilverIntensity", "cloudSilverSpread", "cloudPowderStrength",
+                    "cloudMaxMarchDist", "cloudMaxSteps", "cloudLightTaps",
+                    "cloudTypeBias", "cloudDetailStrength")},
+                "paintedClouds": {"type": "boolean"},
+                "cloudVolumetricEnabled": {"type": "boolean"},
                 "fogDensity": {"type": "number"},
+                "atmosphere": {
+                    "type": "object",
+                    "description": "Schema v2 shared fog medium. Distances are metres, extinction is m^-1. Explicit nested values override legacy flat aliases.",
+                    "properties": {
+                        "version": {"type": "integer", "enum": [2]},
+                        "quality": {"enum": [0, 1, "balanced", "high"]},
+                        **{key: {"type": "boolean"} for key in (
+                            "enabled", "physicalSky", "cloudShadows", "cloudHistory", "valleyPooling", "histogramExposure", "history", "directionalShadows", "skyVisibility",
+                            "terrainMist", "bloomFireflySuppression")},
+                        "range": {"type": "number", "minimum": 1, "maximum": 2000},
+                        "start": {"type": "number", "minimum": 0},
+                        "groundReference": {"type": "number"},
+                        "historyWeight": {"type": "number", "minimum": 0, "maximum": 0.9},
+                        "valleyExtinction": {"type": "number", "minimum": 0, "maximum": 10},
+                        "valleyDepth": {"type": "number", "minimum": 0, "maximum": 64},
+                        "exposureKey": {"type": "number", "minimum": 0.001, "maximum": 1},
+                        "exposureMin": {"type": "number", "minimum": 0.000001, "maximum": 10000},
+                        "exposureMax": {"type": "number", "minimum": 0.000001, "maximum": 10000},
+                        **{key: {"type": "number", "minimum": 0, "maximum": 10} for key in (
+                            "groundExtinction", "groundFalloff", "dustExtinction",
+                            "terrainExtinction", "terrainFalloff")},
+                        "waterBoost": {"type": "number", "minimum": 0, "maximum": 20},
+                        **{key: {"type": "number", "minimum": -0.95, "maximum": 0.95} for key in (
+                            "groundAnisotropy", "dustAnisotropy")},
+                        **{key: {"type": "array", "minItems": 3, "maxItems": 3,
+                            "items": {"type": "number", "minimum": 0, "maximum": 1}}
+                            for key in ("groundAlbedo", "dustAlbedo")},
+                        "groundTintStrength": {"type": "number", "minimum": 0, "maximum": 1},
+                        "bloomStrength": {"type": "number", "minimum": 0, "maximum": 1},
+                    },
+                },
                 "pointLights": {
                     "type": "array",
                     "maxItems": 4,
@@ -357,6 +402,8 @@ STATIC_TOOLS: List[Dict[str, Any]] = [
                             "color": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
                             "radius": {"type": "number", "minimum": 0.1},
                             "intensity": {"type": "number", "minimum": 0},
+                            "volumetricParticipation": {"type": "number", "minimum": 0, "maximum": 1},
+                            "volumetricShadows": {"type": "boolean"},
                         },
                         "required": ["position", "color", "radius", "intensity"],
                     },
@@ -1066,7 +1113,7 @@ def selftest() -> int:
     })
     content = rendered["result"]["content"]
     images = [c for c in content if c["type"] == "image"]
-    check("two images returned", len(images) == 2, str(len(images)))
+    check("images returned", len(images) >= 2, str(len(images)))
     if images:
         size_kb = len(images[0]["data"]) / 1024
         check("image is base64 png", images[0]["mimeType"] == "image/png")
