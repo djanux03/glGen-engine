@@ -16,6 +16,14 @@ OpenGL has been removed. Vulkan is the only renderer.
 
 ## Build and test
 
+Fresh clones need Git LFS for the large assets and the pinned Jolt submodule:
+
+```bash
+git lfs install
+git lfs pull
+git submodule update --init --recursive
+```
+
 ```bash
 # engine + editor  (needs the Vulkan SDK; glslc must be on PATH)
 cmake -S . -B Build-vs18 -G "Visual Studio 18 2026" -A x64
